@@ -1,13 +1,14 @@
 import { db, uid } from './../db.js';
 import { getProvider, categorizeTicket, suggestResolution } from './aiClient.js';
 import { sendIntegrationMessage, getEnabledIntegrations } from './notify.js';
+import { autoApprovePending } from './approvalEngine.js';
 
 // Workflow shape stored in DB:
 // trigger:    { event: 'ticket_created'|'ticket_updated'|'sla_at_risk', filters?: {...} }
 // conditions: [{ field, op, value }]   op in: equals, not_equals, contains, in
 // actions:    [{ type, ...params }]
 //   types: set_priority, set_status, assign_team, assign_agent, add_comment,
-//          notify_integration, ai_categorize, ai_suggest_resolution, tag_category
+//          notify_integration, ai_categorize, ai_suggest_resolution, tag_category, auto_approve
 
 function getField(ticket, field) {
   return ticket[field];
@@ -65,8 +66,8 @@ async function runAction(action, ticket) {
       return 'comment added';
     case 'notify_integration': {
       const integrations = action.integration_id
-        ? [db.prepare('SELECT * FROM integrations WHERE id = ?').get(action.integration_id)].filter(Boolean)
-        : getEnabledIntegrations(action.integration_type);
+        ? [db.prepare('SELECT * FROM integrations WHERE id = ? AND workspace_id = ?').get(action.integration_id, ticket.workspace_id)].filter(Boolean)
+        : getEnabledIntegrations(ticket.workspace_id, action.integration_type);
       for (const integ of integrations) {
         await sendIntegrationMessage(integ, {
           text: `[${ticket.number}] ${ticket.title} — ${action.message || 'Automation triggered'}`,
@@ -75,7 +76,7 @@ async function runAction(action, ticket) {
       return `notified ${integrations.length} integration(s)`;
     }
     case 'ai_categorize': {
-      const provider = getProvider(action.provider_id);
+      const provider = getProvider(ticket.workspace_id, action.provider_id);
       const current = t();
       const result = await categorizeTicket(provider, current);
       db.prepare(
@@ -84,7 +85,7 @@ async function runAction(action, ticket) {
       return `AI categorized -> ${result.category}`;
     }
     case 'ai_suggest_resolution': {
-      const provider = getProvider(action.provider_id);
+      const provider = getProvider(ticket.workspace_id, action.provider_id);
       const current = t();
       const comments = db.prepare('SELECT * FROM ticket_comments WHERE ticket_id = ? ORDER BY created_at').all(ticket.id);
       const suggestion = await suggestResolution(provider, current, comments);
@@ -93,13 +94,17 @@ async function runAction(action, ticket) {
       );
       return 'AI resolution suggestion posted';
     }
+    case 'auto_approve': {
+      const count = autoApprovePending(ticket.id, ticket.workspace_id);
+      return count ? `auto-approved ${count} pending approval(s)` : 'no pending approvals to auto-approve';
+    }
     default:
       return `unknown action type: ${action.type}`;
   }
 }
 
 export async function evaluateAutomations(event, ticket) {
-  const rows = db.prepare('SELECT * FROM automations WHERE enabled = 1').all();
+  const rows = db.prepare('SELECT * FROM automations WHERE enabled = 1 AND workspace_id = ?').all(ticket.workspace_id);
   for (const row of rows) {
     let trigger, conditions, actions;
     try {

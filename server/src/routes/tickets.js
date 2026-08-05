@@ -1,22 +1,24 @@
 import { Router } from 'express';
 import { db, uid } from '../db.js';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth, requireWorkspace } from '../middleware/auth.js';
 import { evaluateAutomations } from '../services/automationEngine.js';
 import { getProvider, summarizeTicket, suggestResolution, categorizeTicket } from '../services/aiClient.js';
-import { notifyUser } from '../services/notifications.js';
+import { notifyUser, renderTemplate } from '../services/notifications.js';
 import { computeSlaDueDate, findSlaPolicy } from '../services/sla.js';
+import { nextTicketNumber } from '../services/ticketNumbering.js';
+import { listFieldRules, applyFieldRules } from '../services/fieldRules.js';
 
 const router = Router();
+router.use(requireAuth, requireWorkspace);
 
-function nextTicketNumber() {
-  const row = db.prepare('SELECT COUNT(*) as c FROM tickets').get();
-  return `INC-${String(1000 + row.c + 1)}`;
+function getTicket(id, workspaceId) {
+  return db.prepare('SELECT * FROM tickets WHERE id = ? AND workspace_id = ?').get(id, workspaceId);
 }
 
-router.get('/', requireAuth, (req, res) => {
+router.get('/', (req, res) => {
   const { status, priority, type, assignee_id, team, q } = req.query;
-  let sql = 'SELECT * FROM tickets WHERE 1=1';
-  const params = [];
+  let sql = 'SELECT * FROM tickets WHERE workspace_id = ?';
+  const params = [req.workspaceId];
   if (status) { sql += ' AND status = ?'; params.push(status); }
   if (priority) { sql += ' AND priority = ?'; params.push(priority); }
   if (type) { sql += ' AND type = ?'; params.push(type); }
@@ -28,8 +30,19 @@ router.get('/', requireAuth, (req, res) => {
   res.json({ tickets: rows });
 });
 
-router.get('/:id', requireAuth, (req, res) => {
-  const ticket = db.prepare('SELECT * FROM tickets WHERE id = ?').get(req.params.id);
+router.get('/teams', (req, res) => {
+  const rows = db.prepare("SELECT DISTINCT team FROM tickets WHERE workspace_id = ? AND team IS NOT NULL AND team != '' ORDER BY team").all(req.workspaceId);
+  res.json({ teams: rows.map((r) => r.team) });
+});
+
+router.get('/:id', (req, res) => {
+  const ticket = db.prepare(
+    `SELECT t.*, ru.name AS requester_name, ru.email AS requester_email, au.name AS assignee_name, au.email AS assignee_email
+     FROM tickets t
+     LEFT JOIN users ru ON ru.id = t.requester_id
+     LEFT JOIN users au ON au.id = t.assignee_id
+     WHERE t.id = ? AND t.workspace_id = ?`
+  ).get(req.params.id, req.workspaceId);
   if (!ticket) return res.status(404).json({ error: 'Not found' });
   const comments = db.prepare('SELECT * FROM ticket_comments WHERE ticket_id = ? ORDER BY created_at').all(ticket.id);
   const history = db.prepare('SELECT * FROM ticket_history WHERE ticket_id = ? ORDER BY created_at').all(ticket.id);
@@ -38,30 +51,36 @@ router.get('/:id', requireAuth, (req, res) => {
     'SELECT a.* FROM ticket_assets ta JOIN assets a ON a.id = ta.asset_id WHERE ta.ticket_id = ?'
   ).all(ticket.id);
   const csat = db.prepare('SELECT * FROM csat_surveys WHERE ticket_id = ?').get(ticket.id);
-  res.json({ ticket, comments, history, approvals, linkedAssets, csat: csat || null });
+  const attachments = db.prepare('SELECT id, filename, mime, size, uploaded_by, created_at FROM attachments WHERE ticket_id = ? ORDER BY created_at DESC').all(ticket.id);
+  const fieldRules = listFieldRules(req.workspaceId, ticket.type, ticket.category);
+  res.json({ ticket, comments, history, approvals, linkedAssets, csat: csat || null, attachments, fieldRules });
 });
 
-router.post('/', requireAuth, async (req, res) => {
+router.post('/', async (req, res) => {
   const {
     title, description, type = 'incident', priority = 'medium', category, subcategory, team, requester_id, source = 'portal',
     risk, planned_start, planned_end, rollback_plan,
   } = req.body;
   if (!title) return res.status(400).json({ error: 'title required' });
-  const id = uid('tkt');
-  const number = nextTicketNumber();
 
-  const policy = findSlaPolicy({ priority, category, team });
-  const sla_due_at = computeSlaDueDate(policy?.resolution_minutes ?? { critical: 240, high: 480, medium: 1440, low: 4320 }[priority] ?? 1440, policy?.business_hours_only);
-  const response_due_at = computeSlaDueDate(policy?.response_minutes ?? 60, policy?.business_hours_only);
+  const ruleError = applyFieldRules(req.workspaceId, type, category, req.body);
+  if (ruleError) return res.status(400).json({ error: ruleError });
+
+  const id = uid('tkt');
+  const number = nextTicketNumber(req.workspaceId, type);
+
+  const policy = findSlaPolicy({ workspaceId: req.workspaceId, priority, category, team });
+  const sla_due_at = computeSlaDueDate(policy?.resolution_minutes ?? { critical: 240, high: 480, medium: 1440, low: 4320 }[priority] ?? 1440, policy?.business_hours_only, new Date(), req.workspaceId);
+  const response_due_at = computeSlaDueDate(policy?.response_minutes ?? 60, policy?.business_hours_only, new Date(), req.workspaceId);
 
   const isChange = type === 'change';
   const cab_status = isChange ? 'pending' : 'not_required';
 
   db.prepare(
-    `INSERT INTO tickets (id, number, type, title, description, priority, category, subcategory, team, requester_id, sla_due_at, response_due_at, sla_policy_id, source, risk, planned_start, planned_end, rollback_plan, cab_status)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    `INSERT INTO tickets (id, workspace_id, number, type, title, description, priority, category, subcategory, team, requester_id, sla_due_at, response_due_at, sla_policy_id, source, risk, planned_start, planned_end, rollback_plan, cab_status)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).run(
-    id, number, type, title, description || '', priority, category || null, subcategory || null, team || null,
+    id, req.workspaceId, number, type, title, description || '', priority, category || null, subcategory || null, team || null,
     requester_id || req.user.id, sla_due_at, response_due_at, policy?.id || null, source,
     risk || null, planned_start || null, planned_end || null, rollback_plan || null, cab_status
   );
@@ -71,23 +90,28 @@ router.post('/', requireAuth, async (req, res) => {
     db.prepare('INSERT INTO approvals (id, ticket_id, approver_role, step_order, status) VALUES (?,?,?,?,?)').run(
       uid('apr'), id, 'admin', 1, 'pending'
     );
-    const cabMembers = db.prepare("SELECT id FROM users WHERE role = 'admin'").all();
-    for (const m of cabMembers) notifyUser(m.id, 'CAB approval requested', `${number} — ${title}`, `/tickets/${id}`);
+    const cabMembers = db.prepare(
+      `SELECT u.id FROM workspace_members wm JOIN users u ON u.id = wm.user_id WHERE wm.workspace_id = ? AND wm.role = 'admin' AND wm.active = 1`
+    ).all(req.workspaceId);
+    for (const m of cabMembers) notifyUser(m.id, 'CAB approval requested', `${number} — ${title}`, `/tickets/${id}`, req.workspaceId);
   }
 
-  const ticket = db.prepare('SELECT * FROM tickets WHERE id = ?').get(id);
+  const ticket = getTicket(id, req.workspaceId);
   evaluateAutomations('ticket_created', ticket).catch((e) => console.error('automation error', e));
   res.status(201).json({ ticket });
 });
 
-router.patch('/:id', requireAuth, (req, res) => {
-  const ticket = db.prepare('SELECT * FROM tickets WHERE id = ?').get(req.params.id);
+router.patch('/:id', (req, res) => {
+  const ticket = getTicket(req.params.id, req.workspaceId);
   if (!ticket) return res.status(404).json({ error: 'Not found' });
 
   // CAB gate: a change cannot move into progress until CAB has approved it.
   if (ticket.type === 'change' && req.body.status === 'in_progress' && ticket.cab_status !== 'approved') {
     return res.status(409).json({ error: 'This change is not yet CAB-approved. It cannot move to in_progress until approval is granted.' });
   }
+
+  const ruleError = applyFieldRules(req.workspaceId, ticket.type, req.body.category ?? ticket.category, req.body, { partial: true });
+  if (ruleError) return res.status(400).json({ error: ruleError });
 
   const allowed = ['title', 'description', 'status', 'priority', 'category', 'subcategory', 'assignee_id', 'team', 'impact', 'risk', 'planned_start', 'planned_end', 'rollback_plan'];
   const fields = [];
@@ -106,19 +130,20 @@ router.patch('/:id', requireAuth, (req, res) => {
   );
 
   if (req.body.assignee_id && req.body.assignee_id !== ticket.assignee_id) {
-    notifyUser(req.body.assignee_id, 'Ticket assigned to you', `${ticket.number} — ${ticket.title}`, `/tickets/${ticket.id}`);
+    notifyUser(req.body.assignee_id, 'Ticket assigned to you', `${ticket.number} — ${ticket.title}`, `/tickets/${ticket.id}`, req.workspaceId);
   }
   if (req.body.status === 'resolved') {
-    notifyUser(ticket.requester_id, 'Your ticket was resolved', `${ticket.number} — ${ticket.title}. Let us know how we did!`, `/tickets/${ticket.id}`);
+    const tpl = renderTemplate('ticket_resolved', { number: ticket.number, title: ticket.title }, req.workspaceId);
+    notifyUser(ticket.requester_id, tpl?.subject || 'Your ticket was resolved', tpl?.body || `${ticket.number} — ${ticket.title}. Let us know how we did!`, `/tickets/${ticket.id}`, req.workspaceId);
   }
 
-  const updated = db.prepare('SELECT * FROM tickets WHERE id = ?').get(req.params.id);
+  const updated = getTicket(req.params.id, req.workspaceId);
   evaluateAutomations('ticket_updated', updated).catch((e) => console.error('automation error', e));
   res.json({ ticket: updated });
 });
 
-router.post('/:id/comments', requireAuth, (req, res) => {
-  const ticket = db.prepare('SELECT * FROM tickets WHERE id = ?').get(req.params.id);
+router.post('/:id/comments', (req, res) => {
+  const ticket = getTicket(req.params.id, req.workspaceId);
   if (!ticket) return res.status(404).json({ error: 'Not found' });
   const { body, is_private = false } = req.body;
   if (!body) return res.status(400).json({ error: 'body required' });
@@ -133,20 +158,28 @@ router.post('/:id/comments', requireAuth, (req, res) => {
 });
 
 // ---- CMDB: link/unlink assets to a ticket ----
-router.post('/:id/assets', requireAuth, (req, res) => {
+router.post('/:id/assets', (req, res) => {
+  const ticket = getTicket(req.params.id, req.workspaceId);
+  if (!ticket) return res.status(404).json({ error: 'Not found' });
   const { asset_id } = req.body;
   if (!asset_id) return res.status(400).json({ error: 'asset_id required' });
+  const asset = db.prepare('SELECT id FROM assets WHERE id = ? AND workspace_id = ?').get(asset_id, req.workspaceId);
+  if (!asset) return res.status(404).json({ error: 'Asset not found' });
   db.prepare('INSERT INTO ticket_assets (id, ticket_id, asset_id) VALUES (?,?,?)').run(uid('ta'), req.params.id, asset_id);
   res.status(201).json({ ok: true });
 });
 
-router.delete('/:id/assets/:assetId', requireAuth, (req, res) => {
+router.delete('/:id/assets/:assetId', (req, res) => {
+  const ticket = getTicket(req.params.id, req.workspaceId);
+  if (!ticket) return res.status(404).json({ error: 'Not found' });
   db.prepare('DELETE FROM ticket_assets WHERE ticket_id = ? AND asset_id = ?').run(req.params.id, req.params.assetId);
   res.json({ ok: true });
 });
 
 // ---- CSAT ----
-router.post('/:id/csat', requireAuth, (req, res) => {
+router.post('/:id/csat', (req, res) => {
+  const ticket = getTicket(req.params.id, req.workspaceId);
+  if (!ticket) return res.status(404).json({ error: 'Not found' });
   const { rating, comment } = req.body;
   if (!rating || rating < 1 || rating > 5) return res.status(400).json({ error: 'rating must be 1-5' });
   const existing = db.prepare('SELECT id FROM csat_surveys WHERE ticket_id = ?').get(req.params.id);
@@ -157,12 +190,12 @@ router.post('/:id/csat', requireAuth, (req, res) => {
 
 // ---- AI actions on a specific ticket ----
 
-router.post('/:id/ai/summarize', requireAuth, async (req, res) => {
+router.post('/:id/ai/summarize', async (req, res) => {
   try {
-    const ticket = db.prepare('SELECT * FROM tickets WHERE id = ?').get(req.params.id);
+    const ticket = getTicket(req.params.id, req.workspaceId);
     if (!ticket) return res.status(404).json({ error: 'Not found' });
     const comments = db.prepare('SELECT * FROM ticket_comments WHERE ticket_id = ? ORDER BY created_at').all(ticket.id);
-    const provider = getProvider(req.body.provider_id);
+    const provider = getProvider(req.workspaceId, req.body.provider_id);
     const summary = await summarizeTicket(provider, ticket, comments);
     db.prepare("UPDATE tickets SET ai_summary = ?, updated_at = datetime('now') WHERE id = ?").run(summary, ticket.id);
     res.json({ summary });
@@ -171,13 +204,13 @@ router.post('/:id/ai/summarize', requireAuth, async (req, res) => {
   }
 });
 
-router.post('/:id/ai/suggest-resolution', requireAuth, async (req, res) => {
+router.post('/:id/ai/suggest-resolution', async (req, res) => {
   try {
-    const ticket = db.prepare('SELECT * FROM tickets WHERE id = ?').get(req.params.id);
+    const ticket = getTicket(req.params.id, req.workspaceId);
     if (!ticket) return res.status(404).json({ error: 'Not found' });
     const comments = db.prepare('SELECT * FROM ticket_comments WHERE ticket_id = ? ORDER BY created_at').all(ticket.id);
-    const provider = getProvider(req.body.provider_id);
-    const kb = db.prepare('SELECT title, body FROM kb_articles WHERE category = ? LIMIT 3').all(ticket.category || '');
+    const provider = getProvider(req.workspaceId, req.body.provider_id);
+    const kb = db.prepare('SELECT title, body FROM kb_articles WHERE workspace_id = ? AND category = ? LIMIT 3').all(req.workspaceId, ticket.category || '');
     const kbContext = kb.map((k) => `## ${k.title}\n${k.body.slice(0, 500)}`).join('\n\n');
     const suggestion = await suggestResolution(provider, ticket, comments, kbContext);
     res.json({ suggestion });
@@ -186,11 +219,11 @@ router.post('/:id/ai/suggest-resolution', requireAuth, async (req, res) => {
   }
 });
 
-router.post('/:id/ai/categorize', requireAuth, async (req, res) => {
+router.post('/:id/ai/categorize', async (req, res) => {
   try {
-    const ticket = db.prepare('SELECT * FROM tickets WHERE id = ?').get(req.params.id);
+    const ticket = getTicket(req.params.id, req.workspaceId);
     if (!ticket) return res.status(404).json({ error: 'Not found' });
-    const provider = getProvider(req.body.provider_id);
+    const provider = getProvider(req.workspaceId, req.body.provider_id);
     const result = await categorizeTicket(provider, ticket);
     db.prepare(
       "UPDATE tickets SET category = ?, subcategory = ?, ai_sentiment = ?, ai_suggested_category = ?, updated_at = datetime('now') WHERE id = ?"

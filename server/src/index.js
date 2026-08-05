@@ -6,6 +6,7 @@ import rateLimit from 'express-rate-limit';
 import './db.js';
 
 import authRoutes from './routes/auth.js';
+import workspaceRoutes from './routes/workspaces.js';
 import ticketRoutes from './routes/tickets.js';
 import assetRoutes from './routes/assets.js';
 import kbRoutes from './routes/kb.js';
@@ -18,6 +19,7 @@ import slaRoutes from './routes/sla.js';
 import procurementRoutes from './routes/procurement.js';
 import notificationRoutes from './routes/notifications.js';
 import reportRoutes from './routes/reports.js';
+import fieldRuleRoutes from './routes/fieldRules.js';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -44,6 +46,7 @@ app.use('/api', apiLimiter);
 app.get('/api/health', (req, res) => res.json({ ok: true, service: 'itsm-ai-server', time: new Date().toISOString() }));
 
 app.use('/api/auth', authRoutes);
+app.use('/api/workspaces', workspaceRoutes);
 app.use('/api/tickets', ticketRoutes);
 app.use('/api/assets', assetRoutes);
 app.use('/api/kb', kbRoutes);
@@ -56,6 +59,7 @@ app.use('/api/sla', slaRoutes);
 app.use('/api/procurement', procurementRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/reports', reportRoutes);
+app.use('/api/field-rules', fieldRuleRoutes);
 
 app.use((err, req, res, next) => {
   console.error(err);

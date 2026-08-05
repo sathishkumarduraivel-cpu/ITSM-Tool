@@ -1,27 +1,28 @@
 import { Router } from 'express';
 import { db, uid } from '../db.js';
-import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireAuth, requireWorkspace, requireRole } from '../middleware/auth.js';
 
 const router = Router();
+router.use(requireAuth, requireWorkspace);
 
 // ---- Contracts ----
-router.get('/contracts', requireAuth, (req, res) => {
-  res.json({ contracts: db.prepare('SELECT * FROM contracts ORDER BY end_date ASC').all() });
+router.get('/contracts', (req, res) => {
+  res.json({ contracts: db.prepare('SELECT * FROM contracts WHERE workspace_id = ? ORDER BY end_date ASC').all(req.workspaceId) });
 });
 
-router.post('/contracts', requireAuth, requireRole('admin'), (req, res) => {
+router.post('/contracts', requireRole('admin'), (req, res) => {
   const { vendor, name, type = 'support', start_date, end_date, value, renewal_notice_days = 30, notes } = req.body;
   if (!vendor || !name) return res.status(400).json({ error: 'vendor and name required' });
   const id = uid('ctr');
   db.prepare(
-    `INSERT INTO contracts (id, vendor, name, type, start_date, end_date, value, renewal_notice_days, notes)
-     VALUES (?,?,?,?,?,?,?,?,?)`
-  ).run(id, vendor, name, type, start_date || null, end_date || null, value || null, renewal_notice_days, notes || null);
+    `INSERT INTO contracts (id, workspace_id, vendor, name, type, start_date, end_date, value, renewal_notice_days, notes)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`
+  ).run(id, req.workspaceId, vendor, name, type, start_date || null, end_date || null, value || null, renewal_notice_days, notes || null);
   res.status(201).json({ id });
 });
 
-router.patch('/contracts/:id', requireAuth, requireRole('admin'), (req, res) => {
-  const row = db.prepare('SELECT * FROM contracts WHERE id = ?').get(req.params.id);
+router.patch('/contracts/:id', requireRole('admin'), (req, res) => {
+  const row = db.prepare('SELECT * FROM contracts WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspaceId);
   if (!row) return res.status(404).json({ error: 'Not found' });
   const allowed = ['vendor', 'name', 'type', 'start_date', 'end_date', 'value', 'renewal_notice_days', 'notes'];
   const fields = []; const params = [];
@@ -32,29 +33,31 @@ router.patch('/contracts/:id', requireAuth, requireRole('admin'), (req, res) => 
   res.json({ ok: true });
 });
 
-router.delete('/contracts/:id', requireAuth, requireRole('admin'), (req, res) => {
+router.delete('/contracts/:id', requireRole('admin'), (req, res) => {
+  const row = db.prepare('SELECT id FROM contracts WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspaceId);
+  if (!row) return res.status(404).json({ error: 'Not found' });
   db.prepare('DELETE FROM contracts WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
 });
 
 // ---- Purchase Orders ----
-router.get('/purchase-orders', requireAuth, (req, res) => {
-  res.json({ purchaseOrders: db.prepare('SELECT * FROM purchase_orders ORDER BY created_at DESC').all() });
+router.get('/purchase-orders', (req, res) => {
+  res.json({ purchaseOrders: db.prepare('SELECT * FROM purchase_orders WHERE workspace_id = ? ORDER BY created_at DESC').all(req.workspaceId) });
 });
 
-router.post('/purchase-orders', requireAuth, requireRole('admin'), (req, res) => {
+router.post('/purchase-orders', requireRole('admin'), (req, res) => {
   const { po_number, vendor, item, amount, status = 'draft', ordered_date, received_date, asset_id, notes } = req.body;
   if (!po_number || !vendor || !item) return res.status(400).json({ error: 'po_number, vendor, item required' });
   const id = uid('po');
   db.prepare(
-    `INSERT INTO purchase_orders (id, po_number, vendor, item, amount, status, ordered_date, received_date, asset_id, notes)
-     VALUES (?,?,?,?,?,?,?,?,?,?)`
-  ).run(id, po_number, vendor, item, amount || null, status, ordered_date || null, received_date || null, asset_id || null, notes || null);
+    `INSERT INTO purchase_orders (id, workspace_id, po_number, vendor, item, amount, status, ordered_date, received_date, asset_id, notes)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+  ).run(id, req.workspaceId, po_number, vendor, item, amount || null, status, ordered_date || null, received_date || null, asset_id || null, notes || null);
   res.status(201).json({ id });
 });
 
-router.patch('/purchase-orders/:id', requireAuth, requireRole('admin'), (req, res) => {
-  const row = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(req.params.id);
+router.patch('/purchase-orders/:id', requireRole('admin'), (req, res) => {
+  const row = db.prepare('SELECT * FROM purchase_orders WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspaceId);
   if (!row) return res.status(404).json({ error: 'Not found' });
   const allowed = ['vendor', 'item', 'amount', 'status', 'ordered_date', 'received_date', 'asset_id', 'notes'];
   const fields = []; const params = [];
@@ -65,7 +68,9 @@ router.patch('/purchase-orders/:id', requireAuth, requireRole('admin'), (req, re
   res.json({ ok: true });
 });
 
-router.delete('/purchase-orders/:id', requireAuth, requireRole('admin'), (req, res) => {
+router.delete('/purchase-orders/:id', requireRole('admin'), (req, res) => {
+  const row = db.prepare('SELECT id FROM purchase_orders WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspaceId);
+  if (!row) return res.status(404).json({ error: 'Not found' });
   db.prepare('DELETE FROM purchase_orders WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
 });

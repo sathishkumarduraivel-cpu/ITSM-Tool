@@ -7,9 +7,11 @@ import { JWT_SECRET, requireAuth, requireWorkspace, requireRole } from '../middl
 
 const router = Router();
 
+// Strict in production (brute-force protection); generous outside it so
+// normal dev/test iteration doesn't trip the same limiter real users share.
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 10,
+  max: process.env.NODE_ENV === 'production' ? 10 : 100,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many attempts — please try again later.' },

@@ -397,6 +397,7 @@ const ticketColumnMigrations = [
   // matching this codebase's existing style)
   "ALTER TABLE users ADD COLUMN is_super_admin INTEGER DEFAULT 0",
   "ALTER TABLE users ADD COLUMN last_workspace_id TEXT",
+  "ALTER TABLE users ADD COLUMN active INTEGER DEFAULT 1",
   "ALTER TABLE tickets ADD COLUMN workspace_id TEXT",
   "ALTER TABLE assets ADD COLUMN workspace_id TEXT",
   "ALTER TABLE kb_articles ADD COLUMN workspace_id TEXT",
@@ -477,16 +478,20 @@ for (const table of tenantTables) {
   }
 }
 
-// seed ticket_counters from existing ticket numbers so numbering continues rather than resetting
+// Ticket numbering is global (no per-workspace isolation) — seed the global
+// counter from the highest existing ticket number per type, across every row
+// regardless of workspace, so numbering continues rather than resetting and
+// colliding with already-issued numbers.
+const GLOBAL_COUNTER_KEY = '_global';
 const TYPE_PREFIX = { incident: 'INC', request: 'REQ', problem: 'PRB', change: 'CHG' };
 for (const type of Object.keys(TYPE_PREFIX)) {
-  const existing = db.prepare('SELECT seq FROM ticket_counters WHERE workspace_id = ? AND type = ?').get(DEFAULT_WORKSPACE_ID, type);
+  const existing = db.prepare('SELECT seq FROM ticket_counters WHERE workspace_id = ? AND type = ?').get(GLOBAL_COUNTER_KEY, type);
   if (!existing) {
     let maxSeq = 999;
-    for (const row of db.prepare('SELECT number FROM tickets WHERE workspace_id = ? AND type = ?').all(DEFAULT_WORKSPACE_ID, type)) {
+    for (const row of db.prepare('SELECT number FROM tickets WHERE type = ?').all(type)) {
       const m = /(\d+)$/.exec(row.number || '');
       if (m) maxSeq = Math.max(maxSeq, parseInt(m[1], 10));
     }
-    db.prepare('INSERT INTO ticket_counters (workspace_id, type, seq) VALUES (?,?,?)').run(DEFAULT_WORKSPACE_ID, type, maxSeq);
+    db.prepare('INSERT INTO ticket_counters (workspace_id, type, seq) VALUES (?,?,?)').run(GLOBAL_COUNTER_KEY, type, maxSeq);
   }
 }

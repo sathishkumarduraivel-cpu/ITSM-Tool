@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Loader2, Save, UserPlus, Trash2, Building2, Users, ListChecks } from 'lucide-react';
+import { Loader2, Save, UserPlus, Building2, Users, ListChecks } from 'lucide-react';
 import { api } from '../lib/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import PageHeader from '../components/PageHeader.jsx';
@@ -65,7 +65,7 @@ function CompanyProfileTab() {
   );
 }
 
-function AddMemberModal({ workspaceId, onClose, onSaved }) {
+function AddUserModal({ onClose, onSaved }) {
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
@@ -79,7 +79,7 @@ function AddMemberModal({ workspaceId, onClose, onSaved }) {
     setSaving(true);
     setError('');
     try {
-      await api.post(`/workspaces/${workspaceId}/members`, { email, name, password, role, team: team || null });
+      await api.post('/auth/users', { email, name, password, role, team: team || null });
       onSaved();
     } catch (e) {
       setError(e.message);
@@ -93,16 +93,16 @@ function AddMemberModal({ workspaceId, onClose, onSaved }) {
       <form onSubmit={submit} className="space-y-3">
         {error && <div className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 rounded-lg px-3 py-2">{error}</div>}
         <div>
+          <label className="label">Name</label>
+          <input className="input" required value={name} onChange={(e) => setName(e.target.value)} />
+        </div>
+        <div>
           <label className="label">Email</label>
           <input className="input" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
         </div>
         <div>
-          <label className="label">Name (only needed if this is a brand-new user)</label>
-          <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
-        </div>
-        <div>
-          <label className="label">Temporary password (only needed if this is a brand-new user)</label>
-          <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+          <label className="label">Temporary password</label>
+          <input className="input" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} />
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -131,33 +131,27 @@ function AddMemberModal({ workspaceId, onClose, onSaved }) {
 
 function UsersTab() {
   const { user } = useAuth();
-  const [members, setMembers] = useState(null);
+  const [users, setUsers] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
 
   const load = async () => {
-    const { members } = await api.get(`/workspaces/${user.workspace_id}/members`);
-    setMembers(members);
+    const { users } = await api.get('/auth/users/all');
+    setUsers(users);
   };
 
   useEffect(() => { load(); }, []);
 
   const updateRole = async (userId, roleValue) => {
-    await api.patch(`/workspaces/${user.workspace_id}/members/${userId}`, { role: roleValue });
+    await api.patch(`/auth/users/${userId}`, { role: roleValue });
     load();
   };
 
-  const toggleActive = async (m) => {
-    await api.patch(`/workspaces/${user.workspace_id}/members/${m.user_id}`, { active: !m.active });
+  const toggleActive = async (u) => {
+    await api.patch(`/auth/users/${u.id}`, { active: !u.active });
     load();
   };
 
-  const remove = async (m) => {
-    if (!confirm(`Remove ${m.name} from this workspace?`)) return;
-    await api.del(`/workspaces/${user.workspace_id}/members/${m.user_id}`);
-    load();
-  };
-
-  if (!members) return <div className="text-slate-400 text-sm py-10 text-center">Loading…</div>;
+  if (!users) return <div className="text-slate-400 text-sm py-10 text-center">Loading…</div>;
 
   return (
     <div className="space-y-3">
@@ -165,41 +159,38 @@ function UsersTab() {
         <button onClick={() => setShowAdd(true)} className="btn-primary"><UserPlus size={14} /> Add user</button>
       </div>
 
-      {members.length === 0 ? (
-        <EmptyState icon={Users} title="No members yet" />
+      {users.length === 0 ? (
+        <EmptyState icon={Users} title="No users yet" />
       ) : (
         <div className="card divide-y divide-slate-100 dark:divide-slate-800">
-          {members.map((m) => (
-            <div key={m.membership_id} className="flex items-center gap-3 px-4 py-3">
+          {users.map((u) => (
+            <div key={u.id} className="flex items-center gap-3 px-4 py-3">
               <div
                 className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-semibold shrink-0"
-                style={{ backgroundColor: m.avatar_color || '#6366f1' }}
+                style={{ backgroundColor: u.avatar_color || '#6366f1' }}
               >
-                {m.name?.[0]?.toUpperCase() || '?'}
+                {u.name?.[0]?.toUpperCase() || '?'}
               </div>
               <div className="min-w-0 flex-1">
-                <div className="text-sm font-medium text-slate-800 dark:text-slate-100 truncate">{m.name}</div>
-                <div className="text-xs text-slate-500 truncate">{m.email}{m.team ? ` · ${m.team}` : ''}</div>
+                <div className="text-sm font-medium text-slate-800 dark:text-slate-100 truncate">{u.name}</div>
+                <div className="text-xs text-slate-500 truncate">{u.email}{u.team ? ` · ${u.team}` : ''}</div>
               </div>
               <select
                 className="input w-auto py-1 text-xs"
-                value={m.role}
-                onChange={(e) => updateRole(m.user_id, e.target.value)}
-                disabled={m.user_id === user.id}
+                value={u.role}
+                onChange={(e) => updateRole(u.id, e.target.value)}
+                disabled={u.id === user.id}
               >
                 <option value="requester">Requester</option>
                 <option value="agent">Agent</option>
                 <option value="admin">Admin</option>
               </select>
               <button
-                onClick={() => toggleActive(m)}
-                disabled={m.user_id === user.id}
-                className={`text-xs px-2 py-1 rounded-md ${m.active ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-slate-100 text-slate-500 dark:bg-slate-800'}`}
+                onClick={() => toggleActive(u)}
+                disabled={u.id === user.id}
+                className={`text-xs px-2 py-1 rounded-md ${u.active ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-slate-100 text-slate-500 dark:bg-slate-800'}`}
               >
-                {m.active ? 'Active' : 'Deactivated'}
-              </button>
-              <button onClick={() => remove(m)} disabled={m.user_id === user.id} className="text-slate-400 hover:text-red-500 disabled:opacity-30">
-                <Trash2 size={15} />
+                {u.active ? 'Active' : 'Deactivated'}
               </button>
             </div>
           ))}
@@ -207,7 +198,7 @@ function UsersTab() {
       )}
 
       {showAdd && (
-        <AddMemberModal workspaceId={user.workspace_id} onClose={() => setShowAdd(false)} onSaved={() => { setShowAdd(false); load(); }} />
+        <AddUserModal onClose={() => setShowAdd(false)} onSaved={() => { setShowAdd(false); load(); }} />
       )}
     </div>
   );

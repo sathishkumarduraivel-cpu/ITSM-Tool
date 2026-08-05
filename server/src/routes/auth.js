@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import rateLimit from 'express-rate-limit';
 import { db, uid } from '../db.js';
-import { JWT_SECRET, requireAuth, requireWorkspace } from '../middleware/auth.js';
+import { JWT_SECRET, requireAuth, attachWorkspace, requireRole } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -15,51 +15,47 @@ const authLimiter = rateLimit({
   message: { error: 'Too many attempts — please try again later.' },
 });
 
-function sign(identity) {
+function sign(user) {
   return jwt.sign(
     {
-      id: identity.id,
-      name: identity.name,
-      email: identity.email,
-      role: identity.role,
-      team: identity.team,
-      workspace_id: identity.workspace_id,
-      workspace_name: identity.workspace_name,
-      is_super_admin: !!identity.is_super_admin,
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      team: user.team,
+      workspace_id: user.last_workspace_id,
     },
     JWT_SECRET,
     { expiresIn: '7d' }
   );
 }
 
-function membershipsForUser(userId) {
-  return db.prepare(
-    `SELECT wm.workspace_id, wm.role, wm.team, wm.active, w.name AS workspace_name
-     FROM workspace_members wm JOIN workspaces w ON w.id = wm.workspace_id
-     WHERE wm.user_id = ? AND wm.active = 1
-     ORDER BY w.name`
-  ).all(userId);
-}
-
-function resolveIdentity(user, membership) {
+function publicUser(user) {
+  const ws = user.last_workspace_id ? db.prepare('SELECT id, name FROM workspaces WHERE id = ?').get(user.last_workspace_id) : null;
   return {
     id: user.id,
     name: user.name,
     email: user.email,
-    role: membership.role,
-    team: membership.team,
-    workspace_id: membership.workspace_id,
-    workspace_name: membership.workspace_name,
-    is_super_admin: !!user.is_super_admin,
+    role: user.role,
+    team: user.team,
+    avatar_color: user.avatar_color,
+    workspace_id: ws?.id || null,
+    workspace_name: ws?.name || null,
   };
 }
 
-// Sign up + create a brand-new workspace (the caller becomes its admin).
+function allWorkspaces() {
+  return db.prepare('SELECT id, name FROM workspaces ORDER BY name').all();
+}
+
+function defaultWorkspaceId() {
+  const row = db.prepare("SELECT id FROM workspaces WHERE slug = 'default'").get() || db.prepare('SELECT id FROM workspaces ORDER BY created_at LIMIT 1').get();
+  return row?.id || null;
+}
+
 router.post('/register', authLimiter, (req, res) => {
   const { name, email, password, workspace_name } = req.body;
-  if (!name || !email || !password || !workspace_name) {
-    return res.status(400).json({ error: 'name, email, password, workspace_name required' });
-  }
+  if (!name || !email || !password) return res.status(400).json({ error: 'name, email, password required' });
   const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
   if (existing) return res.status(409).json({ error: 'Email already registered' });
 
@@ -68,30 +64,23 @@ router.post('/register', authLimiter, (req, res) => {
   const colors = ['#6366f1', '#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
   const avatar_color = colors[Math.floor(Math.random() * colors.length)];
 
-  const wsId = uid('ws');
-  const slugBase = workspace_name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'workspace';
-  let slug = slugBase;
-  let n = 1;
-  while (db.prepare('SELECT id FROM workspaces WHERE slug = ?').get(slug)) {
-    slug = `${slugBase}-${++n}`;
+  let wsId;
+  if (workspace_name) {
+    wsId = uid('ws');
+    const slugBase = workspace_name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'workspace';
+    let slug = slugBase;
+    let n = 1;
+    while (db.prepare('SELECT id FROM workspaces WHERE slug = ?').get(slug)) slug = `${slugBase}-${++n}`;
+    db.prepare('INSERT INTO workspaces (id, name, slug) VALUES (?,?,?)').run(wsId, workspace_name, slug);
+  } else {
+    wsId = defaultWorkspaceId();
   }
 
   db.prepare('INSERT INTO users (id, name, email, password_hash, role, avatar_color, last_workspace_id) VALUES (?,?,?,?,?,?,?)')
     .run(userId, name, email, password_hash, 'admin', avatar_color, wsId);
-  db.prepare('INSERT INTO workspaces (id, name, slug) VALUES (?,?,?)').run(wsId, workspace_name, slug);
-  db.prepare('INSERT INTO workspace_members (id, workspace_id, user_id, role) VALUES (?,?,?,?)')
-    .run(uid('wm'), wsId, userId, 'admin');
 
-  const identity = resolveIdentity(
-    { id: userId, name, email, is_super_admin: 0 },
-    { role: 'admin', team: null, workspace_id: wsId, workspace_name }
-  );
-  const memberships = membershipsForUser(userId);
-  res.status(201).json({
-    token: sign(identity),
-    user: identity,
-    workspaces: memberships.map((m) => ({ id: m.workspace_id, name: m.workspace_name, role: m.role })),
-  });
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+  res.status(201).json({ token: sign(user), user: publicUser(user), workspaces: allWorkspaces() });
 });
 
 router.post('/login', authLimiter, (req, res) => {
@@ -100,57 +89,76 @@ router.post('/login', authLimiter, (req, res) => {
   if (!user || !bcrypt.compareSync(password, user.password_hash)) {
     return res.status(401).json({ error: 'Invalid email or password' });
   }
-  const memberships = membershipsForUser(user.id);
-  if (memberships.length === 0) {
-    return res.status(403).json({ error: 'This account has no active workspace membership.' });
+  if (user.active === 0) {
+    return res.status(403).json({ error: 'This account has been deactivated.' });
   }
-  const membership = memberships.find((m) => m.workspace_id === user.last_workspace_id) || memberships[0];
-  const identity = resolveIdentity(user, membership);
-
-  db.prepare('UPDATE users SET last_workspace_id = ? WHERE id = ?').run(membership.workspace_id, user.id);
-
-  res.json({
-    token: sign(identity),
-    user: identity,
-    workspaces: memberships.map((m) => ({ id: m.workspace_id, name: m.workspace_name, role: m.role })),
-  });
+  if (!user.last_workspace_id) {
+    db.prepare('UPDATE users SET last_workspace_id = ? WHERE id = ?').run(defaultWorkspaceId(), user.id);
+    user.last_workspace_id = defaultWorkspaceId();
+  }
+  res.json({ token: sign(user), user: publicUser(user), workspaces: allWorkspaces() });
 });
 
+// Switching workspace just changes which one is "currently selected" for
+// labeling new records — every workspace is visible to everyone, so there's
+// no membership check here.
 router.post('/switch-workspace', requireAuth, (req, res) => {
   const { workspace_id } = req.body;
   if (!workspace_id) return res.status(400).json({ error: 'workspace_id required' });
-  const memberships = membershipsForUser(req.user.id);
-  const membership = memberships.find((m) => m.workspace_id === workspace_id);
-  if (!membership) return res.status(403).json({ error: 'Not a member of that workspace' });
+  const ws = db.prepare('SELECT id FROM workspaces WHERE id = ?').get(workspace_id);
+  if (!ws) return res.status(404).json({ error: 'Workspace not found' });
 
+  db.prepare('UPDATE users SET last_workspace_id = ? WHERE id = ?').run(workspace_id, req.user.id);
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
-  db.prepare('UPDATE users SET last_workspace_id = ? WHERE id = ?').run(workspace_id, user.id);
-  const identity = resolveIdentity(user, membership);
-
-  res.json({
-    token: sign(identity),
-    user: identity,
-    workspaces: memberships.map((m) => ({ id: m.workspace_id, name: m.workspace_name, role: m.role })),
-  });
+  res.json({ token: sign(user), user: publicUser(user), workspaces: allWorkspaces() });
 });
 
-router.get('/me', requireAuth, requireWorkspace, (req, res) => {
-  const memberships = membershipsForUser(req.user.id);
-  res.json({
-    user: req.user,
-    workspaces: memberships.map((m) => ({ id: m.workspace_id, name: m.workspace_name, role: m.role })),
-  });
+router.get('/me', requireAuth, attachWorkspace, (req, res) => {
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  if (!user) return res.status(401).json({ error: 'Account no longer exists' });
+  res.json({ user: publicUser(user), workspaces: allWorkspaces() });
 });
 
-// Workspace-scoped user directory (used e.g. for "assign to agent" pickers).
-router.get('/users', requireAuth, requireWorkspace, (req, res) => {
-  const rows = db.prepare(
-    `SELECT u.id, u.name, u.email, wm.role, wm.team, u.avatar_color, wm.active
-     FROM workspace_members wm JOIN users u ON u.id = wm.user_id
-     WHERE wm.workspace_id = ? AND wm.active = 1
-     ORDER BY u.name`
-  ).all(req.workspaceId);
+// Global user directory (used e.g. for "assign to agent" pickers, and Admin Settings).
+router.get('/users', requireAuth, (req, res) => {
+  const rows = db.prepare('SELECT id, name, email, role, team, avatar_color, active FROM users WHERE active = 1 ORDER BY name').all();
   res.json({ users: rows });
+});
+
+// Admin: full user directory including deactivated accounts (for Admin Settings).
+router.get('/users/all', requireAuth, requireRole('admin'), (req, res) => {
+  const rows = db.prepare('SELECT id, name, email, role, team, avatar_color, active FROM users ORDER BY name').all();
+  res.json({ users: rows });
+});
+
+// Admin: create a new user directly (no self-registration flow involved).
+router.post('/users', requireAuth, requireRole('admin'), (req, res) => {
+  const { name, email, password, role = 'requester', team } = req.body;
+  if (!name || !email || !password) return res.status(400).json({ error: 'name, email, password required' });
+  const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+  if (existing) return res.status(409).json({ error: 'Email already registered' });
+  const id = uid('usr');
+  const password_hash = bcrypt.hashSync(password, 10);
+  const colors = ['#6366f1', '#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
+  const avatar_color = colors[Math.floor(Math.random() * colors.length)];
+  db.prepare('INSERT INTO users (id, name, email, password_hash, role, team, avatar_color, last_workspace_id) VALUES (?,?,?,?,?,?,?,?)')
+    .run(id, name, email, password_hash, role, team || null, avatar_color, defaultWorkspaceId());
+  res.status(201).json({ id });
+});
+
+// Admin: change a user's role/team, or deactivate them (blocks future logins).
+router.patch('/users/:id', requireAuth, requireRole('admin'), (req, res) => {
+  const row = db.prepare('SELECT id FROM users WHERE id = ?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'Not found' });
+  const { role, team, active } = req.body;
+  const fields = []; const params = [];
+  if (role !== undefined) { fields.push('role = ?'); params.push(role); }
+  if (team !== undefined) { fields.push('team = ?'); params.push(team); }
+  if (active !== undefined) { fields.push('active = ?'); params.push(active ? 1 : 0); }
+  if (!fields.length) return res.status(400).json({ error: 'Nothing to update' });
+  params.push(req.params.id);
+  db.prepare(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`).run(...params);
+  res.json({ ok: true });
 });
 
 export default router;

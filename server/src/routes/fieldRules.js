@@ -1,14 +1,14 @@
 import { Router } from 'express';
 import { db, uid } from '../db.js';
-import { requireAuth, requireWorkspace, requireRole } from '../middleware/auth.js';
+import { requireAuth, attachWorkspace, requireRole } from '../middleware/auth.js';
 
 const router = Router();
-router.use(requireAuth, requireWorkspace);
+router.use(requireAuth, attachWorkspace);
 
 router.get('/', (req, res) => {
   const { ticket_type, category } = req.query;
-  let sql = 'SELECT * FROM ticket_field_rules WHERE workspace_id = ?';
-  const params = [req.workspaceId];
+  let sql = 'SELECT * FROM ticket_field_rules WHERE 1=1';
+  const params = [];
   if (ticket_type) { sql += ' AND ticket_type = ?'; params.push(ticket_type); }
   if (category) { sql += ' AND (category IS NULL OR category = ?)'; params.push(category); }
   sql += ' ORDER BY ticket_type, sort_order, field_name';
@@ -26,7 +26,7 @@ router.post('/', requireRole('admin'), (req, res) => {
 });
 
 router.patch('/:id', requireRole('admin'), (req, res) => {
-  const row = db.prepare('SELECT * FROM ticket_field_rules WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspaceId);
+  const row = db.prepare('SELECT * FROM ticket_field_rules WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Not found' });
   const allowed = ['category', 'visible', 'required', 'sort_order'];
   const fields = []; const params = [];
@@ -43,7 +43,7 @@ router.patch('/:id', requireRole('admin'), (req, res) => {
 });
 
 router.delete('/:id', requireRole('admin'), (req, res) => {
-  db.prepare('DELETE FROM ticket_field_rules WHERE id = ? AND workspace_id = ?').run(req.params.id, req.workspaceId);
+  db.prepare('DELETE FROM ticket_field_rules WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
 });
 

@@ -2,8 +2,8 @@ import { db } from '../db.js';
 
 // Finds the most specific enabled SLA policy matching priority/category/team.
 // Specificity = number of non-null match fields that agree with the ticket.
-export function findSlaPolicy({ workspaceId, priority, category, team }) {
-  const policies = db.prepare('SELECT * FROM sla_policies WHERE workspace_id = ? AND enabled = 1').all(workspaceId);
+export function findSlaPolicy({ priority, category, team }) {
+  const policies = db.prepare('SELECT * FROM sla_policies WHERE enabled = 1').all();
   let best = null;
   let bestScore = -1;
   for (const p of policies) {
@@ -19,8 +19,8 @@ export function findSlaPolicy({ workspaceId, priority, category, team }) {
   return best;
 }
 
-function getBusinessHours(workspaceId) {
-  const rows = db.prepare('SELECT * FROM business_hours WHERE workspace_id = ?').all(workspaceId);
+function getBusinessHours() {
+  const rows = db.prepare('SELECT * FROM business_hours').all();
   if (rows.length) return rows;
   // Default: Mon-Fri 09:00-17:00 if nothing configured
   return [1, 2, 3, 4, 5].map((d) => ({ day_of_week: d, start_time: '09:00', end_time: '17:00' }));
@@ -33,11 +33,11 @@ function parseTime(t) {
 
 // Adds `minutes` of business time to `from`, honoring configured business_hours.
 // Falls back to plain calendar-time addition when businessHoursOnly is false.
-export function computeSlaDueDate(minutes, businessHoursOnly, from = new Date(), workspaceId = null) {
+export function computeSlaDueDate(minutes, businessHoursOnly, from = new Date()) {
   if (!businessHoursOnly) {
     return new Date(from.getTime() + minutes * 60000).toISOString();
   }
-  const hours = getBusinessHours(workspaceId);
+  const hours = getBusinessHours();
   const byDay = new Map(hours.map((h) => [h.day_of_week, h]));
   let cursor = new Date(from);
   let remaining = minutes;

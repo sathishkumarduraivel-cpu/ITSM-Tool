@@ -1,15 +1,15 @@
 import { Router } from 'express';
 import { db, uid } from '../db.js';
-import { requireAuth, requireWorkspace, requireRole } from '../middleware/auth.js';
-import { notifyUser } from '../services/notifications.js';
+import { requireAuth, attachWorkspace, requireRole } from '../middleware/auth.js';
+import { notifyRole } from '../services/notifications.js';
 import { nextTicketNumber } from '../services/ticketNumbering.js';
 
 const router = Router();
-router.use(requireAuth, requireWorkspace);
+router.use(requireAuth, attachWorkspace);
 
 // ---- Categories ----
 router.get('/categories', (req, res) => {
-  res.json({ categories: db.prepare('SELECT * FROM catalog_categories WHERE workspace_id = ? ORDER BY sort_order, name').all(req.workspaceId) });
+  res.json({ categories: db.prepare('SELECT * FROM catalog_categories ORDER BY sort_order, name').all() });
 });
 
 router.post('/categories', requireRole('admin'), (req, res) => {
@@ -21,7 +21,7 @@ router.post('/categories', requireRole('admin'), (req, res) => {
 });
 
 router.patch('/categories/:id', requireRole('admin'), (req, res) => {
-  const row = db.prepare('SELECT * FROM catalog_categories WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspaceId);
+  const row = db.prepare('SELECT * FROM catalog_categories WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Not found' });
   const allowed = ['name', 'icon', 'sort_order'];
   const fields = []; const params = [];
@@ -33,7 +33,7 @@ router.patch('/categories/:id', requireRole('admin'), (req, res) => {
 });
 
 router.delete('/categories/:id', requireRole('admin'), (req, res) => {
-  const row = db.prepare('SELECT id FROM catalog_categories WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspaceId);
+  const row = db.prepare('SELECT id FROM catalog_categories WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Not found' });
   db.prepare('DELETE FROM catalog_categories WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
@@ -42,8 +42,8 @@ router.delete('/categories/:id', requireRole('admin'), (req, res) => {
 // ---- Items ----
 router.get('/items', (req, res) => {
   const { category_id } = req.query;
-  let sql = 'SELECT * FROM catalog_items WHERE workspace_id = ? AND enabled = 1';
-  const params = [req.workspaceId];
+  let sql = 'SELECT * FROM catalog_items WHERE enabled = 1';
+  const params = [];
   if (category_id) { sql += ' AND category_id = ?'; params.push(category_id); }
   sql += ' ORDER BY created_at DESC';
   const items = db.prepare(sql).all(...params).map((i) => ({ ...i, form_schema: JSON.parse(i.form_schema || '[]') }));
@@ -62,7 +62,7 @@ router.post('/items', requireRole('admin'), (req, res) => {
 });
 
 router.patch('/items/:id', requireRole('admin'), (req, res) => {
-  const row = db.prepare('SELECT * FROM catalog_items WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspaceId);
+  const row = db.prepare('SELECT * FROM catalog_items WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Not found' });
   const allowed = ['category_id', 'name', 'description', 'icon', 'approval_required', 'approver_role', 'default_priority', 'price', 'enabled'];
   const fields = []; const params = [];
@@ -75,7 +75,7 @@ router.patch('/items/:id', requireRole('admin'), (req, res) => {
 });
 
 router.delete('/items/:id', requireRole('admin'), (req, res) => {
-  const row = db.prepare('SELECT id FROM catalog_items WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspaceId);
+  const row = db.prepare('SELECT id FROM catalog_items WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Not found' });
   db.prepare('DELETE FROM catalog_items WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
@@ -83,12 +83,12 @@ router.delete('/items/:id', requireRole('admin'), (req, res) => {
 
 // ---- Submit a catalog request -> creates a ticket (+ approval chain if required) ----
 router.post('/items/:id/request', (req, res) => {
-  const item = db.prepare('SELECT * FROM catalog_items WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspaceId);
+  const item = db.prepare('SELECT * FROM catalog_items WHERE id = ?').get(req.params.id);
   if (!item) return res.status(404).json({ error: 'Catalog item not found' });
   const { form_data = {} } = req.body;
 
   const id = uid('tkt');
-  const number = nextTicketNumber(req.workspaceId, 'request');
+  const number = nextTicketNumber('request');
   const needsApproval = !!item.approval_required;
   const status = needsApproval ? 'pending_approval' : 'open';
   const slaHours = { critical: 4, high: 8, medium: 24, low: 72 }[item.default_priority] || 24;
@@ -110,13 +110,7 @@ router.post('/items/:id/request', (req, res) => {
     db.prepare(
       'INSERT INTO approvals (id, ticket_id, approver_role, step_order, status) VALUES (?,?,?,?,?)'
     ).run(approvalId, id, item.approver_role, 1, 'pending');
-    // notify anyone with the approver role in this workspace — simplified to all matching-role members for this MVP
-    const approvers = db.prepare(
-      `SELECT u.id FROM workspace_members wm JOIN users u ON u.id = wm.user_id WHERE wm.workspace_id = ? AND wm.role = ? AND wm.active = 1`
-    ).all(req.workspaceId, item.approver_role);
-    for (const a of approvers) {
-      notifyUser(a.id, 'Approval requested', `${req.user.name} requested "${item.name}" (${number})`, `/tickets/${id}`, req.workspaceId);
-    }
+    notifyRole(item.approver_role, 'Approval requested', `${req.user.name} requested "${item.name}" (${number})`, `/tickets/${id}`);
   }
 
   const ticket = db.prepare('SELECT * FROM tickets WHERE id = ?').get(id);

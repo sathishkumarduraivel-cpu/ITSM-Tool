@@ -1,18 +1,18 @@
 import { Router } from 'express';
 import { db, uid } from '../db.js';
-import { requireAuth, requireWorkspace } from '../middleware/auth.js';
+import { requireAuth, attachWorkspace } from '../middleware/auth.js';
 
 const router = Router();
-router.use(requireAuth, requireWorkspace);
+router.use(requireAuth, attachWorkspace);
 
-function getAsset(id, workspaceId) {
-  return db.prepare('SELECT * FROM assets WHERE id = ? AND workspace_id = ?').get(id, workspaceId);
+function getAsset(id) {
+  return db.prepare('SELECT * FROM assets WHERE id = ?').get(id);
 }
 
 router.get('/', (req, res) => {
   const { type, status, q } = req.query;
-  let sql = 'SELECT * FROM assets WHERE workspace_id = ?';
-  const params = [req.workspaceId];
+  let sql = 'SELECT * FROM assets WHERE 1=1';
+  const params = [];
   if (type) { sql += ' AND type = ?'; params.push(type); }
   if (status) { sql += ' AND status = ?'; params.push(status); }
   if (q) { sql += ' AND (name LIKE ? OR tag LIKE ?)'; params.push(`%${q}%`, `%${q}%`); }
@@ -28,11 +28,11 @@ router.post('/', (req, res) => {
     `INSERT INTO assets (id, workspace_id, tag, name, type, status, owner_id, location, vendor, purchase_date, warranty_expiry, notes)
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
   ).run(id, req.workspaceId, tag, name, type, status, owner_id || null, location || null, vendor || null, purchase_date || null, warranty_expiry || null, notes || null);
-  res.status(201).json({ asset: getAsset(id, req.workspaceId) });
+  res.status(201).json({ asset: getAsset(id) });
 });
 
 router.patch('/:id', (req, res) => {
-  const asset = getAsset(req.params.id, req.workspaceId);
+  const asset = getAsset(req.params.id);
   if (!asset) return res.status(404).json({ error: 'Not found' });
   const allowed = ['name', 'type', 'status', 'owner_id', 'location', 'vendor', 'purchase_date', 'warranty_expiry', 'notes'];
   const fields = []; const params = [];
@@ -40,11 +40,11 @@ router.patch('/:id', (req, res) => {
   if (!fields.length) return res.status(400).json({ error: 'No valid fields' });
   params.push(req.params.id);
   db.prepare(`UPDATE assets SET ${fields.join(', ')} WHERE id = ?`).run(...params);
-  res.json({ asset: getAsset(req.params.id, req.workspaceId) });
+  res.json({ asset: getAsset(req.params.id) });
 });
 
 router.delete('/:id', (req, res) => {
-  const asset = getAsset(req.params.id, req.workspaceId);
+  const asset = getAsset(req.params.id);
   if (!asset) return res.status(404).json({ error: 'Not found' });
   db.prepare('DELETE FROM assets WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
@@ -52,7 +52,7 @@ router.delete('/:id', (req, res) => {
 
 // ---- CMDB: single asset with relationships, linked tickets, impact view ----
 router.get('/:id/detail', (req, res) => {
-  const asset = getAsset(req.params.id, req.workspaceId);
+  const asset = getAsset(req.params.id);
   if (!asset) return res.status(404).json({ error: 'Not found' });
 
   const dependsOn = db.prepare(`
@@ -74,11 +74,11 @@ router.get('/:id/detail', (req, res) => {
 });
 
 router.post('/:id/relationships', (req, res) => {
-  const asset = getAsset(req.params.id, req.workspaceId);
+  const asset = getAsset(req.params.id);
   if (!asset) return res.status(404).json({ error: 'Not found' });
   const { related_asset_id, relationship_type = 'depends_on' } = req.body;
   if (!related_asset_id) return res.status(400).json({ error: 'related_asset_id required' });
-  const related = getAsset(related_asset_id, req.workspaceId);
+  const related = getAsset(related_asset_id);
   if (!related) return res.status(404).json({ error: 'Related asset not found' });
   const id = uid('rel');
   db.prepare('INSERT INTO asset_relationships (id, asset_id, related_asset_id, relationship_type) VALUES (?,?,?,?)').run(
@@ -88,9 +88,7 @@ router.post('/:id/relationships', (req, res) => {
 });
 
 router.delete('/relationships/:relId', (req, res) => {
-  const rel = db.prepare(
-    `SELECT r.id FROM asset_relationships r JOIN assets a ON a.id = r.asset_id WHERE r.id = ? AND a.workspace_id = ?`
-  ).get(req.params.relId, req.workspaceId);
+  const rel = db.prepare('SELECT id FROM asset_relationships WHERE id = ?').get(req.params.relId);
   if (!rel) return res.status(404).json({ error: 'Not found' });
   db.prepare('DELETE FROM asset_relationships WHERE id = ?').run(req.params.relId);
   res.json({ ok: true });

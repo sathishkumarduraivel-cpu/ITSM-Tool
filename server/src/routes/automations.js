@@ -1,12 +1,12 @@
 import { Router } from 'express';
 import { db, uid } from '../db.js';
-import { requireAuth, requireWorkspace } from '../middleware/auth.js';
+import { requireAuth, attachWorkspace } from '../middleware/auth.js';
 
 const router = Router();
-router.use(requireAuth, requireWorkspace);
+router.use(requireAuth, attachWorkspace);
 
 router.get('/', (req, res) => {
-  const rows = db.prepare('SELECT * FROM automations WHERE workspace_id = ? ORDER BY created_at DESC').all(req.workspaceId);
+  const rows = db.prepare('SELECT * FROM automations ORDER BY created_at DESC').all();
   res.json({
     automations: rows.map((r) => ({
       ...r,
@@ -18,7 +18,7 @@ router.get('/', (req, res) => {
 });
 
 router.get('/:id/logs', (req, res) => {
-  const automation = db.prepare('SELECT id FROM automations WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspaceId);
+  const automation = db.prepare('SELECT id FROM automations WHERE id = ?').get(req.params.id);
   if (!automation) return res.status(404).json({ error: 'Not found' });
   const rows = db.prepare('SELECT * FROM automation_logs WHERE automation_id = ? ORDER BY created_at DESC LIMIT 100').all(req.params.id);
   res.json({ logs: rows });
@@ -35,7 +35,7 @@ router.post('/', (req, res) => {
 });
 
 router.patch('/:id', (req, res) => {
-  const row = db.prepare('SELECT * FROM automations WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspaceId);
+  const row = db.prepare('SELECT * FROM automations WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Not found' });
   const { name, description, trigger, conditions, actions, enabled } = req.body;
   const fields = []; const params = [];
@@ -52,7 +52,7 @@ router.patch('/:id', (req, res) => {
 });
 
 router.delete('/:id', (req, res) => {
-  const row = db.prepare('SELECT id FROM automations WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspaceId);
+  const row = db.prepare('SELECT id FROM automations WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Not found' });
   db.prepare('DELETE FROM automations WHERE id = ?').run(req.params.id);
   res.json({ ok: true });

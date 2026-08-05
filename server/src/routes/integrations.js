@@ -1,11 +1,11 @@
 import { Router } from 'express';
 import { db, uid } from '../db.js';
-import { requireAuth, requireWorkspace, requireRole } from '../middleware/auth.js';
+import { requireAuth, attachWorkspace, requireRole } from '../middleware/auth.js';
 import { sendIntegrationMessage } from '../services/notify.js';
 import { encrypt, decrypt } from '../services/crypto.js';
 
 const router = Router();
-router.use(requireAuth, requireWorkspace);
+router.use(requireAuth, attachWorkspace);
 
 function redactConfig(configJson) {
   const config = JSON.parse(decrypt(configJson) || '{}');
@@ -17,7 +17,7 @@ function redactConfig(configJson) {
 }
 
 router.get('/', (req, res) => {
-  const rows = db.prepare('SELECT * FROM integrations WHERE workspace_id = ? ORDER BY created_at DESC').all(req.workspaceId);
+  const rows = db.prepare('SELECT * FROM integrations ORDER BY created_at DESC').all();
   res.json({
     integrations: rows.map((r) => ({ ...r, config: redactConfig(r.config) })),
   });
@@ -34,7 +34,7 @@ router.post('/', requireRole('admin'), (req, res) => {
 });
 
 router.patch('/:id', requireRole('admin'), (req, res) => {
-  const row = db.prepare('SELECT * FROM integrations WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspaceId);
+  const row = db.prepare('SELECT * FROM integrations WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Not found' });
   const { name, config, enabled } = req.body;
   const fields = []; const params = [];
@@ -54,14 +54,14 @@ router.patch('/:id', requireRole('admin'), (req, res) => {
 });
 
 router.delete('/:id', requireRole('admin'), (req, res) => {
-  const row = db.prepare('SELECT id FROM integrations WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspaceId);
+  const row = db.prepare('SELECT id FROM integrations WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Not found' });
   db.prepare('DELETE FROM integrations WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
 });
 
 router.post('/:id/test', requireRole('admin'), async (req, res) => {
-  const row = db.prepare('SELECT * FROM integrations WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspaceId);
+  const row = db.prepare('SELECT * FROM integrations WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Not found' });
   const result = await sendIntegrationMessage(row, { text: `Test message from ITSM AI — integration "${row.name}" is wired up correctly.` });
   res.json(result);

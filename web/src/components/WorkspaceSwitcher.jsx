@@ -23,7 +23,6 @@ export default function WorkspaceSwitcher({ collapsed = false }) {
     setBusy(true);
     try {
       await switchWorkspace(wsId);
-      window.location.href = '/';
     } finally {
       setBusy(false);
       setOpen(false);

@@ -1,5 +1,4 @@
 import jwt from 'jsonwebtoken';
-import { db } from '../db.js';
 
 if (!process.env.JWT_SECRET && process.env.NODE_ENV === 'production') {
   throw new Error('JWT_SECRET must be set in production — refusing to start with an insecure default.');
@@ -21,21 +20,12 @@ export function requireAuth(req, res, next) {
   }
 }
 
-// Must run after requireAuth. Establishes req.workspaceId for every scoped
-// query. Super-admins may cross into another workspace by sending an
-// `x-workspace-id` header (used for platform-level support/administration,
-// not exposed in the current UI beyond this capability).
-export function requireWorkspace(req, res, next) {
-  if (!req.user) return res.status(401).json({ error: 'Missing auth token' });
-  let workspaceId = req.user.workspace_id;
-  const override = req.headers['x-workspace-id'];
-  if (override && req.user.is_super_admin) {
-    const ws = db.prepare('SELECT id FROM workspaces WHERE id = ?').get(override);
-    if (!ws) return res.status(404).json({ error: 'Workspace not found' });
-    workspaceId = ws.id;
-  }
-  if (!workspaceId) return res.status(400).json({ error: 'No workspace associated with this session' });
-  req.workspaceId = workspaceId;
+// Must run after requireAuth. Attaches the user's currently-selected workspace
+// as req.workspaceId purely as a display/tagging label (e.g. for new records) —
+// it is NOT used to restrict what data a request can read or write. There is
+// a single shared pool of data for everyone; "workspace" is just a name.
+export function attachWorkspace(req, res, next) {
+  req.workspaceId = req.user?.workspace_id || null;
   next();
 }
 

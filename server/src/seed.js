@@ -14,10 +14,6 @@ function upsertUser(name, email, password, role, team) {
     );
     user = { id };
   }
-  const membership = db.prepare('SELECT id FROM workspace_members WHERE workspace_id = ? AND user_id = ?').get(WS, user.id);
-  if (!membership) {
-    db.prepare('INSERT INTO workspace_members (id, workspace_id, user_id, role, team) VALUES (?,?,?,?,?)').run(uid('wm'), WS, user.id, role, team || null);
-  }
   return user.id;
 }
 
@@ -46,7 +42,7 @@ if (ticketCount === 0) {
   const slaHours = { critical: 4, high: 8, medium: 24, low: 72 };
   for (const s of samples) {
     const id = uid('tkt');
-    const number = nextTicketNumber(WS, s.type);
+    const number = nextTicketNumber(s.type);
     const createdOffsetHours = Math.floor(Math.random() * 96);
     const created_at = new Date(Date.now() - createdOffsetHours * 3600 * 1000).toISOString();
     const sla_due_at = new Date(new Date(created_at).getTime() + (slaHours[s.priority] || 24) * 3600 * 1000).toISOString();

@@ -1,9 +1,9 @@
 import { Router } from 'express';
 import { db } from '../db.js';
-import { requireAuth, attachWorkspace } from '../middleware/auth.js';
+import { requireAuth, requireWorkspace } from '../middleware/auth.js';
 
 const router = Router();
-router.use(requireAuth, attachWorkspace);
+router.use(requireAuth, requireWorkspace);
 
 const DEFAULT_LAYOUT = [
   { id: 'stat_open', type: 'stat', metric: 'openCount', label: 'Open tickets', tone: 'brand' },
@@ -15,15 +15,12 @@ const DEFAULT_LAYOUT = [
   { id: 'chart_status', type: 'bar', metric: 'byStatus', label: 'By status' },
 ];
 
-// Dashboard layout is a per-user preference — stored under a fixed system key
-// (not scoped by workspace, since there's one shared pool of data for everyone).
-const SETTINGS_SCOPE = '_global';
 function keyFor(userId) {
   return `dashboard_layout:${userId}`;
 }
 
 router.get('/layout', (req, res) => {
-  const row = db.prepare('SELECT value FROM workspace_settings WHERE workspace_id = ? AND key = ?').get(SETTINGS_SCOPE, keyFor(req.user.id));
+  const row = db.prepare('SELECT value FROM workspace_settings WHERE workspace_id = ? AND key = ?').get(req.workspaceId, keyFor(req.user.id));
   res.json({ layout: row ? JSON.parse(row.value) : DEFAULT_LAYOUT });
 });
 
@@ -33,7 +30,7 @@ router.put('/layout', (req, res) => {
   db.prepare(
     `INSERT INTO workspace_settings (workspace_id, key, value, updated_at) VALUES (?,?,?,datetime('now'))
      ON CONFLICT(workspace_id, key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`
-  ).run(SETTINGS_SCOPE, keyFor(req.user.id), JSON.stringify(layout));
+  ).run(req.workspaceId, keyFor(req.user.id), JSON.stringify(layout));
   res.json({ ok: true });
 });
 

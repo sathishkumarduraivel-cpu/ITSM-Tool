@@ -1,9 +1,9 @@
 import { Router } from 'express';
 import { db } from '../db.js';
-import { requireAuth, attachWorkspace, requireRole } from '../middleware/auth.js';
+import { requireAuth, requireWorkspace, requireRole } from '../middleware/auth.js';
 
 const router = Router();
-router.use(requireAuth, attachWorkspace);
+router.use(requireAuth, requireWorkspace);
 
 const SETTINGS_KEY = 'company_profile';
 

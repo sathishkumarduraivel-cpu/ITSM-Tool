@@ -69,7 +69,7 @@ export default function Login() {
           </button>
 
           <div className="text-center text-sm">
-            <Link to="/register" className="text-brand-600 hover:text-brand-700 font-medium">Create a new workspace</Link>
+            <Link to="/register" className="text-brand-600 hover:text-brand-700 font-medium">Create an account</Link>
           </div>
 
           <div className="text-xs text-slate-400 bg-slate-50 dark:bg-slate-800/60 rounded-xl p-3 space-y-1">

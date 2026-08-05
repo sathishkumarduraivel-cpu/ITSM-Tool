@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
-  Loader2, Save, UserPlus, Building2, Users, ListChecks, UsersRound, Layers,
+  Loader2, Save, UserPlus, Users, ListChecks, UsersRound, Layers,
   Workflow, ArrowLeft, ChevronRight, Plus, Trash2, ChevronDown, ChevronUp, X,
 } from 'lucide-react';
 import { api } from '../lib/api.js';
@@ -11,73 +11,19 @@ import EmptyState from '../components/EmptyState.jsx';
 import Automations from './Automations.jsx';
 
 const SECTIONS = [
-  { key: 'profile', label: 'Company Profile', description: 'Organization name, support email, timezone & default priority', icon: Building2 },
   { key: 'users', label: 'Users', description: 'Manage agent & requester accounts, roles and status', icon: Users },
-  { key: 'groups', label: 'Groups', description: 'Organize agents into teams, e.g. Network, Facilities, Service Desk', icon: UsersRound },
-  { key: 'workspaces', label: 'Workspaces', description: 'Add, rename or remove shared workspace labels', icon: Layers },
+  { key: 'groups', label: 'Groups', description: 'Organize agents into groups, e.g. Network, Facilities, Service Desk', icon: UsersRound },
+  { key: 'workspaces', label: 'Workspaces', description: 'Add, rename or remove workspaces you belong to', icon: Layers },
   { key: 'workflows', label: 'Workflows & Automation', description: 'Trigger → conditions → actions, including built-in AI steps', icon: Workflow },
   { key: 'fields', label: 'Business Rules', description: 'Control which ticket fields show, and which are required', icon: ListChecks },
 ];
 
-function CompanyProfileTab() {
-  const [form, setForm] = useState(null);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-
-  useEffect(() => {
-    api.get('/admin/settings').then(({ settings }) => setForm(settings));
-  }, []);
-
-  const submit = async (e) => {
-    e.preventDefault();
-    setSaving(true);
-    setSaved(false);
-    try {
-      await api.patch('/admin/settings', form);
-      setSaved(true);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  if (!form) return <div className="text-slate-400 text-sm py-10 text-center">Loading…</div>;
-
-  return (
-    <form onSubmit={submit} className="card p-5 space-y-4 max-w-lg">
-      <div>
-        <label className="label">Company / workspace name</label>
-        <input className="input" value={form.name || ''} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
-      </div>
-      <div>
-        <label className="label">Support email</label>
-        <input className="input" type="email" value={form.support_email || ''} onChange={(e) => setForm({ ...form, support_email: e.target.value })} placeholder="support@yourcompany.com" />
-      </div>
-      <div>
-        <label className="label">Timezone</label>
-        <input className="input" value={form.timezone || ''} onChange={(e) => setForm({ ...form, timezone: e.target.value })} placeholder="e.g. Asia/Kolkata" />
-      </div>
-      <div>
-        <label className="label">Default ticket priority</label>
-        <select className="input" value={form.default_priority || 'medium'} onChange={(e) => setForm({ ...form, default_priority: e.target.value })}>
-          {['low', 'medium', 'high', 'critical'].map((p) => <option key={p} value={p}>{p}</option>)}
-        </select>
-      </div>
-      <div className="flex items-center gap-3 pt-2">
-        <button type="submit" disabled={saving} className="btn-primary">
-          {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Save
-        </button>
-        {saved && <span className="text-sm text-emerald-600">Saved.</span>}
-      </div>
-    </form>
-  );
-}
-
-function AddUserModal({ onClose, onSaved }) {
+function AddUserModal({ onClose, onSaved, groups }) {
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
   const [role, setRole] = useState('agent');
-  const [team, setTeam] = useState('');
+  const [groupId, setGroupId] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -86,7 +32,8 @@ function AddUserModal({ onClose, onSaved }) {
     setSaving(true);
     setError('');
     try {
-      await api.post('/auth/users', { email, name, password, role, team: team || null });
+      const { id } = await api.post('/auth/users', { email, name, password, role });
+      if (groupId) await api.post(`/groups/${groupId}/members`, { user_id: id });
       onSaved();
     } catch (e) {
       setError(e.message);
@@ -121,8 +68,11 @@ function AddUserModal({ onClose, onSaved }) {
             </select>
           </div>
           <div>
-            <label className="label">Team (optional)</label>
-            <input className="input" value={team} onChange={(e) => setTeam(e.target.value)} />
+            <label className="label">Group (optional)</label>
+            <select className="input" value={groupId} onChange={(e) => setGroupId(e.target.value)}>
+              <option value="">None</option>
+              {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+            </select>
           </div>
         </div>
         <div className="flex justify-end gap-2 pt-2">
@@ -189,7 +139,7 @@ function UsersTab() {
                   </div>
                   <button type="button" className="min-w-0 flex-1 text-left" onClick={() => setExpanded(isOpen ? null : u.id)}>
                     <div className="text-sm font-medium text-slate-800 dark:text-slate-100 truncate">{u.name}</div>
-                    <div className="text-xs text-slate-500 truncate">{u.email}{u.team ? ` · ${u.team}` : ''}</div>
+                    <div className="text-xs text-slate-500 truncate">{u.email}{memberOf.length ? ` · ${memberOf.map((g) => g.name).join(', ')}` : ''}</div>
                   </button>
                   <select
                     className="input w-auto py-1 text-xs"
@@ -215,7 +165,6 @@ function UsersTab() {
                 {isOpen && (
                   <div className="px-4 pb-4 pt-0.5 grid grid-cols-2 gap-x-6 gap-y-1.5 text-sm">
                     <div><span className="text-slate-400">Email:</span> <span className="text-slate-700 dark:text-slate-200">{u.email}</span></div>
-                    <div><span className="text-slate-400">Team:</span> <span className="text-slate-700 dark:text-slate-200">{u.team || '—'}</span></div>
                     <div><span className="text-slate-400">Joined:</span> <span className="text-slate-700 dark:text-slate-200">{u.created_at ? new Date(u.created_at).toLocaleDateString() : '—'}</span></div>
                     <div><span className="text-slate-400">Status:</span> <span className="text-slate-700 dark:text-slate-200">{u.active ? 'Active' : 'Deactivated'}</span></div>
                     <div className="col-span-2">
@@ -233,7 +182,7 @@ function UsersTab() {
       )}
 
       {showAdd && (
-        <AddUserModal onClose={() => setShowAdd(false)} onSaved={() => { setShowAdd(false); load(); }} />
+        <AddUserModal onClose={() => setShowAdd(false)} onSaved={() => { setShowAdd(false); load(); }} groups={groups} />
       )}
     </div>
   );
@@ -445,10 +394,13 @@ function WorkspacesTab() {
   useEffect(() => { load(); }, []);
 
   const remove = async (ws) => {
-    if (workspaces.length <= 1) { alert('At least one workspace must remain.'); return; }
-    if (!confirm(`Delete workspace "${ws.name}"? Tickets/users already labeled with it keep that label.`)) return;
-    await api.del(`/workspaces/${ws.id}`);
-    load();
+    if (!confirm(`Delete workspace "${ws.name}"? All of its tickets, assets, groups and users lose access to this workspace.`)) return;
+    try {
+      await api.del(`/workspaces/${ws.id}`);
+      load();
+    } catch (e) {
+      alert(e.message);
+    }
   };
 
   if (!workspaces) return <div className="text-slate-400 text-sm py-10 text-center">Loading…</div>;
@@ -456,7 +408,7 @@ function WorkspacesTab() {
   return (
     <div className="space-y-3">
       <p className="text-sm text-slate-500 dark:text-slate-400">
-        Workspaces are shared labels used to organize tickets and users — everyone can see everything regardless of which workspace is currently selected.
+        Each workspace is fully isolated — its tickets, assets, groups and users are only visible to people who belong to it. You'll only see workspaces you're a member of below.
       </p>
       <div className="flex justify-end">
         <button onClick={() => setModal('new')} className="btn-primary"><Plus size={14} /> New workspace</button>
@@ -488,6 +440,7 @@ function WorkspacesTab() {
 
 const TICKET_TYPES = ['incident', 'request', 'problem', 'change'];
 const COMMON_FIELDS = ['category', 'subcategory', 'team', 'impact', 'risk', 'planned_start', 'planned_end', 'rollback_plan'];
+const FIELD_DISPLAY_LABELS = { team: 'Group' };
 
 function FieldRulesTab() {
   const [ticketType, setTicketType] = useState('change');
@@ -538,7 +491,7 @@ function FieldRulesTab() {
             const required = rule ? !!rule.required : false;
             return (
               <div key={field} className="flex items-center gap-4 px-4 py-3">
-                <div className="flex-1 text-sm font-medium text-slate-700 dark:text-slate-200 capitalize">{field.replace('_', ' ')}</div>
+                <div className="flex-1 text-sm font-medium text-slate-700 dark:text-slate-200 capitalize">{FIELD_DISPLAY_LABELS[field] || field.replace('_', ' ')}</div>
                 <label className="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-300">
                   <input type="checkbox" checked={visible} onChange={(e) => setRule(field, { visible: e.target.checked })} /> Visible
                 </label>
@@ -604,7 +557,7 @@ export default function AdminSettings() {
     <div className="space-y-4">
       {section === null ? (
         <>
-          <PageHeader title="Admin Settings" description="Company profile, users, groups, workspaces, workflows and business rules" />
+          <PageHeader title="Admin Settings" description="Users, groups, workspaces, workflows and business rules" />
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {SECTIONS.map((s) => (
               <HubCard key={s.key} section={s} count={counts[s.key]} onClick={() => setSection(s.key)} />
@@ -629,7 +582,6 @@ export default function AdminSettings() {
             )}
           </div>
 
-          {section === 'profile' && <CompanyProfileTab />}
           {section === 'users' && <UsersTab />}
           {section === 'groups' && <GroupsTab />}
           {section === 'workspaces' && <WorkspacesTab />}

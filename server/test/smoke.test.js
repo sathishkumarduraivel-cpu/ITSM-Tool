@@ -15,32 +15,29 @@ test('decrypt() passes through legacy plaintext values unchanged', () => {
   assert.equal(decrypt('not-encrypted-yet'), 'not-encrypted-yet');
 });
 
-test('ticket numbering increments sequentially per type, globally', () => {
-  const before = nextTicketNumber('incident');
-  const beforeSeq = parseInt(before.split('-')[1], 10);
-  const next = nextTicketNumber('incident');
-  const nextSeq = parseInt(next.split('-')[1], 10);
-  assert.ok(before.startsWith('INC-'));
-  assert.equal(nextSeq, beforeSeq + 1);
-
-  const reqNumber = nextTicketNumber('request');
-  assert.ok(reqNumber.startsWith('REQ-'));
-});
-
-test('there is no workspace isolation — tickets are visible regardless of their workspace label', () => {
+test('ticket numbering increments sequentially per type, independently per workspace', () => {
   const wsA = `ws_test_${Date.now()}_a`;
   const wsB = `ws_test_${Date.now()}_b`;
+  assert.equal(nextTicketNumber(wsA, 'incident'), 'INC-1000');
+  assert.equal(nextTicketNumber(wsA, 'incident'), 'INC-1001');
+  assert.equal(nextTicketNumber(wsA, 'request'), 'REQ-1000');
+  // A different workspace's counter starts fresh, independent of wsA's.
+  assert.equal(nextTicketNumber(wsB, 'incident'), 'INC-1000');
+});
+
+test('workspace-scoped queries cannot see another workspace\'s rows', () => {
+  const ws1 = `ws_test_${Date.now()}_iso1`;
+  const ws2 = `ws_test_${Date.now()}_iso2`;
   const ticketId = `tkt_test_${Date.now()}`;
   db.prepare(
     'INSERT INTO tickets (id, workspace_id, number, type, title) VALUES (?,?,?,?,?)'
-  ).run(ticketId, wsA, 'INC-9001', 'incident', 'isolation test');
+  ).run(ticketId, ws1, 'INC-9001', 'incident', 'isolation test');
 
-  // The application no longer filters ticket reads by workspace_id, so a plain
-  // lookup by id succeeds regardless of which workspace label is "current".
-  const found = db.prepare('SELECT * FROM tickets WHERE id = ?').get(ticketId);
-  assert.ok(found, 'ticket should be readable without any workspace filter');
-  assert.equal(found.workspace_id, wsA);
-  assert.notEqual(found.workspace_id, wsB);
+  const sameWorkspace = db.prepare('SELECT * FROM tickets WHERE id = ? AND workspace_id = ?').get(ticketId, ws1);
+  const otherWorkspace = db.prepare('SELECT * FROM tickets WHERE id = ? AND workspace_id = ?').get(ticketId, ws2);
+
+  assert.ok(sameWorkspace, 'ticket should be visible within its own workspace');
+  assert.equal(otherWorkspace, undefined, 'ticket must not be visible from a different workspace');
 
   db.prepare('DELETE FROM tickets WHERE id = ?').run(ticketId);
 });

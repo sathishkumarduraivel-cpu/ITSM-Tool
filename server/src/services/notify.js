@@ -55,9 +55,9 @@ export async function sendIntegrationMessage(integration, payload) {
   }
 }
 
-export function getEnabledIntegrations(type) {
+export function getEnabledIntegrations(workspaceId, type) {
   const rows = db.prepare(
-    'SELECT * FROM integrations WHERE enabled = 1' + (type ? ' AND type = ?' : '')
-  ).all(...(type ? [type] : []));
+    'SELECT * FROM integrations WHERE workspace_id = ? AND enabled = 1' + (type ? ' AND type = ?' : '')
+  ).all(...(type ? [workspaceId, type] : [workspaceId]));
   return rows;
 }

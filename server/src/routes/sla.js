@@ -1,12 +1,12 @@
 import { Router } from 'express';
 import { db, uid } from '../db.js';
-import { requireAuth, attachWorkspace, requireRole } from '../middleware/auth.js';
+import { requireAuth, requireWorkspace, requireRole } from '../middleware/auth.js';
 
 const router = Router();
-router.use(requireAuth, attachWorkspace);
+router.use(requireAuth, requireWorkspace);
 
 router.get('/policies', (req, res) => {
-  res.json({ policies: db.prepare('SELECT * FROM sla_policies ORDER BY created_at DESC').all() });
+  res.json({ policies: db.prepare('SELECT * FROM sla_policies WHERE workspace_id = ? ORDER BY created_at DESC').all(req.workspaceId) });
 });
 
 router.post('/policies', requireRole('admin'), (req, res) => {
@@ -21,7 +21,7 @@ router.post('/policies', requireRole('admin'), (req, res) => {
 });
 
 router.patch('/policies/:id', requireRole('admin'), (req, res) => {
-  const row = db.prepare('SELECT * FROM sla_policies WHERE id = ?').get(req.params.id);
+  const row = db.prepare('SELECT * FROM sla_policies WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspaceId);
   if (!row) return res.status(404).json({ error: 'Not found' });
   const allowed = ['name', 'priority', 'category', 'team', 'response_minutes', 'resolution_minutes', 'business_hours_only', 'enabled'];
   const fields = []; const params = [];
@@ -38,19 +38,19 @@ router.patch('/policies/:id', requireRole('admin'), (req, res) => {
 });
 
 router.delete('/policies/:id', requireRole('admin'), (req, res) => {
-  const row = db.prepare('SELECT id FROM sla_policies WHERE id = ?').get(req.params.id);
+  const row = db.prepare('SELECT id FROM sla_policies WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspaceId);
   if (!row) return res.status(404).json({ error: 'Not found' });
   db.prepare('DELETE FROM sla_policies WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
 });
 
 router.get('/business-hours', (req, res) => {
-  res.json({ businessHours: db.prepare('SELECT * FROM business_hours ORDER BY day_of_week').all() });
+  res.json({ businessHours: db.prepare('SELECT * FROM business_hours WHERE workspace_id = ? ORDER BY day_of_week').all(req.workspaceId) });
 });
 
 router.put('/business-hours', requireRole('admin'), (req, res) => {
   const { hours = [] } = req.body; // [{day_of_week, start_time, end_time}]
-  db.prepare('DELETE FROM business_hours').run();
+  db.prepare('DELETE FROM business_hours WHERE workspace_id = ?').run(req.workspaceId);
   for (const h of hours) {
     db.prepare('INSERT INTO business_hours (id, workspace_id, day_of_week, start_time, end_time) VALUES (?,?,?,?,?)').run(
       uid('bh'), req.workspaceId, h.day_of_week, h.start_time, h.end_time
@@ -64,13 +64,13 @@ router.get('/at-risk', (req, res) => {
   const rows = db.prepare(`
     SELECT id, number, title, priority, status, sla_due_at, response_due_at, responded_at
     FROM tickets
-    WHERE status NOT IN ('resolved', 'closed')
+    WHERE workspace_id = ? AND status NOT IN ('resolved', 'closed')
       AND (
         sla_due_at < datetime('now', '+2 hours')
         OR (response_due_at < datetime('now') AND responded_at IS NULL)
       )
     ORDER BY sla_due_at ASC
-  `).all();
+  `).all(req.workspaceId);
   res.json({ tickets: rows });
 });
 

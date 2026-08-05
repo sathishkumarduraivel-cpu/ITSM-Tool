@@ -6,7 +6,7 @@ import PageHeader from '../components/PageHeader.jsx';
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-function PolicyModal({ initial, onClose, onSaved }) {
+function PolicyModal({ initial, onClose, onSaved, groups }) {
   const [form, setForm] = useState({
     name: initial?.name || '', priority: initial?.priority || '', category: initial?.category || '', team: initial?.team || '',
     response_minutes: initial?.response_minutes ?? 60, resolution_minutes: initial?.resolution_minutes ?? 1440,
@@ -51,8 +51,11 @@ function PolicyModal({ initial, onClose, onSaved }) {
             <input className="input" value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} />
           </div>
           <div>
-            <label className="label">Team (optional)</label>
-            <input className="input" value={form.team} onChange={(e) => setForm({ ...form, team: e.target.value })} />
+            <label className="label">Group (optional)</label>
+            <select className="input" value={form.team} onChange={(e) => setForm({ ...form, team: e.target.value })}>
+              <option value="">Any</option>
+              {groups.map((g) => <option key={g.id} value={g.name}>{g.name}</option>)}
+            </select>
           </div>
         </div>
         <div className="grid grid-cols-2 gap-3">
@@ -89,16 +92,19 @@ export default function SlaPolicies() {
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null); // null | 'new' | policy
   const [savingHours, setSavingHours] = useState(false);
+  const [groups, setGroups] = useState([]);
 
   const load = async () => {
     setLoading(true);
-    const [pol, risk, hours] = await Promise.all([
+    const [pol, risk, hours, groupsRes] = await Promise.all([
       api.get('/sla/policies'),
       api.get('/sla/at-risk'),
       api.get('/sla/business-hours'),
+      api.get('/groups'),
     ]);
     setPolicies(pol.policies);
     setAtRisk(risk.tickets);
+    setGroups(groupsRes.groups);
     if (hours.businessHours.length) {
       setBusinessHours(DAYS.map((_, i) => {
         const existing = hours.businessHours.find((h) => h.day_of_week === i);
@@ -169,7 +175,7 @@ export default function SlaPolicies() {
               <tr key={p.id} className="border-t border-slate-100 dark:border-slate-800">
                 <td className="px-4 py-2.5 font-medium text-slate-800 dark:text-slate-100">{p.name}</td>
                 <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300 text-xs">
-                  {[p.priority && `priority=${p.priority}`, p.category && `category=${p.category}`, p.team && `team=${p.team}`].filter(Boolean).join(', ') || 'any ticket'}
+                  {[p.priority && `priority=${p.priority}`, p.category && `category=${p.category}`, p.team && `group=${p.team}`].filter(Boolean).join(', ') || 'any ticket'}
                 </td>
                 <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">{p.response_minutes}m</td>
                 <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">{p.resolution_minutes}m</td>
@@ -205,7 +211,7 @@ export default function SlaPolicies() {
         </button>
       </div>
 
-      {modal && <PolicyModal initial={modal === 'new' ? null : modal} onClose={() => setModal(null)} onSaved={() => { setModal(null); load(); }} />}
+      {modal && <PolicyModal initial={modal === 'new' ? null : modal} onClose={() => setModal(null)} onSaved={() => { setModal(null); load(); }} groups={groups} />}
     </div>
   );
 }

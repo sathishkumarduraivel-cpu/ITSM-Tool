@@ -76,6 +76,7 @@ export default function TicketDetail() {
   const [fieldError, setFieldError] = useState('');
   const [attachments, setAttachments] = useState([]);
   const [uploading, setUploading] = useState(false);
+  const [groups, setGroups] = useState([]);
 
   const load = async () => {
     const data = await api.get(`/tickets/${id}`);
@@ -129,7 +130,10 @@ export default function TicketDetail() {
 
   useEffect(() => {
     load();
-    if (isAgent) api.get('/assets').then(({ assets }) => setAllAssets(assets));
+    if (isAgent) {
+      api.get('/assets').then(({ assets }) => setAllAssets(assets));
+      api.get('/groups').then(({ groups }) => setGroups(groups));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
@@ -395,8 +399,14 @@ export default function TicketDetail() {
               <input className="input" disabled={!isAgent} defaultValue={ticket.category || ''} onBlur={(e) => updateField('category', e.target.value)} />
             </div>
             <div>
-              <label className="label">Team</label>
-              <input className="input" disabled={!isAgent} defaultValue={ticket.team || ''} onBlur={(e) => updateField('team', e.target.value)} />
+              <label className="label">Group</label>
+              <select className="input" disabled={!isAgent} value={ticket.team || ''} onChange={(e) => updateField('team', e.target.value)}>
+                <option value="">Unassigned</option>
+                {groups.map((g) => <option key={g.id} value={g.name}>{g.name}</option>)}
+                {ticket.team && !groups.some((g) => g.name === ticket.team) && (
+                  <option value={ticket.team}>{ticket.team}</option>
+                )}
+              </select>
             </div>
             <div className="flex items-center gap-2 pt-1">
               <StatusBadge status={ticket.status} />

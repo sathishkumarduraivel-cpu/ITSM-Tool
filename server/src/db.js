@@ -378,9 +378,12 @@ CREATE TABLE IF NOT EXISTS attachments (
   FOREIGN KEY (uploaded_by) REFERENCES users(id)
 );
 
--- ---- Agent groups (Freshservice-style "Groups" — a named team of agents) ----
+-- ---- Agent groups (Freshservice-style "Groups" — a named team of agents,
+-- scoped to a single workspace so a group configured under one workspace is
+-- never visible/selectable from another) ----
 CREATE TABLE IF NOT EXISTS groups (
   id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
   name TEXT NOT NULL,
   description TEXT,
   created_at TEXT DEFAULT (datetime('now'))
@@ -430,6 +433,7 @@ const ticketColumnMigrations = [
   "ALTER TABLE ai_providers ADD COLUMN workspace_id TEXT",
   "ALTER TABLE notification_templates ADD COLUMN workspace_id TEXT",
   "ALTER TABLE notifications ADD COLUMN workspace_id TEXT",
+  "ALTER TABLE groups ADD COLUMN workspace_id TEXT",
 ];
 for (const sql of ticketColumnMigrations) {
   try {
@@ -486,7 +490,7 @@ const tenantTables = [
   'tickets', 'assets', 'kb_articles', 'automations', 'integrations',
   'catalog_categories', 'catalog_items', 'sla_policies', 'business_hours',
   'contracts', 'purchase_orders', 'ai_providers', 'notification_templates',
-  'notifications', 'ticket_field_rules', 'attachments',
+  'notifications', 'ticket_field_rules', 'attachments', 'groups',
 ];
 for (const table of tenantTables) {
   try {
@@ -496,20 +500,16 @@ for (const table of tenantTables) {
   }
 }
 
-// Ticket numbering is global (no per-workspace isolation) — seed the global
-// counter from the highest existing ticket number per type, across every row
-// regardless of workspace, so numbering continues rather than resetting and
-// colliding with already-issued numbers.
-const GLOBAL_COUNTER_KEY = '_global';
+// seed ticket_counters from existing ticket numbers so numbering continues rather than resetting
 const TYPE_PREFIX = { incident: 'INC', request: 'REQ', problem: 'PRB', change: 'CHG' };
 for (const type of Object.keys(TYPE_PREFIX)) {
-  const existing = db.prepare('SELECT seq FROM ticket_counters WHERE workspace_id = ? AND type = ?').get(GLOBAL_COUNTER_KEY, type);
+  const existing = db.prepare('SELECT seq FROM ticket_counters WHERE workspace_id = ? AND type = ?').get(DEFAULT_WORKSPACE_ID, type);
   if (!existing) {
     let maxSeq = 999;
-    for (const row of db.prepare('SELECT number FROM tickets WHERE type = ?').all(type)) {
+    for (const row of db.prepare('SELECT number FROM tickets WHERE workspace_id = ? AND type = ?').all(DEFAULT_WORKSPACE_ID, type)) {
       const m = /(\d+)$/.exec(row.number || '');
       if (m) maxSeq = Math.max(maxSeq, parseInt(m[1], 10));
     }
-    db.prepare('INSERT INTO ticket_counters (workspace_id, type, seq) VALUES (?,?,?)').run(GLOBAL_COUNTER_KEY, type, maxSeq);
+    db.prepare('INSERT INTO ticket_counters (workspace_id, type, seq) VALUES (?,?,?)').run(DEFAULT_WORKSPACE_ID, type, maxSeq);
   }
 }

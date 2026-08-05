@@ -1,11 +1,11 @@
 import { Router } from 'express';
 import { db, uid } from '../db.js';
-import { requireAuth, attachWorkspace } from '../middleware/auth.js';
+import { requireAuth, requireWorkspace } from '../middleware/auth.js';
 import { notifyUser, renderTemplate } from '../services/notifications.js';
 import { resolveTicketAfterApprovalChange } from '../services/approvalEngine.js';
 
 const router = Router();
-router.use(requireAuth, attachWorkspace);
+router.use(requireAuth, requireWorkspace);
 
 // Approvals visible to me: explicitly assigned to me, or assigned to my role with no specific approver yet.
 router.get('/', (req, res) => {
@@ -15,9 +15,9 @@ router.get('/', (req, res) => {
     FROM approvals a
     JOIN tickets t ON t.id = a.ticket_id
     LEFT JOIN users u ON u.id = t.requester_id
-    WHERE 1=1
+    WHERE t.workspace_id = ?
   `;
-  const params = [];
+  const params = [req.workspaceId];
   if (status) { sql += ' AND a.status = ?'; params.push(status); }
   if (ticket_id) { sql += ' AND a.ticket_id = ?'; params.push(ticket_id); }
   if (type) { sql += ' AND t.type = ?'; params.push(type); }
@@ -31,14 +31,16 @@ router.get('/', (req, res) => {
 });
 
 router.post('/:id/decide', (req, res) => {
-  const approval = db.prepare('SELECT * FROM approvals WHERE id = ?').get(req.params.id);
+  const approval = db.prepare(
+    `SELECT a.* FROM approvals a JOIN tickets t ON t.id = a.ticket_id WHERE a.id = ? AND t.workspace_id = ?`
+  ).get(req.params.id, req.workspaceId);
   if (!approval) return res.status(404).json({ error: 'Not found' });
   const { status, comments = '' } = req.body;
   if (!['approved', 'rejected'].includes(status)) return res.status(400).json({ error: 'status must be approved or rejected' });
 
   db.prepare("UPDATE approvals SET status = ?, comments = ?, decided_at = datetime('now') WHERE id = ?").run(status, comments, req.params.id);
 
-  const ticket = db.prepare('SELECT * FROM tickets WHERE id = ?').get(approval.ticket_id);
+  const ticket = db.prepare('SELECT * FROM tickets WHERE id = ? AND workspace_id = ?').get(approval.ticket_id, req.workspaceId);
   if (ticket) {
     if (status === 'rejected') {
       const isChange = ticket.type === 'change';
@@ -46,10 +48,10 @@ router.post('/:id/decide', (req, res) => {
         `UPDATE tickets SET status = ?, ${isChange ? 'cab_status' : 'status'} = ?, updated_at = datetime('now') WHERE id = ?`
       ).run('closed', 'rejected', ticket.id);
       db.prepare('INSERT INTO ticket_history (id, ticket_id, event, detail) VALUES (?,?,?,?)').run(uid('h'), ticket.id, 'approval_rejected', comments || 'Rejected');
-      const tpl = renderTemplate('change_rejected', { number: ticket.number, title: ticket.title });
-      notifyUser(ticket.requester_id, tpl?.subject || 'Request rejected', tpl?.body || `${ticket.number} — ${ticket.title} was rejected. ${comments || ''}`, `/tickets/${ticket.id}`);
+      const tpl = renderTemplate('change_rejected', { number: ticket.number, title: ticket.title }, req.workspaceId);
+      notifyUser(ticket.requester_id, tpl?.subject || 'Request rejected', tpl?.body || `${ticket.number} — ${ticket.title} was rejected. ${comments || ''}`, `/tickets/${ticket.id}`, req.workspaceId);
     } else {
-      resolveTicketAfterApprovalChange(ticket.id);
+      resolveTicketAfterApprovalChange(ticket.id, req.workspaceId);
     }
   }
 

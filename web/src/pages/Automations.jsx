@@ -12,6 +12,7 @@ const EVENTS = [
 ];
 
 const FIELDS = ['priority', 'status', 'type', 'category', 'team', 'title', 'description'];
+const FIELD_LABELS = { team: 'group' };
 const OPS = [
   { value: 'equals', label: 'equals' },
   { value: 'not_equals', label: 'does not equal' },
@@ -27,7 +28,7 @@ const FIELD_ENUMS = {
   type: ['incident', 'request', 'problem', 'change'],
 };
 
-function ConditionValueInput({ field, value, onChange, teams }) {
+function ConditionValueInput({ field, value, onChange, groups }) {
   if (FIELD_ENUMS[field]) {
     return (
       <select className="input" value={value} onChange={(e) => onChange(e.target.value)}>
@@ -36,11 +37,11 @@ function ConditionValueInput({ field, value, onChange, teams }) {
       </select>
     );
   }
-  if (field === 'team' && teams.length > 0) {
+  if (field === 'team' && groups.length > 0) {
     return (
       <select className="input" value={value} onChange={(e) => onChange(e.target.value)}>
-        <option value="">Select team…</option>
-        {teams.map((t) => <option key={t} value={t}>{t}</option>)}
+        <option value="">Select group…</option>
+        {groups.map((g) => <option key={g.id} value={g.name}>{g.name}</option>)}
       </select>
     );
   }
@@ -50,7 +51,7 @@ function ConditionValueInput({ field, value, onChange, teams }) {
 const ACTION_TYPES = [
   { value: 'set_priority', label: 'Set priority' },
   { value: 'set_status', label: 'Set status' },
-  { value: 'assign_team', label: 'Assign to team' },
+  { value: 'assign_team', label: 'Assign to group' },
   { value: 'assign_agent', label: 'Assign to agent' },
   { value: 'tag_category', label: 'Set category' },
   { value: 'add_comment', label: 'Add comment' },
@@ -64,7 +65,7 @@ function emptyAction(type = 'set_priority') {
   return { type };
 }
 
-function ActionEditor({ action, onChange, onRemove, agents, integrations }) {
+function ActionEditor({ action, onChange, onRemove, agents, integrations, groups }) {
   const set = (patch) => onChange({ ...action, ...patch });
   return (
     <div className="border border-slate-200 rounded-lg p-3 space-y-2 bg-slate-50">
@@ -86,7 +87,10 @@ function ActionEditor({ action, onChange, onRemove, agents, integrations }) {
         </select>
       )}
       {action.type === 'assign_team' && (
-        <input className="input" placeholder="Team name" value={action.team || ''} onChange={(e) => set({ team: e.target.value })} />
+        <select className="input" value={action.team || ''} onChange={(e) => set({ team: e.target.value })}>
+          <option value="">Select group…</option>
+          {groups.map((g) => <option key={g.id} value={g.name}>{g.name}</option>)}
+        </select>
       )}
       {action.type === 'assign_agent' && (
         <select className="input" value={action.agent_id || ''} onChange={(e) => set({ agent_id: e.target.value })}>
@@ -122,7 +126,7 @@ function ActionEditor({ action, onChange, onRemove, agents, integrations }) {
   );
 }
 
-function WorkflowModal({ initial, onClose, onSaved, agents, integrations, teams }) {
+function WorkflowModal({ initial, onClose, onSaved, agents, integrations, groups }) {
   const [name, setName] = useState(initial?.name || '');
   const [description, setDescription] = useState(initial?.description || '');
   const [event, setEvent] = useState(initial?.trigger?.event || 'ticket_created');
@@ -186,13 +190,13 @@ function WorkflowModal({ initial, onClose, onSaved, agents, integrations, teams 
             {conditions.map((c, i) => (
               <div key={i} className="flex gap-2 items-center">
                 <select className="input w-auto" value={c.field} onChange={(e) => updateCondition(i, { field: e.target.value })}>
-                  {FIELDS.map((f) => <option key={f} value={f}>{f}</option>)}
+                  {FIELDS.map((f) => <option key={f} value={f}>{FIELD_LABELS[f] || f}</option>)}
                 </select>
                 <select className="input w-auto" value={c.op} onChange={(e) => updateCondition(i, { op: e.target.value })}>
                   {OPS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
                 <div className="flex-1">
-                  <ConditionValueInput field={c.field} value={c.value} onChange={(v) => updateCondition(i, { value: v })} teams={teams} />
+                  <ConditionValueInput field={c.field} value={c.value} onChange={(v) => updateCondition(i, { value: v })} groups={groups} />
                 </div>
                 <button type="button" onClick={() => removeCondition(i)} className="text-slate-400 hover:text-red-500 shrink-0"><Trash2 size={15} /></button>
               </div>
@@ -214,6 +218,7 @@ function WorkflowModal({ initial, onClose, onSaved, agents, integrations, teams 
                 onRemove={() => removeAction(i)}
                 agents={agents}
                 integrations={integrations}
+                groups={groups}
               />
             ))}
           </div>
@@ -234,23 +239,23 @@ export default function Automations() {
   const [workflows, setWorkflows] = useState([]);
   const [agents, setAgents] = useState([]);
   const [integrations, setIntegrations] = useState([]);
-  const [teams, setTeams] = useState([]);
+  const [groups, setGroups] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null); // null | 'new' | workflow object
   const [expanded, setExpanded] = useState(null);
 
   const load = async () => {
     setLoading(true);
-    const [wf, users, integ, teamsRes] = await Promise.all([
+    const [wf, users, integ, groupsRes] = await Promise.all([
       api.get('/automations'),
       api.get('/auth/users'),
       api.get('/integrations'),
-      api.get('/tickets/teams'),
+      api.get('/groups'),
     ]);
     setWorkflows(wf.automations);
     setAgents(users.users.filter((u) => u.role === 'agent' || u.role === 'admin'));
     setIntegrations(integ.integrations);
-    setTeams(teamsRes.teams);
+    setGroups(groupsRes.groups);
     setLoading(false);
   };
 
@@ -309,7 +314,7 @@ export default function Automations() {
                 <div>
                   <span className="text-slate-500">Conditions: </span>
                   {wf.conditions.length === 0 ? <span className="text-slate-400">always runs</span> : (
-                    <span className="text-slate-700">{wf.conditions.map((c) => `${c.field} ${c.op} "${c.value}"`).join('  AND  ')}</span>
+                    <span className="text-slate-700">{wf.conditions.map((c) => `${FIELD_LABELS[c.field] || c.field} ${c.op} "${c.value}"`).join('  AND  ')}</span>
                   )}
                 </div>
                 <div>
@@ -330,7 +335,7 @@ export default function Automations() {
           onSaved={() => { setModal(null); load(); }}
           agents={agents}
           integrations={integrations}
-          teams={teams}
+          groups={groups}
         />
       )}
     </div>

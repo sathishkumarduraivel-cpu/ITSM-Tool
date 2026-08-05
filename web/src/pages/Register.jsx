@@ -1,12 +1,12 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { Building2, Loader2 } from 'lucide-react';
+import { UserPlus, Loader2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
 
 export default function Register() {
   const { register } = useAuth();
   const navigate = useNavigate();
-  const [form, setForm] = useState({ workspace_name: '', name: '', email: '', password: '' });
+  const [form, setForm] = useState({ name: '', email: '', password: '' });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -42,16 +42,12 @@ export default function Register() {
 
         <form onSubmit={submit} className="card p-6 space-y-4 shadow-popover dark:shadow-popover-dark">
           <div>
-            <h1 className="text-lg font-display font-semibold text-slate-800 dark:text-slate-100">Create a new workspace</h1>
-            <p className="text-sm text-slate-500 dark:text-slate-400">You'll become the admin of this workspace.</p>
+            <h1 className="text-lg font-display font-semibold text-slate-800 dark:text-slate-100">Create an account</h1>
+            <p className="text-sm text-slate-500 dark:text-slate-400">You'll be added to the default workspace as a requester — an admin can move you to a different workspace or change your role later.</p>
           </div>
 
           {error && <div className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 border border-red-100 dark:border-red-900 rounded-lg px-3 py-2">{error}</div>}
 
-          <div>
-            <label className="label">Workspace name</label>
-            <input className="input" required value={form.workspace_name} onChange={(e) => setForm({ ...form, workspace_name: e.target.value })} placeholder="e.g. Acme Corp" />
-          </div>
           <div>
             <label className="label">Your name</label>
             <input className="input" required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
@@ -66,8 +62,8 @@ export default function Register() {
           </div>
 
           <button type="submit" disabled={loading} className="btn-primary w-full justify-center">
-            {loading ? <Loader2 size={16} className="animate-spin" /> : <Building2 size={16} />}
-            Create workspace
+            {loading ? <Loader2 size={16} className="animate-spin" /> : <UserPlus size={16} />}
+            Create account
           </button>
 
           <div className="text-center text-sm">

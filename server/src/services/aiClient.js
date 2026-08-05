@@ -7,13 +7,13 @@ import fetch from 'node-fetch';
 import { db } from '../db.js';
 import { decrypt } from './crypto.js';
 
-export function getProvider(providerId) {
+export function getProvider(workspaceId, providerId) {
   let row = null;
   if (providerId) {
-    row = db.prepare('SELECT * FROM ai_providers WHERE id = ?').get(providerId);
+    row = db.prepare('SELECT * FROM ai_providers WHERE id = ? AND workspace_id = ?').get(providerId, workspaceId);
   }
   if (!row) {
-    row = db.prepare('SELECT * FROM ai_providers WHERE is_default = 1 ORDER BY created_at DESC LIMIT 1').get();
+    row = db.prepare('SELECT * FROM ai_providers WHERE workspace_id = ? AND is_default = 1 ORDER BY created_at DESC LIMIT 1').get(workspaceId);
   }
   if (!row) return null;
   return { ...row, api_key: decrypt(row.api_key) };

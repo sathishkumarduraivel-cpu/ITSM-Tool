@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { ChevronsUpDown, Check, Building2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
 
-export default function WorkspaceSwitcher() {
+export default function WorkspaceSwitcher({ collapsed = false }) {
   const { user, workspaces, switchWorkspace } = useAuth();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -35,20 +35,25 @@ export default function WorkspaceSwitcher() {
       <button
         onClick={() => setOpen((o) => !o)}
         disabled={busy}
-        className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
+        title={collapsed ? user.workspace_name || 'Workspace' : undefined}
+        className={`w-full flex items-center gap-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-left ${collapsed ? 'justify-center px-0 py-1.5' : 'px-2 py-1.5'}`}
       >
         <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center text-white font-bold text-sm shrink-0">
           <Building2 size={16} />
         </div>
-        <div className="leading-tight min-w-0 flex-1">
-          <div className="font-semibold text-slate-800 dark:text-slate-100 text-sm truncate">{user.workspace_name || 'Workspace'}</div>
-          <div className="text-[11px] text-slate-400">ITSM AI</div>
-        </div>
-        {workspaces.length > 1 && <ChevronsUpDown size={14} className="text-slate-400 shrink-0" />}
+        {!collapsed && (
+          <>
+            <div className="leading-tight min-w-0 flex-1">
+              <div className="font-semibold text-slate-800 dark:text-slate-100 text-sm truncate">{user.workspace_name || 'Workspace'}</div>
+              <div className="text-[11px] text-slate-400">ITSM AI</div>
+            </div>
+            {workspaces.length > 1 && <ChevronsUpDown size={14} className="text-slate-400 shrink-0" />}
+          </>
+        )}
       </button>
 
       {open && workspaces.length > 1 && (
-        <div className="absolute left-0 right-0 mt-1 card p-1 z-40 shadow-lg">
+        <div className={`absolute mt-1 card p-1 z-40 shadow-popover animate-pop-in ${collapsed ? 'left-0 w-56' : 'left-0 right-0'}`}>
           {workspaces.map((w) => (
             <button
               key={w.id}

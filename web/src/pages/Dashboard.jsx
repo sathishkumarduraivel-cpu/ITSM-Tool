@@ -24,7 +24,9 @@ function Widget({ widget, stats }) {
     const trendData = stats.last7days.map((d) => ({ date: d.d.slice(5), tickets: d.c }));
     return (
       <div className="card p-4 h-full">
-        <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3">{widget.label}</h3>
+        <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3 flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-brand-500" />{widget.label}
+        </h3>
         <ResponsiveContainer width="100%" height={220}>
           <LineChart data={trendData}>
             <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
@@ -41,7 +43,9 @@ function Widget({ widget, stats }) {
     const priorityData = stats.byPriority.map((p) => ({ name: p.priority, value: p.c }));
     return (
       <div className="card p-4 h-full">
-        <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3">{widget.label}</h3>
+        <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3 flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />{widget.label}
+        </h3>
         <ResponsiveContainer width="100%" height={220}>
           <PieChart>
             <Pie data={priorityData} dataKey="value" nameKey="name" innerRadius={45} outerRadius={75} paddingAngle={2}>
@@ -64,7 +68,9 @@ function Widget({ widget, stats }) {
     const statusData = stats.byStatus.map((s) => ({ name: s.status.replace('_', ' '), value: s.c }));
     return (
       <div className="card p-4 h-full">
-        <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3">{widget.label}</h3>
+        <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3 flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />{widget.label}
+        </h3>
         <ResponsiveContainer width="100%" height={200}>
           <BarChart data={statusData} layout="vertical" margin={{ left: 10 }}>
             <XAxis type="number" allowDecimals={false} tick={{ fontSize: 12 }} stroke="#94a3b8" />
@@ -242,15 +248,16 @@ export default function Dashboard() {
           </div>
         ))}
 
-        <div className="card p-4 bg-gradient-to-br from-brand-600 to-brand-800 text-white">
-          <div className="flex items-center justify-between mb-3">
+        <div className="relative card p-4 bg-gradient-to-br from-brand-600 via-brand-700 to-purple-800 text-white overflow-hidden border-none shadow-glow-brand">
+          <div className="pointer-events-none absolute -top-10 -right-10 w-40 h-40 rounded-full bg-white/10 blur-2xl" />
+          <div className="relative flex items-center justify-between mb-3">
             <h3 className="text-sm font-semibold flex items-center gap-1.5">
               <Sparkles size={15} /> AI Insights
             </h3>
             <button
               onClick={generateInsights}
               disabled={insightsLoading}
-              className="text-xs bg-white/15 hover:bg-white/25 rounded-md px-2 py-1 flex items-center gap-1"
+              className="text-xs bg-white/15 hover:bg-white/25 rounded-md px-2 py-1 flex items-center gap-1 transition-colors"
             >
               {insightsLoading ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
               Generate

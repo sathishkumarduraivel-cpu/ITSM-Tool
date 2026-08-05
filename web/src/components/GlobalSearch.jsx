@@ -3,11 +3,14 @@ import { useNavigate } from 'react-router-dom';
 import { Search, Ticket, Boxes, BookOpen, X } from 'lucide-react';
 import { api } from '../lib/api.js';
 
+const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+
 export default function GlobalSearch() {
   const [q, setQ] = useState('');
   const [results, setResults] = useState(null);
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
+  const inputRef = useRef(null);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -16,6 +19,22 @@ export default function GlobalSearch() {
     }
     document.addEventListener('mousedown', onDocClick);
     return () => document.removeEventListener('mousedown', onDocClick);
+  }, []);
+
+  useEffect(() => {
+    function onKeyDown(e) {
+      const isShortcut = (isMac ? e.metaKey : e.ctrlKey) && e.key.toLowerCase() === 'k';
+      if (isShortcut) {
+        e.preventDefault();
+        inputRef.current?.focus();
+      }
+      if (e.key === 'Escape') {
+        inputRef.current?.blur();
+        setOpen(false);
+      }
+    }
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
   }, []);
 
   useEffect(() => {
@@ -46,21 +65,26 @@ export default function GlobalSearch() {
       <div className="relative">
         <Search size={15} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
         <input
-          className="input pl-8 pr-7 py-1.5 text-sm"
+          ref={inputRef}
+          className="input pl-8 pr-14 py-1.5 text-sm bg-slate-100/70 dark:bg-slate-800/60 border-transparent focus:bg-white dark:focus:bg-slate-900"
           placeholder="Search tickets, assets, KB…"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onFocus={() => q && setOpen(true)}
         />
-        {q && (
+        {q ? (
           <button className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600" onClick={() => { setQ(''); setResults(null); }}>
             <X size={14} />
           </button>
+        ) : (
+          <kbd className="absolute right-2 top-1/2 -translate-y-1/2 hidden sm:flex items-center gap-0.5 text-[10px] font-medium text-slate-400 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded px-1.5 py-0.5 pointer-events-none">
+            {isMac ? '⌘' : 'Ctrl'}K
+          </kbd>
         )}
       </div>
 
       {open && q.trim() && (
-        <div className="absolute left-0 right-0 sm:w-96 mt-1 card p-2 z-40 shadow-lg max-h-96 overflow-y-auto">
+        <div className="absolute left-0 right-0 sm:w-96 mt-1.5 card p-2 z-40 shadow-popover animate-pop-in max-h-96 overflow-y-auto">
           {!hasResults && <div className="text-sm text-slate-400 px-2 py-3 text-center">No matches for "{q}"</div>}
 
           {results?.tickets.length > 0 && (

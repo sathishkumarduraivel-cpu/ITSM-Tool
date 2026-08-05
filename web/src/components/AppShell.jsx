@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import {
   LayoutDashboard,
@@ -17,6 +17,8 @@ import {
   Settings,
   Menu,
   X,
+  ChevronsLeft,
+  ChevronsRight,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
 import NotificationBell from './NotificationBell.jsx';
@@ -78,36 +80,44 @@ const PORTAL_NAV_GROUPS = [
 export default function AppShell({ children }) {
   const { user, logout } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem('itsm_sidebar_collapsed') === '1');
   const NAV_GROUPS = user?.role === 'requester' ? PORTAL_NAV_GROUPS : AGENT_NAV_GROUPS;
+
+  useEffect(() => {
+    localStorage.setItem('itsm_sidebar_collapsed', collapsed ? '1' : '0');
+  }, [collapsed]);
 
   return (
     <div className="h-screen flex bg-slate-50 dark:bg-slate-950">
       {sidebarOpen && (
-        <div className="fixed inset-0 bg-slate-900/40 z-30 lg:hidden" onClick={() => setSidebarOpen(false)} />
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-30 lg:hidden" onClick={() => setSidebarOpen(false)} />
       )}
 
       <aside
-        className={`w-64 shrink-0 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-col fixed inset-y-0 left-0 z-40 transition-transform duration-200 lg:static lg:translate-x-0 ${
+        className={`group/aside shrink-0 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-col fixed inset-y-0 left-0 z-40 transition-[transform,width] duration-200 ease-out lg:static lg:translate-x-0 ${
           sidebarOpen ? 'translate-x-0' : '-translate-x-full'
-        }`}
+        } ${collapsed ? 'lg:w-[76px]' : 'w-64 lg:w-64'}`}
       >
-        <div className="h-16 flex items-center justify-between gap-2 px-3 border-b border-slate-100 dark:border-slate-800">
-          <div className="flex-1 min-w-0">
+        <div className={`h-16 flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 ${collapsed ? 'lg:justify-center px-2' : 'px-3'}`}>
+          <div className={`flex-1 min-w-0 ${collapsed ? 'lg:hidden' : ''}`}>
             <WorkspaceSwitcher />
+          </div>
+          <div className={`hidden ${collapsed ? 'lg:block' : ''}`}>
+            <WorkspaceSwitcher collapsed />
           </div>
           <button className="lg:hidden text-slate-400 hover:text-slate-600 shrink-0" onClick={() => setSidebarOpen(false)}>
             <X size={18} />
           </button>
         </div>
 
-        <nav className="flex-1 px-3 py-4 space-y-4 overflow-y-auto">
+        <nav className="flex-1 px-3 py-4 space-y-4 overflow-y-auto overflow-x-hidden">
           {NAV_GROUPS.map((group, gi) => {
             const items = group.items.filter((item) => !item.roles || item.roles.includes(user?.role));
             if (!items.length) return null;
             return (
               <div key={gi}>
                 {group.label && (
-                  <div className="px-3 mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">{group.label}</div>
+                  <div className={`px-3 mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 ${collapsed ? 'lg:hidden' : ''}`}>{group.label}</div>
                 )}
                 <div className="space-y-0.5">
                   {items.map(({ to, label, icon: Icon, end }) => (
@@ -116,16 +126,22 @@ export default function AppShell({ children }) {
                       to={to}
                       end={end}
                       onClick={() => setSidebarOpen(false)}
+                      title={collapsed ? label : undefined}
                       className={({ isActive }) =>
-                        `flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                        `relative flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors duration-150 ${collapsed ? 'lg:justify-center' : ''} ${
                           isActive
                             ? 'bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-400'
                             : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white'
                         }`
                       }
                     >
-                      <Icon size={17} strokeWidth={2} />
-                      {label}
+                      {({ isActive }) => (
+                        <>
+                          {isActive && <span className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-full bg-brand-600" />}
+                          <Icon size={17} strokeWidth={2} className="shrink-0" />
+                          <span className={collapsed ? 'lg:hidden' : ''}>{label}</span>
+                        </>
+                      )}
                     </NavLink>
                   ))}
                 </div>
@@ -134,19 +150,28 @@ export default function AppShell({ children }) {
           })}
         </nav>
 
+        <button
+          onClick={() => setCollapsed((c) => !c)}
+          className="hidden lg:flex items-center justify-center gap-2 mx-3 mb-2 py-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 dark:hover:text-slate-200 transition-colors"
+          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        >
+          {collapsed ? <ChevronsRight size={16} /> : <ChevronsLeft size={16} />}
+        </button>
+
         <div className="p-3 border-t border-slate-100 dark:border-slate-800">
-          <div className="flex items-center gap-2.5 px-2 py-2 rounded-lg">
+          <div className={`flex items-center gap-2.5 px-2 py-2 rounded-lg ${collapsed ? 'lg:justify-center lg:px-0' : ''}`}>
             <div
               className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-semibold shrink-0"
               style={{ backgroundColor: user?.avatar_color || '#6366f1' }}
+              title={collapsed ? user?.name : undefined}
             >
               {user?.name?.[0]?.toUpperCase() || '?'}
             </div>
-            <div className="min-w-0 flex-1">
+            <div className={`min-w-0 flex-1 ${collapsed ? 'lg:hidden' : ''}`}>
               <div className="text-sm font-medium text-slate-800 dark:text-slate-100 truncate">{user?.name}</div>
               <div className="text-[11px] text-slate-400 capitalize truncate">{user?.role}</div>
             </div>
-            <button onClick={logout} className="text-slate-400 hover:text-red-500 shrink-0" title="Log out">
+            <button onClick={logout} className={`text-slate-400 hover:text-red-500 shrink-0 ${collapsed ? 'lg:hidden' : ''}`} title="Log out">
               <LogOut size={16} />
             </button>
           </div>
@@ -154,7 +179,7 @@ export default function AppShell({ children }) {
       </aside>
 
       <div className="flex-1 flex flex-col min-w-0">
-        <header className="h-14 shrink-0 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex items-center px-4 sm:px-6 gap-3">
+        <header className="h-16 shrink-0 border-b border-slate-200/80 dark:border-slate-800/80 bg-white/85 dark:bg-slate-900/75 backdrop-blur-md sticky top-0 z-20 flex items-center px-4 sm:px-6 gap-3">
           <button className="lg:hidden text-slate-500 dark:text-slate-300" onClick={() => setSidebarOpen(true)}>
             <Menu size={20} />
           </button>

@@ -5,14 +5,18 @@
 
 import fetch from 'node-fetch';
 import { db } from '../db.js';
+import { decrypt } from './crypto.js';
 
 export function getProvider(providerId) {
+  let row = null;
   if (providerId) {
-    const row = db.prepare('SELECT * FROM ai_providers WHERE id = ?').get(providerId);
-    if (row) return row;
+    row = db.prepare('SELECT * FROM ai_providers WHERE id = ?').get(providerId);
   }
-  const def = db.prepare('SELECT * FROM ai_providers WHERE is_default = 1 ORDER BY created_at DESC LIMIT 1').get();
-  return def || null;
+  if (!row) {
+    row = db.prepare('SELECT * FROM ai_providers WHERE is_default = 1 ORDER BY created_at DESC LIMIT 1').get();
+  }
+  if (!row) return null;
+  return { ...row, api_key: decrypt(row.api_key) };
 }
 
 function parseHeaders(row) {

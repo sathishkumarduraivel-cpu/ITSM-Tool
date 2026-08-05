@@ -2,20 +2,23 @@ import { Router } from 'express';
 import { db, uid } from '../db.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { sendIntegrationMessage } from '../services/notify.js';
+import { encrypt, decrypt } from '../services/crypto.js';
 
 const router = Router();
+
+function redactConfig(configJson) {
+  const config = JSON.parse(decrypt(configJson) || '{}');
+  const redacted = { ...config };
+  if (redacted.webhook_url) redacted.webhook_url = redacted.webhook_url.slice(0, 24) + '••••';
+  if (redacted.api_key) redacted.api_key = '••••';
+  if (redacted.pass) redacted.pass = '••••';
+  return redacted;
+}
 
 router.get('/', requireAuth, (req, res) => {
   const rows = db.prepare('SELECT * FROM integrations ORDER BY created_at DESC').all();
   res.json({
-    integrations: rows.map((r) => {
-      const config = JSON.parse(r.config || '{}');
-      // redact secrets in list view
-      const redacted = { ...config };
-      if (redacted.webhook_url) redacted.webhook_url = redacted.webhook_url.slice(0, 24) + '••••';
-      if (redacted.api_key) redacted.api_key = '••••';
-      return { ...r, config: redacted };
-    }),
+    integrations: rows.map((r) => ({ ...r, config: redactConfig(r.config) })),
   });
 });
 
@@ -24,7 +27,7 @@ router.post('/', requireAuth, requireRole('admin'), (req, res) => {
   if (!type || !name) return res.status(400).json({ error: 'type and name required' });
   const id = uid('int');
   db.prepare('INSERT INTO integrations (id, type, name, config, enabled) VALUES (?,?,?,?,?)').run(
-    id, type, name, JSON.stringify(config), enabled ? 1 : 0
+    id, type, name, encrypt(JSON.stringify(config)), enabled ? 1 : 0
   );
   res.status(201).json({ id });
 });
@@ -35,7 +38,7 @@ router.patch('/:id', requireAuth, requireRole('admin'), (req, res) => {
   const { name, config, enabled } = req.body;
   const fields = []; const params = [];
   if (name !== undefined) { fields.push('name = ?'); params.push(name); }
-  if (config !== undefined) { fields.push('config = ?'); params.push(JSON.stringify(config)); }
+  if (config !== undefined) { fields.push('config = ?'); params.push(encrypt(JSON.stringify(config))); }
   if (enabled !== undefined) { fields.push('enabled = ?'); params.push(enabled ? 1 : 0); }
   params.push(req.params.id);
   db.prepare(`UPDATE integrations SET ${fields.join(', ')} WHERE id = ?`).run(...params);

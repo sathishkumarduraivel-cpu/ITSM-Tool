@@ -1,11 +1,12 @@
 import fetch from 'node-fetch';
 import { db } from '../db.js';
+import { decrypt } from './crypto.js';
 
 // Generic outbound notifier. In this MVP, "email" and "slack"/"teams" simply
 // deliver via a configured webhook URL (works with Slack/Teams incoming webhooks
 // out of the box). Real SMTP/Jira wiring can be dropped into the switch below.
 export async function sendIntegrationMessage(integration, payload) {
-  const config = JSON.parse(integration.config || '{}');
+  const config = JSON.parse(decrypt(integration.config) || '{}');
   try {
     if (['slack', 'teams', 'webhook', 'github'].includes(integration.type)) {
       if (!config.webhook_url) throw new Error('Missing webhook_url in integration config');

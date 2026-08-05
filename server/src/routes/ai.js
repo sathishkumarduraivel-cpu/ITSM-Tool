@@ -1,9 +1,14 @@
 import { Router } from 'express';
+import rateLimit from 'express-rate-limit';
 import { db, uid } from '../db.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { getProvider, testProvider, dashboardInsights, askAssistant } from '../services/aiClient.js';
+import { encrypt } from '../services/crypto.js';
 
 const router = Router();
+
+const aiLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 30, standardHeaders: true, legacyHeaders: false });
+router.use(aiLimiter);
 
 router.get('/providers', requireAuth, (req, res) => {
   const rows = db.prepare('SELECT id, name, provider_type, base_url, model, is_default, created_at FROM ai_providers ORDER BY created_at DESC').all();
@@ -17,7 +22,7 @@ router.post('/providers', requireAuth, requireRole('admin'), (req, res) => {
   if (is_default) db.prepare('UPDATE ai_providers SET is_default = 0').run();
   db.prepare(
     'INSERT INTO ai_providers (id, name, provider_type, base_url, api_key, model, is_default, extra_headers) VALUES (?,?,?,?,?,?,?,?)'
-  ).run(id, name, provider_type, base_url || null, api_key || null, model, is_default ? 1 : 0, JSON.stringify(extra_headers));
+  ).run(id, name, provider_type, base_url || null, encrypt(api_key) || null, model, is_default ? 1 : 0, JSON.stringify(extra_headers));
   res.status(201).json({ id });
 });
 
@@ -30,7 +35,7 @@ router.patch('/providers/:id', requireAuth, requireRole('admin'), (req, res) => 
   if (name !== undefined) { fields.push('name = ?'); params.push(name); }
   if (provider_type !== undefined) { fields.push('provider_type = ?'); params.push(provider_type); }
   if (base_url !== undefined) { fields.push('base_url = ?'); params.push(base_url); }
-  if (api_key !== undefined && api_key !== '') { fields.push('api_key = ?'); params.push(api_key); }
+  if (api_key !== undefined && api_key !== '') { fields.push('api_key = ?'); params.push(encrypt(api_key)); }
   if (model !== undefined) { fields.push('model = ?'); params.push(model); }
   if (is_default !== undefined) { fields.push('is_default = ?'); params.push(is_default ? 1 : 0); }
   if (extra_headers !== undefined) { fields.push('extra_headers = ?'); params.push(JSON.stringify(extra_headers)); }

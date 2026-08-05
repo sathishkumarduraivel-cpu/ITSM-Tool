@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { encrypt, isEncrypted } from './services/crypto.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = path.join(__dirname, '..', 'data');
@@ -311,6 +312,71 @@ CREATE TABLE IF NOT EXISTS csat_surveys (
   created_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE
 );
+
+-- ---- Workspaces (multi-tenant isolation) ----
+CREATE TABLE IF NOT EXISTS workspaces (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  slug TEXT UNIQUE NOT NULL,
+  logo_color TEXT DEFAULT '#6366f1',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS workspace_members (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'requester', -- admin | agent | requester, scoped to this workspace
+  team TEXT,
+  active INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(workspace_id, user_id),
+  FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS workspace_settings (
+  workspace_id TEXT NOT NULL,
+  key TEXT NOT NULL,
+  value TEXT,
+  updated_at TEXT DEFAULT (datetime('now')),
+  PRIMARY KEY (workspace_id, key)
+);
+
+CREATE TABLE IF NOT EXISTS ticket_counters (
+  workspace_id TEXT NOT NULL,
+  type TEXT NOT NULL,
+  seq INTEGER NOT NULL DEFAULT 999,
+  PRIMARY KEY (workspace_id, type)
+);
+
+-- ---- Ticket field visibility/required rules ----
+CREATE TABLE IF NOT EXISTS ticket_field_rules (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  ticket_type TEXT NOT NULL, -- incident | request | problem | change
+  category TEXT, -- null = applies to all categories of this type
+  field_name TEXT NOT NULL,
+  visible INTEGER DEFAULT 1,
+  required INTEGER DEFAULT 0,
+  sort_order INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- ---- Ticket attachments ----
+CREATE TABLE IF NOT EXISTS attachments (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  ticket_id TEXT NOT NULL,
+  filename TEXT NOT NULL,
+  stored_path TEXT NOT NULL,
+  mime TEXT,
+  size INTEGER,
+  uploaded_by TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,
+  FOREIGN KEY (uploaded_by) REFERENCES users(id)
+);
 `);
 
 // Additive migrations for columns introduced after the initial tickets table
@@ -326,6 +392,25 @@ const ticketColumnMigrations = [
   "ALTER TABLE tickets ADD COLUMN sla_policy_id TEXT",
   "ALTER TABLE tickets ADD COLUMN response_due_at TEXT",
   "ALTER TABLE tickets ADD COLUMN responded_at TEXT",
+  // workspace / multi-tenant isolation columns (nullable — node:sqlite can't
+  // ADD COLUMN with NOT NULL + backfill atomically; correctness is app-enforced,
+  // matching this codebase's existing style)
+  "ALTER TABLE users ADD COLUMN is_super_admin INTEGER DEFAULT 0",
+  "ALTER TABLE users ADD COLUMN last_workspace_id TEXT",
+  "ALTER TABLE tickets ADD COLUMN workspace_id TEXT",
+  "ALTER TABLE assets ADD COLUMN workspace_id TEXT",
+  "ALTER TABLE kb_articles ADD COLUMN workspace_id TEXT",
+  "ALTER TABLE automations ADD COLUMN workspace_id TEXT",
+  "ALTER TABLE integrations ADD COLUMN workspace_id TEXT",
+  "ALTER TABLE catalog_categories ADD COLUMN workspace_id TEXT",
+  "ALTER TABLE catalog_items ADD COLUMN workspace_id TEXT",
+  "ALTER TABLE sla_policies ADD COLUMN workspace_id TEXT",
+  "ALTER TABLE business_hours ADD COLUMN workspace_id TEXT",
+  "ALTER TABLE contracts ADD COLUMN workspace_id TEXT",
+  "ALTER TABLE purchase_orders ADD COLUMN workspace_id TEXT",
+  "ALTER TABLE ai_providers ADD COLUMN workspace_id TEXT",
+  "ALTER TABLE notification_templates ADD COLUMN workspace_id TEXT",
+  "ALTER TABLE notifications ADD COLUMN workspace_id TEXT",
 ];
 for (const sql of ticketColumnMigrations) {
   try {
@@ -338,4 +423,70 @@ for (const sql of ticketColumnMigrations) {
 export function uid(prefix = '') {
   const rand = Math.random().toString(36).slice(2, 10);
   return prefix ? `${prefix}_${Date.now().toString(36)}${rand}` : `${Date.now().toString(36)}${rand}`;
+}
+
+// ---- One-time secrets re-encryption (idempotent — guarded by a system flag row) ----
+const SYSTEM_WS = '_system';
+const secretsFlag = db.prepare('SELECT value FROM workspace_settings WHERE workspace_id = ? AND key = ?').get(SYSTEM_WS, 'secrets_encrypted_v1');
+if (!secretsFlag) {
+  for (const p of db.prepare('SELECT id, api_key FROM ai_providers').all()) {
+    if (p.api_key && !isEncrypted(p.api_key)) {
+      db.prepare('UPDATE ai_providers SET api_key = ? WHERE id = ?').run(encrypt(p.api_key), p.id);
+    }
+  }
+  for (const i of db.prepare('SELECT id, config FROM integrations').all()) {
+    if (i.config && !isEncrypted(i.config)) {
+      db.prepare('UPDATE integrations SET config = ? WHERE id = ?').run(encrypt(i.config), i.id);
+    }
+  }
+  db.prepare('INSERT OR REPLACE INTO workspace_settings (workspace_id, key, value) VALUES (?,?,?)').run(SYSTEM_WS, 'secrets_encrypted_v1', '1');
+}
+
+// ---- Workspace backfill (idempotent) — ensures a Default Workspace exists,
+// every user has a membership, and every tenant table's rows are scoped to it.
+let defaultWorkspace = db.prepare('SELECT * FROM workspaces WHERE slug = ?').get('default');
+if (!defaultWorkspace) {
+  const wsId = uid('ws');
+  db.prepare('INSERT INTO workspaces (id, name, slug) VALUES (?,?,?)').run(wsId, 'Default Workspace', 'default');
+  defaultWorkspace = { id: wsId };
+}
+export const DEFAULT_WORKSPACE_ID = defaultWorkspace.id;
+
+const orphanUsers = db.prepare(`
+  SELECT u.id, u.role, u.team FROM users u
+  LEFT JOIN workspace_members wm ON wm.user_id = u.id AND wm.workspace_id = ?
+  WHERE wm.id IS NULL
+`).all(DEFAULT_WORKSPACE_ID);
+for (const u of orphanUsers) {
+  db.prepare('INSERT INTO workspace_members (id, workspace_id, user_id, role, team) VALUES (?,?,?,?,?)')
+    .run(uid('wm'), DEFAULT_WORKSPACE_ID, u.id, u.role, u.team);
+}
+db.prepare('UPDATE users SET last_workspace_id = ? WHERE last_workspace_id IS NULL').run(DEFAULT_WORKSPACE_ID);
+
+const tenantTables = [
+  'tickets', 'assets', 'kb_articles', 'automations', 'integrations',
+  'catalog_categories', 'catalog_items', 'sla_policies', 'business_hours',
+  'contracts', 'purchase_orders', 'ai_providers', 'notification_templates',
+  'notifications', 'ticket_field_rules', 'attachments',
+];
+for (const table of tenantTables) {
+  try {
+    db.prepare(`UPDATE ${table} SET workspace_id = ? WHERE workspace_id IS NULL`).run(DEFAULT_WORKSPACE_ID);
+  } catch {
+    // ignore — table may be empty/not yet populated
+  }
+}
+
+// seed ticket_counters from existing ticket numbers so numbering continues rather than resetting
+const TYPE_PREFIX = { incident: 'INC', request: 'REQ', problem: 'PRB', change: 'CHG' };
+for (const type of Object.keys(TYPE_PREFIX)) {
+  const existing = db.prepare('SELECT seq FROM ticket_counters WHERE workspace_id = ? AND type = ?').get(DEFAULT_WORKSPACE_ID, type);
+  if (!existing) {
+    let maxSeq = 999;
+    for (const row of db.prepare('SELECT number FROM tickets WHERE workspace_id = ? AND type = ?').all(DEFAULT_WORKSPACE_ID, type)) {
+      const m = /(\d+)$/.exec(row.number || '');
+      if (m) maxSeq = Math.max(maxSeq, parseInt(m[1], 10));
+    }
+    db.prepare('INSERT INTO ticket_counters (workspace_id, type, seq) VALUES (?,?,?)').run(DEFAULT_WORKSPACE_ID, type, maxSeq);
+  }
 }

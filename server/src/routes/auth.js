@@ -1,10 +1,19 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import rateLimit from 'express-rate-limit';
 import { db, uid } from '../db.js';
 import { JWT_SECRET, requireAuth } from '../middleware/auth.js';
 
 const router = Router();
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many attempts — please try again later.' },
+});
 
 function sign(user) {
   return jwt.sign(
@@ -14,7 +23,7 @@ function sign(user) {
   );
 }
 
-router.post('/register', (req, res) => {
+router.post('/register', authLimiter, (req, res) => {
   const { name, email, password, role = 'requester', team } = req.body;
   if (!name || !email || !password) return res.status(400).json({ error: 'name, email, password required' });
   const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
@@ -30,7 +39,7 @@ router.post('/register', (req, res) => {
   res.json({ token: sign(user), user });
 });
 
-router.post('/login', (req, res) => {
+router.post('/login', authLimiter, (req, res) => {
   const { email, password } = req.body;
   const row = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
   if (!row || !bcrypt.compareSync(password, row.password_hash)) {

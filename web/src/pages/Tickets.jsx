@@ -7,6 +7,7 @@ import { PriorityBadge, StatusBadge, TypeBadge } from '../components/Badge.jsx';
 import Modal from '../components/Modal.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import { SkeletonRows } from '../components/Skeleton.jsx';
+import { useFieldRules } from '../hooks/useFieldRules.js';
 
 const ALL_TYPES = ['incident', 'request', 'problem', 'change'];
 const STATUSES = ['open', 'pending_approval', 'in_progress', 'on_hold', 'resolved', 'closed'];
@@ -18,6 +19,14 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const isChange = form.type === 'change';
+  const fieldRules = useFieldRules(form.type, form.category || null);
+  // Each change-only field falls back to the current type === 'change' behavior
+  // when no admin rule exists for it, and is otherwise governed by the rule.
+  const showRisk = fieldRules.isVisible('risk', isChange);
+  const showPlannedStart = fieldRules.isVisible('planned_start', isChange);
+  const showPlannedEnd = fieldRules.isVisible('planned_end', isChange);
+  const showRollbackPlan = fieldRules.isVisible('rollback_plan', isChange);
+  const showChangeSection = showRisk || showPlannedStart || showPlannedEnd || showRollbackPlan;
 
   const submit = async (e) => {
     e.preventDefault();
@@ -64,29 +73,37 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
           </div>
         </div>
 
-        {isChange && (
+        {showChangeSection && (
           <div className="space-y-3 border-t border-slate-100 dark:border-slate-800 pt-3">
-            <p className="text-xs text-slate-500">Change requests go through Change Advisory Board approval before they can move to in-progress.</p>
+            {isChange && <p className="text-xs text-slate-500">Change requests go through Change Advisory Board approval before they can move to in-progress.</p>}
             <div className="grid grid-cols-3 gap-3">
-              <div>
-                <label className="label">Risk</label>
-                <select className="input" value={form.risk} onChange={(e) => setForm({ ...form, risk: e.target.value })}>
-                  {RISKS.map((r) => <option key={r} value={r}>{r}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="label">Planned start</label>
-                <input type="datetime-local" className="input" value={form.planned_start} onChange={(e) => setForm({ ...form, planned_start: e.target.value })} />
-              </div>
-              <div>
-                <label className="label">Planned end</label>
-                <input type="datetime-local" className="input" value={form.planned_end} onChange={(e) => setForm({ ...form, planned_end: e.target.value })} />
-              </div>
+              {showRisk && (
+                <div>
+                  <label className="label">Risk{fieldRules.isRequired('risk') && ' *'}</label>
+                  <select className="input" required={fieldRules.isRequired('risk')} value={form.risk} onChange={(e) => setForm({ ...form, risk: e.target.value })}>
+                    {RISKS.map((r) => <option key={r} value={r}>{r}</option>)}
+                  </select>
+                </div>
+              )}
+              {showPlannedStart && (
+                <div>
+                  <label className="label">Planned start{fieldRules.isRequired('planned_start') && ' *'}</label>
+                  <input type="datetime-local" className="input" required={fieldRules.isRequired('planned_start')} value={form.planned_start} onChange={(e) => setForm({ ...form, planned_start: e.target.value })} />
+                </div>
+              )}
+              {showPlannedEnd && (
+                <div>
+                  <label className="label">Planned end{fieldRules.isRequired('planned_end') && ' *'}</label>
+                  <input type="datetime-local" className="input" required={fieldRules.isRequired('planned_end')} value={form.planned_end} onChange={(e) => setForm({ ...form, planned_end: e.target.value })} />
+                </div>
+              )}
             </div>
-            <div>
-              <label className="label">Rollback plan</label>
-              <textarea className="input" rows={2} value={form.rollback_plan} onChange={(e) => setForm({ ...form, rollback_plan: e.target.value })} />
-            </div>
+            {showRollbackPlan && (
+              <div>
+                <label className="label">Rollback plan{fieldRules.isRequired('rollback_plan') && ' *'}</label>
+                <textarea className="input" rows={2} required={fieldRules.isRequired('rollback_plan')} value={form.rollback_plan} onChange={(e) => setForm({ ...form, rollback_plan: e.target.value })} />
+              </div>
+            )}
           </div>
         )}
 

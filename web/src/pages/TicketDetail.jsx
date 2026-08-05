@@ -4,6 +4,7 @@ import { ArrowLeft, Sparkles, Loader2, Send, Wand2, Tags, Lock, ShieldCheck, Che
 import { api, getStoredToken } from '../lib/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { PriorityBadge, StatusBadge, TypeBadge } from '../components/Badge.jsx';
+import { useFieldRules } from '../hooks/useFieldRules.js';
 
 const STATUSES = ['open', 'in_progress', 'on_hold', 'resolved', 'closed'];
 const PRIORITIES = ['low', 'medium', 'high', 'critical'];
@@ -192,9 +193,16 @@ export default function TicketDetail() {
     load();
   };
 
+  const fieldRules = useFieldRules(ticket?.type, ticket?.category || null);
+
   if (!ticket) return <div className="text-slate-400 text-sm py-20 text-center">Loading ticket…</div>;
 
   const isChange = ticket.type === 'change';
+  const showRisk = fieldRules.isVisible('risk', isChange);
+  const showPlannedStart = fieldRules.isVisible('planned_start', isChange);
+  const showPlannedEnd = fieldRules.isVisible('planned_end', isChange);
+  const showRollbackPlan = fieldRules.isVisible('rollback_plan', isChange);
+  const showChangeSection = showRisk || showPlannedStart || showPlannedEnd || showRollbackPlan;
   const pendingApproval = approvals.find((a) => a.status === 'pending');
   const statusOptions = ticket.status === 'pending_approval' ? ['pending_approval', ...STATUSES] : STATUSES;
 
@@ -256,31 +264,38 @@ export default function TicketDetail() {
             <p className="text-sm text-slate-600 dark:text-slate-300 whitespace-pre-line">{ticket.description || 'No description provided.'}</p>
           </div>
 
-          {isChange && (
+          {showChangeSection && (
             <div className="card p-4 space-y-3">
               <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 flex items-center gap-1.5"><ShieldCheck size={14} /> Change details</h3>
               <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="label">Risk</label>
-                  <select className="input" disabled={!isAgent} value={ticket.risk || ''} onChange={(e) => updateField('risk', e.target.value)}>
-                    <option value="">Not set</option>
-                    {RISKS.map((r) => <option key={r} value={r}>{r}</option>)}
-                  </select>
-                </div>
-                <div />
-                <div>
-                  <label className="label">Planned start</label>
-                  <input type="datetime-local" className="input" disabled={!isAgent} defaultValue={ticket.planned_start?.slice(0, 16) || ''} onBlur={(e) => updateField('planned_start', e.target.value)} />
-                </div>
-                <div>
-                  <label className="label">Planned end</label>
-                  <input type="datetime-local" className="input" disabled={!isAgent} defaultValue={ticket.planned_end?.slice(0, 16) || ''} onBlur={(e) => updateField('planned_end', e.target.value)} />
-                </div>
+                {showRisk && (
+                  <div>
+                    <label className="label">Risk</label>
+                    <select className="input" disabled={!isAgent} value={ticket.risk || ''} onChange={(e) => updateField('risk', e.target.value)}>
+                      <option value="">Not set</option>
+                      {RISKS.map((r) => <option key={r} value={r}>{r}</option>)}
+                    </select>
+                  </div>
+                )}
+                {showPlannedStart && (
+                  <div>
+                    <label className="label">Planned start</label>
+                    <input type="datetime-local" className="input" disabled={!isAgent} defaultValue={ticket.planned_start?.slice(0, 16) || ''} onBlur={(e) => updateField('planned_start', e.target.value)} />
+                  </div>
+                )}
+                {showPlannedEnd && (
+                  <div>
+                    <label className="label">Planned end</label>
+                    <input type="datetime-local" className="input" disabled={!isAgent} defaultValue={ticket.planned_end?.slice(0, 16) || ''} onBlur={(e) => updateField('planned_end', e.target.value)} />
+                  </div>
+                )}
               </div>
-              <div>
-                <label className="label">Rollback plan</label>
-                <textarea className="input" rows={2} disabled={!isAgent} defaultValue={ticket.rollback_plan || ''} onBlur={(e) => updateField('rollback_plan', e.target.value)} />
-              </div>
+              {showRollbackPlan && (
+                <div>
+                  <label className="label">Rollback plan</label>
+                  <textarea className="input" rows={2} disabled={!isAgent} defaultValue={ticket.rollback_plan || ''} onBlur={(e) => updateField('rollback_plan', e.target.value)} />
+                </div>
+              )}
             </div>
           )}
 

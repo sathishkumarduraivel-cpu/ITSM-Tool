@@ -93,8 +93,8 @@ export default function KnowledgeBase() {
       />
 
       <form onSubmit={search} className="relative max-w-md">
-        <Search size={15} className="absolute left-2.5 top-2.5 text-slate-400" />
-        <input className="input pl-8" placeholder="Search articles…" value={q} onChange={(e) => setQ(e.target.value)} />
+        <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+        <input className="input pl-9" placeholder="Search articles…" value={q} onChange={(e) => setQ(e.target.value)} />
       </form>
 
       {loading && <SkeletonRows count={4} />}

@@ -157,9 +157,9 @@ export default function Tickets() {
 
       <div className="card p-3 flex flex-wrap items-center gap-2">
         <form onSubmit={search} className="flex-1 min-w-[200px] relative">
-          <Search size={15} className="absolute left-2.5 top-2.5 text-slate-400" />
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
           <input
-            className="input pl-8"
+            className="input pl-9"
             placeholder="Search tickets…"
             value={filters.q}
             onChange={(e) => setFilters({ ...filters, q: e.target.value })}

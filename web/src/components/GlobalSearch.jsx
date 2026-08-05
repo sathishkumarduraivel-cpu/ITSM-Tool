@@ -63,28 +63,28 @@ export default function GlobalSearch() {
   return (
     <div className="relative" ref={ref}>
       <div className="relative">
-        <Search size={15} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+        <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
         <input
           ref={inputRef}
-          className="input pl-8 pr-14 py-1.5 text-sm bg-slate-100/70 dark:bg-slate-800/60 border-transparent focus:bg-white dark:focus:bg-slate-900"
+          className={`input rounded-full pl-11 pr-16 py-2 text-sm bg-slate-100/80 dark:bg-slate-800/60 border-transparent shadow-inner focus:bg-white dark:focus:bg-slate-900 transition-colors ${q ? 'text-left' : 'text-center focus:text-left'}`}
           placeholder="Search tickets, assets, KB…"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onFocus={() => q && setOpen(true)}
         />
         {q ? (
-          <button className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600" onClick={() => { setQ(''); setResults(null); }}>
+          <button className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600" onClick={() => { setQ(''); setResults(null); }}>
             <X size={14} />
           </button>
         ) : (
-          <kbd className="absolute right-2 top-1/2 -translate-y-1/2 hidden sm:flex items-center gap-0.5 text-[10px] font-medium text-slate-400 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded px-1.5 py-0.5 pointer-events-none">
+          <kbd className="absolute right-2.5 top-1/2 -translate-y-1/2 hidden sm:flex items-center gap-0.5 text-[10px] font-medium text-slate-400 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-full px-2 py-0.5 pointer-events-none">
             {isMac ? '⌘' : 'Ctrl'}K
           </kbd>
         )}
       </div>
 
       {open && q.trim() && (
-        <div className="absolute left-0 right-0 sm:w-96 mt-1.5 card p-2 z-40 shadow-popover animate-pop-in max-h-96 overflow-y-auto">
+        <div className="absolute left-0 right-0 sm:w-96 mt-1.5 card p-2 z-40 shadow-popover dark:shadow-popover-dark animate-pop-in max-h-96 overflow-y-auto">
           {!hasResults && <div className="text-sm text-slate-400 px-2 py-3 text-center">No matches for "{q}"</div>}
 
           {results?.tickets.length > 0 && (

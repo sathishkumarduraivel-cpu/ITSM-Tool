@@ -53,7 +53,7 @@ export default function WorkspaceSwitcher({ collapsed = false }) {
       </button>
 
       {open && workspaces.length > 1 && (
-        <div className={`absolute mt-1 card p-1 z-40 shadow-popover animate-pop-in ${collapsed ? 'left-0 w-56' : 'left-0 right-0'}`}>
+        <div className={`absolute mt-1 card p-1 z-40 shadow-popover dark:shadow-popover-dark animate-pop-in ${collapsed ? 'left-0 w-56' : 'left-0 right-0'}`}>
           {workspaces.map((w) => (
             <button
               key={w.id}

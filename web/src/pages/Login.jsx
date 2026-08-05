@@ -27,9 +27,9 @@ export default function Login() {
   };
 
   return (
-    <div className="relative min-h-screen flex items-center justify-center overflow-hidden bg-slate-50 dark:bg-slate-950 px-4">
-      <div className="pointer-events-none absolute -top-32 -left-24 w-[28rem] h-[28rem] rounded-full bg-brand-400/20 dark:bg-brand-500/10 blur-3xl" />
-      <div className="pointer-events-none absolute -bottom-32 -right-24 w-[28rem] h-[28rem] rounded-full bg-purple-400/15 dark:bg-purple-500/10 blur-3xl" />
+    <div className="relative min-h-screen flex items-center justify-center overflow-hidden px-4">
+      <div className="pointer-events-none absolute -top-32 -left-24 w-[28rem] h-[28rem] rounded-full bg-brand-400/25 dark:bg-brand-500/15 blur-3xl animate-floaty" />
+      <div className="pointer-events-none absolute -bottom-32 -right-24 w-[28rem] h-[28rem] rounded-full bg-purple-400/20 dark:bg-purple-500/15 blur-3xl animate-floaty" style={{ animationDelay: '-3s' }} />
 
       <div className="relative w-full max-w-sm animate-slide-up">
         <div className="flex items-center justify-center gap-2.5 mb-8">
@@ -42,7 +42,7 @@ export default function Login() {
           </div>
         </div>
 
-        <form onSubmit={submit} className="card p-6 space-y-4 shadow-popover">
+        <form onSubmit={submit} className="card p-6 space-y-4 shadow-popover dark:shadow-popover-dark">
           <div>
             <h1 className="text-lg font-display font-semibold text-slate-800 dark:text-slate-100">Sign in</h1>
             <p className="text-sm text-slate-500 dark:text-slate-400">Access your service desk workspace</p>

@@ -58,7 +58,7 @@ export default function NotificationBell() {
         )}
       </button>
       {open && (
-        <div className="absolute right-0 mt-2 w-80 card shadow-popover animate-pop-in z-50 max-h-96 overflow-y-auto">
+        <div className="absolute right-0 mt-2 w-80 card shadow-popover dark:shadow-popover-dark animate-pop-in z-50 max-h-96 overflow-y-auto">
           <div className="flex items-center justify-between px-3 py-2 border-b border-slate-100 dark:border-slate-800">
             <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">Notifications</span>
             <button onClick={readAll} className="text-xs text-brand-600 hover:text-brand-700 flex items-center gap-1">

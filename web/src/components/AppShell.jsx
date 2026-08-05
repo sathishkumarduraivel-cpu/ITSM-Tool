@@ -88,17 +88,17 @@ export default function AppShell({ children }) {
   }, [collapsed]);
 
   return (
-    <div className="h-screen flex bg-slate-50 dark:bg-slate-950">
+    <div className="h-screen flex p-0 lg:p-3 gap-0 lg:gap-3 overflow-hidden">
       {sidebarOpen && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-30 lg:hidden" onClick={() => setSidebarOpen(false)} />
       )}
 
       <aside
-        className={`group/aside shrink-0 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-col fixed inset-y-0 left-0 z-40 transition-[transform,width] duration-200 ease-out lg:static lg:translate-x-0 ${
+        className={`group/aside glass-panel shrink-0 rounded-none lg:rounded-3xl flex flex-col fixed inset-y-0 left-0 lg:static lg:inset-auto z-40 transition-[transform,width] duration-200 ease-out lg:translate-x-0 ${
           sidebarOpen ? 'translate-x-0' : '-translate-x-full'
-        } ${collapsed ? 'lg:w-[76px]' : 'w-64 lg:w-64'}`}
+        } ${collapsed ? 'lg:w-[84px]' : 'w-72 lg:w-64'}`}
       >
-        <div className={`h-16 flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 ${collapsed ? 'lg:justify-center px-2' : 'px-3'}`}>
+        <div className={`h-16 flex items-center gap-2 border-b border-slate-900/[0.06] dark:border-white/[0.06] ${collapsed ? 'lg:justify-center px-2' : 'px-3'}`}>
           <div className={`flex-1 min-w-0 ${collapsed ? 'lg:hidden' : ''}`}>
             <WorkspaceSwitcher />
           </div>
@@ -128,20 +128,15 @@ export default function AppShell({ children }) {
                       onClick={() => setSidebarOpen(false)}
                       title={collapsed ? label : undefined}
                       className={({ isActive }) =>
-                        `relative flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors duration-150 ${collapsed ? 'lg:justify-center' : ''} ${
+                        `relative flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm font-medium transition-all duration-150 ${collapsed ? 'lg:justify-center' : ''} ${
                           isActive
-                            ? 'bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-400'
-                            : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white'
+                            ? 'bg-gradient-to-b from-brand-500 to-brand-600 text-white shadow-glow-brand'
+                            : 'text-slate-600 hover:bg-slate-900/[0.04] hover:text-slate-900 dark:text-slate-300 dark:hover:bg-white/[0.06] dark:hover:text-white'
                         }`
                       }
                     >
-                      {({ isActive }) => (
-                        <>
-                          {isActive && <span className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-full bg-brand-600" />}
-                          <Icon size={17} strokeWidth={2} className="shrink-0" />
-                          <span className={collapsed ? 'lg:hidden' : ''}>{label}</span>
-                        </>
-                      )}
+                      <Icon size={17} strokeWidth={2} className="shrink-0" />
+                      <span className={collapsed ? 'lg:hidden' : ''}>{label}</span>
                     </NavLink>
                   ))}
                 </div>
@@ -152,16 +147,16 @@ export default function AppShell({ children }) {
 
         <button
           onClick={() => setCollapsed((c) => !c)}
-          className="hidden lg:flex items-center justify-center gap-2 mx-3 mb-2 py-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 dark:hover:text-slate-200 transition-colors"
+          className="hidden lg:flex items-center justify-center gap-2 mx-3 mb-2 py-1.5 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-900/[0.04] dark:hover:bg-white/[0.06] dark:hover:text-slate-200 transition-colors"
           title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         >
           {collapsed ? <ChevronsRight size={16} /> : <ChevronsLeft size={16} />}
         </button>
 
-        <div className="p-3 border-t border-slate-100 dark:border-slate-800">
-          <div className={`flex items-center gap-2.5 px-2 py-2 rounded-lg ${collapsed ? 'lg:justify-center lg:px-0' : ''}`}>
+        <div className="p-3 border-t border-slate-900/[0.06] dark:border-white/[0.06]">
+          <div className={`flex items-center gap-2.5 px-2 py-2 rounded-xl ${collapsed ? 'lg:justify-center lg:px-0' : ''}`}>
             <div
-              className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-semibold shrink-0"
+              className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-semibold shrink-0 shadow-raised"
               style={{ backgroundColor: user?.avatar_color || '#6366f1' }}
               title={collapsed ? user?.name : undefined}
             >
@@ -178,8 +173,8 @@ export default function AppShell({ children }) {
         </div>
       </aside>
 
-      <div className="flex-1 flex flex-col min-w-0">
-        <header className="h-16 shrink-0 border-b border-slate-200/80 dark:border-slate-800/80 bg-white/85 dark:bg-slate-900/75 backdrop-blur-md sticky top-0 z-20 flex items-center px-4 sm:px-6 gap-3">
+      <div className="flex-1 flex flex-col min-w-0 gap-3 p-3 lg:p-0 overflow-hidden">
+        <header className="glass-panel shrink-0 rounded-2xl h-16 sticky top-0 z-20 flex items-center px-4 sm:px-5 gap-3">
           <button className="lg:hidden text-slate-500 dark:text-slate-300" onClick={() => setSidebarOpen(true)}>
             <Menu size={20} />
           </button>
@@ -191,8 +186,8 @@ export default function AppShell({ children }) {
             <NotificationBell />
           </div>
         </header>
-        <main className="flex-1 overflow-y-auto">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 animate-fade-in">{children}</div>
+        <main className="flex-1 overflow-y-auto -mx-3 lg:mx-0 px-3 lg:px-0">
+          <div className="max-w-7xl mx-auto pb-6 animate-fade-in">{children}</div>
         </main>
       </div>
     </div>

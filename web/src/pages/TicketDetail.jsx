@@ -210,12 +210,12 @@ export default function TicketDetail() {
             <span className="font-mono text-sm text-slate-500">{ticket.number}</span>
             <TypeBadge type={ticket.type} />
             {isChange && (
-              <span className={`badge ${ticket.cab_status === 'approved' ? 'bg-emerald-50 text-emerald-700' : ticket.cab_status === 'rejected' ? 'bg-red-50 text-red-600' : 'bg-amber-50 text-amber-700'}`}>
+              <span className={`badge ${ticket.cab_status === 'approved' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : ticket.cab_status === 'rejected' ? 'bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400' : 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400'}`}>
                 <ShieldCheck size={11} /> CAB {ticket.cab_status?.replace('_', ' ')}
               </span>
             )}
           </div>
-          <h1 className="text-xl font-semibold text-slate-800">{ticket.title}</h1>
+          <h1 className="text-xl font-semibold text-slate-800 dark:text-slate-100">{ticket.title}</h1>
         </div>
         {isAgent && (
           <div className="flex gap-2">
@@ -232,8 +232,8 @@ export default function TicketDetail() {
         )}
       </div>
 
-      {aiError && <div className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{aiError}</div>}
-      {fieldError && <div className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{fieldError}</div>}
+      {aiError && <div className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 rounded-lg px-3 py-2">{aiError}</div>}
+      {fieldError && <div className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 rounded-lg px-3 py-2">{fieldError}</div>}
 
       {pendingApproval && user.role === 'admin' && (
         <div className="card p-4 bg-amber-50/70 border-amber-200 flex items-center justify-between">
@@ -252,13 +252,13 @@ export default function TicketDetail() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2 space-y-4">
           <div className="card p-4">
-            <h3 className="text-sm font-semibold text-slate-700 mb-2">Description</h3>
-            <p className="text-sm text-slate-600 whitespace-pre-line">{ticket.description || 'No description provided.'}</p>
+            <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2">Description</h3>
+            <p className="text-sm text-slate-600 dark:text-slate-300 whitespace-pre-line">{ticket.description || 'No description provided.'}</p>
           </div>
 
           {isChange && (
             <div className="card p-4 space-y-3">
-              <h3 className="text-sm font-semibold text-slate-700 flex items-center gap-1.5"><ShieldCheck size={14} /> Change details</h3>
+              <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 flex items-center gap-1.5"><ShieldCheck size={14} /> Change details</h3>
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="label">Risk</label>
@@ -285,32 +285,32 @@ export default function TicketDetail() {
           )}
 
           {ticket.ai_summary && (
-            <div className="card p-4 border-brand-200 bg-brand-50/50">
-              <h3 className="text-sm font-semibold text-brand-700 mb-2 flex items-center gap-1.5"><Sparkles size={14} /> AI Summary</h3>
-              <p className="text-sm text-slate-700 whitespace-pre-line">{ticket.ai_summary}</p>
+            <div className="card p-4 border-brand-200 dark:border-brand-800 bg-brand-50/50 dark:bg-brand-500/5">
+              <h3 className="text-sm font-semibold text-brand-700 dark:text-brand-400 mb-2 flex items-center gap-1.5"><Sparkles size={14} /> AI Summary</h3>
+              <p className="text-sm text-slate-700 dark:text-slate-300 whitespace-pre-line">{ticket.ai_summary}</p>
             </div>
           )}
 
           {suggestion && (
-            <div className="card p-4 border-emerald-200 bg-emerald-50/50">
-              <h3 className="text-sm font-semibold text-emerald-700 mb-2 flex items-center gap-1.5"><Wand2 size={14} /> AI Suggested Resolution</h3>
-              <p className="text-sm text-slate-700 whitespace-pre-line">{suggestion}</p>
+            <div className="card p-4 border-emerald-200 dark:border-emerald-800 bg-emerald-50/50 dark:bg-emerald-500/5">
+              <h3 className="text-sm font-semibold text-emerald-700 dark:text-emerald-400 mb-2 flex items-center gap-1.5"><Wand2 size={14} /> AI Suggested Resolution</h3>
+              <p className="text-sm text-slate-700 dark:text-slate-300 whitespace-pre-line">{suggestion}</p>
             </div>
           )}
 
           <div className="card p-4">
-            <h3 className="text-sm font-semibold text-slate-700 mb-3">Activity</h3>
+            <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3">Activity</h3>
             <div className="space-y-3 mb-4 max-h-80 overflow-y-auto pr-1">
               {comments.length === 0 && <p className="text-sm text-slate-400">No comments yet.</p>}
               {comments.map((c) => (
-                <div key={c.id} className={`rounded-lg p-3 text-sm ${c.is_ai ? 'bg-brand-50' : 'bg-slate-50'}`}>
+                <div key={c.id} className={`rounded-lg p-3 text-sm ${c.is_ai ? 'bg-brand-50 dark:bg-brand-500/10' : 'bg-slate-50 dark:bg-slate-800/60'}`}>
                   <div className="flex items-center gap-2 mb-1 text-xs text-slate-500">
-                    <span className="font-medium text-slate-700">{c.author_name || 'Unknown'}</span>
-                    {!!c.is_ai && <span className="badge bg-brand-100 text-brand-700"><Sparkles size={10} /> AI</span>}
-                    {!!c.is_private && <span className="badge bg-slate-200 text-slate-600"><Lock size={10} /> private</span>}
+                    <span className="font-medium text-slate-700 dark:text-slate-200">{c.author_name || 'Unknown'}</span>
+                    {!!c.is_ai && <span className="badge bg-brand-100 text-brand-700 dark:bg-brand-500/20 dark:text-brand-400"><Sparkles size={10} /> AI</span>}
+                    {!!c.is_private && <span className="badge bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300"><Lock size={10} /> private</span>}
                     <span>· {new Date(c.created_at).toLocaleString()}</span>
                   </div>
-                  <p className="text-slate-700 whitespace-pre-line">{c.body}</p>
+                  <p className="text-slate-700 dark:text-slate-200 whitespace-pre-line">{c.body}</p>
                 </div>
               ))}
             </div>
@@ -362,7 +362,7 @@ export default function TicketDetail() {
           </div>
 
           <div className="card p-4 space-y-3">
-            <h3 className="text-sm font-semibold text-slate-700">Details</h3>
+            <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Details</h3>
             <div>
               <label className="label">Status</label>
               <select className="input" disabled={!isAgent} value={ticket.status} onChange={(e) => updateField('status', e.target.value)}>
@@ -390,22 +390,22 @@ export default function TicketDetail() {
           </div>
 
           <div className="card p-4 space-y-2 text-sm">
-            <h3 className="text-sm font-semibold text-slate-700 mb-1">SLA</h3>
-            <div className="flex justify-between text-slate-500"><span>Response due</span><span className="text-slate-700">{ticket.response_due_at ? new Date(ticket.response_due_at).toLocaleString() : '—'}</span></div>
-            <div className="flex justify-between text-slate-500"><span>Resolution due</span><span className="text-slate-700">{ticket.sla_due_at ? new Date(ticket.sla_due_at).toLocaleString() : '—'}</span></div>
-            <div className="flex justify-between text-slate-500"><span>Source</span><span className="text-slate-700 capitalize">{ticket.source}</span></div>
+            <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-1">SLA</h3>
+            <div className="flex justify-between text-slate-500"><span>Response due</span><span className="text-slate-700 dark:text-slate-200">{ticket.response_due_at ? new Date(ticket.response_due_at).toLocaleString() : '—'}</span></div>
+            <div className="flex justify-between text-slate-500"><span>Resolution due</span><span className="text-slate-700 dark:text-slate-200">{ticket.sla_due_at ? new Date(ticket.sla_due_at).toLocaleString() : '—'}</span></div>
+            <div className="flex justify-between text-slate-500"><span>Source</span><span className="text-slate-700 dark:text-slate-200 capitalize">{ticket.source}</span></div>
             {ticket.ai_sentiment && (
-              <div className="flex justify-between text-slate-500"><span>AI sentiment</span><span className="text-slate-700 capitalize">{ticket.ai_sentiment}</span></div>
+              <div className="flex justify-between text-slate-500"><span>AI sentiment</span><span className="text-slate-700 dark:text-slate-200 capitalize">{ticket.ai_sentiment}</span></div>
             )}
           </div>
 
           {isAgent && (
             <div className="card p-4">
-              <h3 className="text-sm font-semibold text-slate-700 mb-2 flex items-center gap-1.5"><Boxes size={14} /> Linked assets (CMDB)</h3>
+              <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2 flex items-center gap-1.5"><Boxes size={14} /> Linked assets (CMDB)</h3>
               <div className="space-y-1 mb-2">
                 {linkedAssets.length === 0 && <p className="text-xs text-slate-400">No assets linked.</p>}
                 {linkedAssets.map((a) => (
-                  <div key={a.id} className="flex items-center justify-between text-sm bg-slate-50 rounded-md px-2 py-1.5">
+                  <div key={a.id} className="flex items-center justify-between text-sm bg-slate-50 dark:bg-slate-800/60 rounded-md px-2 py-1.5">
                     <span className="truncate">{a.name} <span className="text-xs text-slate-400 font-mono">{a.tag}</span></span>
                     <button onClick={() => unlinkAsset(a.id)} className="text-slate-400 hover:text-red-500"><X size={13} /></button>
                   </div>
@@ -421,11 +421,11 @@ export default function TicketDetail() {
           )}
 
           <div className="card p-4">
-            <h3 className="text-sm font-semibold text-slate-700 mb-2">History</h3>
+            <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2">History</h3>
             <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
               {history.map((h) => (
-                <div key={h.id} className="text-xs text-slate-500 border-l-2 border-slate-200 pl-2">
-                  <span className="text-slate-700 font-medium">{h.event}</span> — {h.detail}
+                <div key={h.id} className="text-xs text-slate-500 border-l-2 border-slate-200 dark:border-slate-700 pl-2">
+                  <span className="text-slate-700 dark:text-slate-200 font-medium">{h.event}</span> — {h.detail}
                   <div className="text-[10px] text-slate-400">{new Date(h.created_at).toLocaleString()}</div>
                 </div>
               ))}

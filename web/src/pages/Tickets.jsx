@@ -1,9 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Search, X, Loader2 } from 'lucide-react';
+import { Plus, Search, Loader2 } from 'lucide-react';
 import { api } from '../lib/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { PriorityBadge, StatusBadge, TypeBadge } from '../components/Badge.jsx';
+import Modal from '../components/Modal.jsx';
+import PageHeader from '../components/PageHeader.jsx';
+import { SkeletonRows } from '../components/Skeleton.jsx';
 
 const ALL_TYPES = ['incident', 'request', 'problem', 'change'];
 const STATUSES = ['open', 'pending_approval', 'in_progress', 'on_hold', 'resolved', 'closed'];
@@ -31,15 +34,9 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
   };
 
   return (
-    <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-50 px-4 py-8 overflow-y-auto">
-      <form onSubmit={submit} className="card w-full max-w-lg p-5 space-y-3 my-auto">
-        <div className="flex items-center justify-between">
-          <h2 className="font-semibold text-slate-800">New ticket</h2>
-          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600">
-            <X size={18} />
-          </button>
-        </div>
-        {error && <div className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
+    <Modal title="New ticket" onClose={onClose}>
+      <form onSubmit={submit} className="space-y-3">
+        {error && <div className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 rounded-lg px-3 py-2">{error}</div>}
         <div>
           <label className="label">Title</label>
           <input className="input" required value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
@@ -68,7 +65,7 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
         </div>
 
         {isChange && (
-          <div className="space-y-3 border-t border-slate-100 pt-3">
+          <div className="space-y-3 border-t border-slate-100 dark:border-slate-800 pt-3">
             <p className="text-xs text-slate-500">Change requests go through Change Advisory Board approval before they can move to in-progress.</p>
             <div className="grid grid-cols-3 gap-3">
               <div>
@@ -100,7 +97,7 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
           </button>
         </div>
       </form>
-    </div>
+    </Modal>
   );
 }
 
@@ -135,15 +132,11 @@ export default function Tickets() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-semibold text-slate-800">Tickets</h1>
-          <p className="text-sm text-slate-500">Incidents, requests, problems &amp; changes</p>
-        </div>
-        <button onClick={() => setShowNew(true)} className="btn-primary">
-          <Plus size={14} /> New ticket
-        </button>
-      </div>
+      <PageHeader
+        title="Tickets"
+        description="Incidents, requests, problems & changes"
+        actions={<button onClick={() => setShowNew(true)} className="btn-primary"><Plus size={14} /> New ticket</button>}
+      />
 
       <div className="card p-3 flex flex-wrap items-center gap-2">
         <form onSubmit={search} className="flex-1 min-w-[200px] relative">
@@ -169,45 +162,46 @@ export default function Tickets() {
         </select>
       </div>
 
-      <div className="card overflow-hidden">
-        <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
-            <tr>
-              <th className="text-left px-4 py-2.5 font-medium">Ticket</th>
-              <th className="text-left px-4 py-2.5 font-medium">Type</th>
-              <th className="text-left px-4 py-2.5 font-medium">Status</th>
-              <th className="text-left px-4 py-2.5 font-medium">Priority</th>
-              <th className="text-left px-4 py-2.5 font-medium">Category</th>
-              <th className="text-left px-4 py-2.5 font-medium">Updated</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading && (
-              <tr><td colSpan={6} className="text-center py-10 text-slate-400">Loading…</td></tr>
-            )}
-            {!loading && tickets.length === 0 && (
-              <tr><td colSpan={6} className="text-center py-10 text-slate-400">No tickets match these filters.</td></tr>
-            )}
-            {!loading && tickets.map((t) => (
-              <tr
-                key={t.id}
-                onClick={() => navigate(`/tickets/${t.id}`)}
-                className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer"
-              >
-                <td className="px-4 py-2.5">
-                  <div className="font-medium text-slate-800">{t.number}</div>
-                  <div className="text-slate-500 text-xs truncate max-w-xs">{t.title}</div>
-                </td>
-                <td className="px-4 py-2.5"><TypeBadge type={t.type} /></td>
-                <td className="px-4 py-2.5"><StatusBadge status={t.status} /></td>
-                <td className="px-4 py-2.5"><PriorityBadge priority={t.priority} /></td>
-                <td className="px-4 py-2.5 text-slate-600">{t.category || '—'}</td>
-                <td className="px-4 py-2.5 text-slate-400 text-xs">{new Date(t.updated_at).toLocaleString()}</td>
+      {loading && <SkeletonRows count={5} />}
+
+      {!loading && (
+        <div className="card overflow-hidden overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wide">
+              <tr>
+                <th className="text-left px-4 py-2.5 font-medium">Ticket</th>
+                <th className="text-left px-4 py-2.5 font-medium">Type</th>
+                <th className="text-left px-4 py-2.5 font-medium">Status</th>
+                <th className="text-left px-4 py-2.5 font-medium">Priority</th>
+                <th className="text-left px-4 py-2.5 font-medium">Category</th>
+                <th className="text-left px-4 py-2.5 font-medium">Updated</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {tickets.length === 0 && (
+                <tr><td colSpan={6} className="text-center py-10 text-slate-400">No tickets match these filters.</td></tr>
+              )}
+              {tickets.map((t) => (
+                <tr
+                  key={t.id}
+                  onClick={() => navigate(`/tickets/${t.id}`)}
+                  className="border-t border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/40 cursor-pointer"
+                >
+                  <td className="px-4 py-2.5">
+                    <div className="font-medium text-slate-800 dark:text-slate-100">{t.number}</div>
+                    <div className="text-slate-500 text-xs truncate max-w-xs">{t.title}</div>
+                  </td>
+                  <td className="px-4 py-2.5"><TypeBadge type={t.type} /></td>
+                  <td className="px-4 py-2.5"><StatusBadge status={t.status} /></td>
+                  <td className="px-4 py-2.5"><PriorityBadge priority={t.priority} /></td>
+                  <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">{t.category || '—'}</td>
+                  <td className="px-4 py-2.5 text-slate-400 text-xs">{new Date(t.updated_at).toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {showNew && (
         <NewTicketModal

@@ -111,6 +111,12 @@ function UsersTab() {
     load();
   };
 
+  const removeUser = async (u) => {
+    if (!confirm(`Remove ${u.name} from this workspace? They will lose access entirely.`)) return;
+    await api.del(`/auth/users/${u.id}`);
+    load();
+  };
+
   const groupsFor = (userId) => groups.filter((g) => g.members.some((m) => m.id === userId));
 
   if (!users) return <div className="text-slate-400 text-sm py-10 text-center">Loading…</div>;
@@ -157,6 +163,14 @@ function UsersTab() {
                     className={`text-xs px-2 py-1 rounded-md ${u.active ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-slate-100 text-slate-500 dark:bg-slate-800'}`}
                   >
                     {u.active ? 'Active' : 'Deactivated'}
+                  </button>
+                  <button
+                    onClick={() => removeUser(u)}
+                    disabled={u.id === user.id}
+                    className="text-slate-400 hover:text-red-500 disabled:opacity-30 disabled:hover:text-slate-400"
+                    title="Remove from workspace"
+                  >
+                    <Trash2 size={15} />
                   </button>
                   <button onClick={() => setExpanded(isOpen ? null : u.id)} className="text-slate-400 hover:text-slate-600">
                     {isOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}

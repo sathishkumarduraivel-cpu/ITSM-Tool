@@ -207,4 +207,16 @@ router.patch('/users/:id', requireAuth, requireWorkspace, requireRole('admin'), 
   res.json({ ok: true });
 });
 
+// Admin: remove a member from the current workspace entirely (not just
+// deactivate). Only revokes access to this workspace — any other workspace
+// membership they hold, and their global account, are untouched.
+router.delete('/users/:id', requireAuth, requireWorkspace, requireRole('admin'), (req, res) => {
+  if (req.params.id === req.user.id) return res.status(400).json({ error: "You can't remove yourself from this workspace" });
+  const membership = db.prepare('SELECT id FROM workspace_members WHERE workspace_id = ? AND user_id = ?').get(req.workspaceId, req.params.id);
+  if (!membership) return res.status(404).json({ error: 'Not found in this workspace' });
+  db.prepare('DELETE FROM workspace_members WHERE id = ?').run(membership.id);
+  db.prepare('DELETE FROM group_members WHERE user_id = ? AND group_id IN (SELECT id FROM groups WHERE workspace_id = ?)').run(req.params.id, req.workspaceId);
+  res.json({ ok: true });
+});
+
 export default router;

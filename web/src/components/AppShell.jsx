@@ -5,7 +5,6 @@ import {
   Ticket,
   Boxes,
   BookOpen,
-  Workflow,
   Plug,
   Sparkles,
   LogOut,
@@ -53,7 +52,6 @@ const AGENT_NAV_GROUPS = [
   {
     label: 'Configuration',
     items: [
-      { to: '/automations', label: 'Automation', icon: Workflow, roles: ['admin'] },
       { to: '/sla', label: 'SLA Policies', icon: Timer, roles: ['admin'] },
       { to: '/integrations', label: 'Integrations', icon: Plug, roles: ['admin'] },
       { to: '/ai-settings', label: 'AI Settings', icon: Sparkles, roles: ['admin'] },

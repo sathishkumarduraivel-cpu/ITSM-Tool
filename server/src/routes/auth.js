@@ -127,7 +127,7 @@ router.get('/users', requireAuth, (req, res) => {
 
 // Admin: full user directory including deactivated accounts (for Admin Settings).
 router.get('/users/all', requireAuth, requireRole('admin'), (req, res) => {
-  const rows = db.prepare('SELECT id, name, email, role, team, avatar_color, active FROM users ORDER BY name').all();
+  const rows = db.prepare('SELECT id, name, email, role, team, avatar_color, active, created_at FROM users ORDER BY name').all();
   res.json({ users: rows });
 });
 

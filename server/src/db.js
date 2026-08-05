@@ -377,6 +377,24 @@ CREATE TABLE IF NOT EXISTS attachments (
   FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,
   FOREIGN KEY (uploaded_by) REFERENCES users(id)
 );
+
+-- ---- Agent groups (Freshservice-style "Groups" — a named team of agents) ----
+CREATE TABLE IF NOT EXISTS groups (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS group_members (
+  id TEXT PRIMARY KEY,
+  group_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(group_id, user_id),
+  FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
 `);
 
 // Additive migrations for columns introduced after the initial tickets table

@@ -23,6 +23,7 @@ import fieldRuleRoutes from './routes/fieldRules.js';
 import searchRoutes from './routes/search.js';
 import adminRoutes from './routes/admin.js';
 import dashboardRoutes from './routes/dashboard.js';
+import groupRoutes from './routes/groups.js';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -66,6 +67,7 @@ app.use('/api/field-rules', fieldRuleRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/groups', groupRoutes);
 
 app.use((err, req, res, next) => {
   console.error(err);

@@ -9,7 +9,6 @@ import Tickets from './pages/Tickets.jsx';
 import TicketDetail from './pages/TicketDetail.jsx';
 import Assets from './pages/Assets.jsx';
 import KnowledgeBase from './pages/KnowledgeBase.jsx';
-import Automations from './pages/Automations.jsx';
 import Integrations from './pages/Integrations.jsx';
 import AISettings from './pages/AISettings.jsx';
 import Catalog from './pages/Catalog.jsx';
@@ -59,7 +58,6 @@ export default function App() {
                 <Route path="/tickets/:id" element={<TicketDetail />} />
                 <Route path="/assets" element={<Assets />} />
                 <Route path="/knowledge-base" element={<KnowledgeBase />} />
-                <Route path="/automations" element={<Automations />} />
                 <Route path="/integrations" element={<Integrations />} />
                 <Route path="/ai-settings" element={<AISettings />} />
                 <Route path="/catalog" element={<Catalog />} />

@@ -28,11 +28,29 @@ async function request(path, { method = 'GET', body, headers = {} } = {}) {
   return data;
 }
 
+async function upload(path, formData) {
+  const token = getToken();
+  const resp = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    body: formData,
+  });
+  let data = null;
+  try {
+    data = await resp.json();
+  } catch {
+    data = null;
+  }
+  if (!resp.ok) throw new Error(data?.error || `Request failed (${resp.status})`);
+  return data;
+}
+
 export const api = {
   get: (path) => request(path),
   post: (path, body) => request(path, { method: 'POST', body }),
   patch: (path, body) => request(path, { method: 'PATCH', body }),
   del: (path) => request(path, { method: 'DELETE' }),
+  upload,
 };
 
 export function setToken(token) {

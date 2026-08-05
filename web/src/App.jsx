@@ -16,6 +16,7 @@ import Approvals from './pages/Approvals.jsx';
 import SlaPolicies from './pages/SlaPolicies.jsx';
 import Procurement from './pages/Procurement.jsx';
 import Reports from './pages/Reports.jsx';
+import AdminSettings from './pages/AdminSettings.jsx';
 
 function PrivateRoute({ children }) {
   const { user, loading } = useAuth();
@@ -27,6 +28,12 @@ function PrivateRoute({ children }) {
     );
   }
   if (!user) return <Navigate to="/login" replace />;
+  return children;
+}
+
+function RequireRole({ role, children }) {
+  const { user } = useAuth();
+  if (user?.role !== role) return <Navigate to="/" replace />;
   return children;
 }
 
@@ -58,6 +65,7 @@ export default function App() {
                 <Route path="/sla" element={<SlaPolicies />} />
                 <Route path="/procurement" element={<Procurement />} />
                 <Route path="/reports" element={<Reports />} />
+                <Route path="/admin-settings" element={<RequireRole role="admin"><AdminSettings /></RequireRole>} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
             </AppShell>

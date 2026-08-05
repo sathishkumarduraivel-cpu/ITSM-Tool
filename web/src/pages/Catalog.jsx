@@ -1,8 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, X, Loader2, ShoppingBag, Settings, Trash2, CheckCircle2 } from 'lucide-react';
+import { Plus, Loader2, ShoppingBag, Settings, Trash2, CheckCircle2, Pencil } from 'lucide-react';
 import { api } from '../lib/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
+import Modal from '../components/Modal.jsx';
+import PageHeader from '../components/PageHeader.jsx';
+import EmptyState from '../components/EmptyState.jsx';
+import { SkeletonRows } from '../components/Skeleton.jsx';
 
 const FIELD_TYPES = ['text', 'textarea', 'select', 'number', 'date'];
 
@@ -27,14 +31,10 @@ function RequestModal({ item, onClose, onSubmitted }) {
   };
 
   return (
-    <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-50 px-4">
-      <form onSubmit={submit} className="card w-full max-w-md p-5 space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="font-semibold text-slate-800">{item.name}</h2>
-          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
-        </div>
+    <Modal title={item.name} onClose={onClose}>
+      <form onSubmit={submit} className="space-y-3">
         <p className="text-sm text-slate-500">{item.description}</p>
-        {error && <div className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
+        {error && <div className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 rounded-lg px-3 py-2">{error}</div>}
         {schema.map((f) => (
           <div key={f.key}>
             <label className="label">{f.label}{f.required && ' *'}</label>
@@ -51,9 +51,9 @@ function RequestModal({ item, onClose, onSubmitted }) {
           </div>
         ))}
         {item.approval_required ? (
-          <p className="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2">This request requires manager approval before work begins.</p>
+          <p className="text-xs text-amber-600 bg-amber-50 dark:bg-amber-500/10 rounded-lg px-3 py-2">This request requires manager approval before work begins.</p>
         ) : (
-          <p className="text-xs text-emerald-600 bg-emerald-50 rounded-lg px-3 py-2">No approval needed — this goes straight to the queue.</p>
+          <p className="text-xs text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 rounded-lg px-3 py-2">No approval needed — this goes straight to the queue.</p>
         )}
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
@@ -62,34 +62,38 @@ function RequestModal({ item, onClose, onSubmitted }) {
           </button>
         </div>
       </form>
-    </div>
+    </Modal>
   );
 }
 
-function ManageCategoryModal({ onClose, onSaved }) {
-  const [name, setName] = useState('');
+function CategoryModal({ initial, onClose, onSaved }) {
+  const [name, setName] = useState(initial?.name || '');
   const submit = async (e) => {
     e.preventDefault();
-    await api.post('/catalog/categories', { name });
+    if (initial?.id) await api.patch(`/catalog/categories/${initial.id}`, { name });
+    else await api.post('/catalog/categories', { name });
     onSaved();
   };
   return (
-    <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-50 px-4">
-      <form onSubmit={submit} className="card w-full max-w-sm p-5 space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="font-semibold text-slate-800">New category</h2>
-          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
-        </div>
+    <Modal title={initial?.id ? 'Edit category' : 'New category'} onClose={onClose} maxWidth="max-w-sm">
+      <form onSubmit={submit} className="space-y-3">
         <input className="input" required placeholder="e.g. Hardware" value={name} onChange={(e) => setName(e.target.value)} />
         <div className="flex justify-end gap-2"><button type="button" onClick={onClose} className="btn-secondary">Cancel</button><button className="btn-primary">Save</button></div>
       </form>
-    </div>
+    </Modal>
   );
 }
 
-function ManageItemModal({ categories, onClose, onSaved }) {
-  const [form, setForm] = useState({ category_id: categories[0]?.id || '', name: '', description: '', approval_required: true, approver_role: 'admin', default_priority: 'medium' });
-  const [fields, setFields] = useState([{ key: 'reason', label: 'Reason', type: 'text', required: true, options: '' }]);
+function ItemModal({ initial, categories, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    category_id: initial?.category_id || categories[0]?.id || '',
+    name: initial?.name || '',
+    description: initial?.description || '',
+    approval_required: initial ? !!initial.approval_required : true,
+    approver_role: initial?.approver_role || 'admin',
+    default_priority: initial?.default_priority || 'medium',
+  });
+  const [fields, setFields] = useState(initial?.form_schema?.length ? initial.form_schema : [{ key: 'reason', label: 'Reason', type: 'text', required: true, options: '' }]);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -102,7 +106,9 @@ function ManageItemModal({ categories, onClose, onSaved }) {
     setSaving(true);
     setError('');
     try {
-      await api.post('/catalog/items', { ...form, form_schema: fields.filter((f) => f.key) });
+      const payload = { ...form, form_schema: fields.filter((f) => f.key) };
+      if (initial?.id) await api.patch(`/catalog/items/${initial.id}`, payload);
+      else await api.post('/catalog/items', payload);
       onSaved();
     } catch (e) {
       setError(e.message);
@@ -112,13 +118,9 @@ function ManageItemModal({ categories, onClose, onSaved }) {
   };
 
   return (
-    <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-50 px-4 py-8 overflow-y-auto">
-      <form onSubmit={submit} className="card w-full max-w-lg p-5 space-y-3 my-auto">
-        <div className="flex items-center justify-between">
-          <h2 className="font-semibold text-slate-800">New catalog item</h2>
-          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
-        </div>
-        {error && <div className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
+    <Modal title={initial?.id ? 'Edit catalog item' : 'New catalog item'} onClose={onClose}>
+      <form onSubmit={submit} className="space-y-3">
+        {error && <div className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 rounded-lg px-3 py-2">{error}</div>}
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="label">Category</label>
@@ -149,7 +151,7 @@ function ManageItemModal({ categories, onClose, onSaved }) {
               <option value="agent">Agent</option>
             </select>
           </div>
-          <label className="flex items-center gap-2 text-sm text-slate-600 mt-6">
+          <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300 mt-6">
             <input type="checkbox" checked={form.approval_required} onChange={(e) => setForm({ ...form, approval_required: e.target.checked })} />
             Requires approval
           </label>
@@ -180,11 +182,11 @@ function ManageItemModal({ categories, onClose, onSaved }) {
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
           <button type="submit" disabled={saving} className="btn-primary">
-            {saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Save item
+            {saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} {initial?.id ? 'Save changes' : 'Save item'}
           </button>
         </div>
       </form>
-    </div>
+    </Modal>
   );
 }
 
@@ -196,8 +198,8 @@ export default function Catalog() {
   const [loading, setLoading] = useState(true);
   const [requestItem, setRequestItem] = useState(null);
   const [manageMode, setManageMode] = useState(false);
-  const [newCategory, setNewCategory] = useState(false);
-  const [newItem, setNewItem] = useState(false);
+  const [categoryModal, setCategoryModal] = useState(null); // null | 'new' | category
+  const [itemModal, setItemModal] = useState(null); // null | 'new' | item
   const [submitted, setSubmitted] = useState(null);
 
   const load = async () => {
@@ -218,45 +220,54 @@ export default function Catalog() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-semibold text-slate-800">Service Catalog</h1>
-          <p className="text-sm text-slate-500">Request hardware, software &amp; access — approvals routed automatically</p>
-        </div>
-        {(user.role === 'admin') && (
-          <div className="flex gap-2">
+      <PageHeader
+        title="Service Catalog"
+        description="Request hardware, software & access — approvals routed automatically"
+        actions={user.role === 'admin' && (
+          <>
             <button onClick={() => setManageMode((m) => !m)} className="btn-secondary"><Settings size={14} /> {manageMode ? 'Done' : 'Manage'}</button>
-            {manageMode && <button onClick={() => setNewCategory(true)} className="btn-secondary"><Plus size={14} /> Category</button>}
-            {manageMode && <button onClick={() => setNewItem(true)} className="btn-primary"><Plus size={14} /> Item</button>}
-          </div>
+            {manageMode && <button onClick={() => setCategoryModal('new')} className="btn-secondary"><Plus size={14} /> Category</button>}
+            {manageMode && <button onClick={() => setItemModal('new')} className="btn-primary"><Plus size={14} /> Item</button>}
+          </>
         )}
-      </div>
+      />
 
       {submitted && (
-        <div className="card p-4 bg-emerald-50 border-emerald-200 flex items-center justify-between">
-          <span className="text-sm text-emerald-700 flex items-center gap-2"><CheckCircle2 size={16} /> Request {submitted.number} submitted — {submitted.status === 'pending_approval' ? 'awaiting approval.' : 'now in the queue.'}</span>
-          <button onClick={() => navigate(`/tickets/${submitted.id}`)} className="text-sm font-medium text-emerald-700 hover:underline">View ticket</button>
+        <div className="card p-4 bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-800 flex items-center justify-between">
+          <span className="text-sm text-emerald-700 dark:text-emerald-400 flex items-center gap-2"><CheckCircle2 size={16} /> Request {submitted.number} submitted — {submitted.status === 'pending_approval' ? 'awaiting approval.' : 'now in the queue.'}</span>
+          <button onClick={() => navigate(`/tickets/${submitted.id}`)} className="text-sm font-medium text-emerald-700 dark:text-emerald-400 hover:underline">View ticket</button>
         </div>
       )}
 
-      {loading && <div className="text-slate-400 text-sm py-10 text-center">Loading…</div>}
+      {manageMode && categories.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {categories.map((c) => (
+            <button key={c.id} onClick={() => setCategoryModal(c)} className="badge bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700">
+              <Pencil size={11} /> {c.name}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {loading && <SkeletonRows count={3} />}
 
       {!loading && items.length === 0 && (
-        <div className="card p-10 text-center text-slate-400">
-          <ShoppingBag className="mx-auto mb-2 text-slate-300" size={28} /> No catalog items yet.
-        </div>
+        <EmptyState icon={ShoppingBag} description="No catalog items yet." />
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         {items.map((item) => (
           <div key={item.id} className="card p-4 flex flex-col">
-            <div className="w-9 h-9 rounded-lg bg-brand-50 text-brand-600 flex items-center justify-center mb-2"><ShoppingBag size={16} /></div>
-            <div className="font-medium text-slate-800">{item.name}</div>
+            <div className="w-9 h-9 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center mb-2"><ShoppingBag size={16} /></div>
+            <div className="font-medium text-slate-800 dark:text-slate-100">{item.name}</div>
             <div className="text-sm text-slate-500 flex-1 mt-1">{item.description}</div>
             <div className="flex items-center justify-between mt-3">
               <button onClick={() => setRequestItem(item)} className="btn-primary text-xs">Request</button>
               {manageMode && (
-                <button onClick={() => removeItem(item.id)} className="text-slate-400 hover:text-red-500"><Trash2 size={15} /></button>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => setItemModal(item)} className="text-slate-400 hover:text-brand-600"><Pencil size={15} /></button>
+                  <button onClick={() => removeItem(item.id)} className="text-slate-400 hover:text-red-500"><Trash2 size={15} /></button>
+                </div>
               )}
             </div>
           </div>
@@ -266,8 +277,8 @@ export default function Catalog() {
       {requestItem && (
         <RequestModal item={requestItem} onClose={() => setRequestItem(null)} onSubmitted={(ticket) => { setSubmitted(ticket); setRequestItem(null); }} />
       )}
-      {newCategory && <ManageCategoryModal onClose={() => setNewCategory(false)} onSaved={() => { setNewCategory(false); load(); }} />}
-      {newItem && <ManageItemModal categories={categories} onClose={() => setNewItem(false)} onSaved={() => { setNewItem(false); load(); }} />}
+      {categoryModal && <CategoryModal initial={categoryModal === 'new' ? null : categoryModal} onClose={() => setCategoryModal(null)} onSaved={() => { setCategoryModal(null); load(); }} />}
+      {itemModal && <ItemModal initial={itemModal === 'new' ? null : itemModal} categories={categories} onClose={() => setItemModal(null)} onSaved={() => { setItemModal(null); load(); }} />}
     </div>
   );
 }

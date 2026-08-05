@@ -20,6 +20,9 @@ import procurementRoutes from './routes/procurement.js';
 import notificationRoutes from './routes/notifications.js';
 import reportRoutes from './routes/reports.js';
 import fieldRuleRoutes from './routes/fieldRules.js';
+import searchRoutes from './routes/search.js';
+import adminRoutes from './routes/admin.js';
+import dashboardRoutes from './routes/dashboard.js';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -60,6 +63,9 @@ app.use('/api/procurement', procurementRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/field-rules', fieldRuleRoutes);
+app.use('/api/search', searchRoutes);
+app.use('/api/admin', adminRoutes);
+app.use('/api/dashboard', dashboardRoutes);
 
 app.use((err, req, res, next) => {
   console.error(err);

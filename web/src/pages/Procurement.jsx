@@ -1,32 +1,35 @@
 import { useEffect, useState } from 'react';
-import { Plus, X, Loader2, FileText, Trash2, AlertTriangle, ClipboardList } from 'lucide-react';
+import { Plus, Loader2, FileText, Trash2, AlertTriangle, ClipboardList, Pencil } from 'lucide-react';
 import { api } from '../lib/api.js';
+import Modal from '../components/Modal.jsx';
+import PageHeader from '../components/PageHeader.jsx';
 
 function daysUntil(dateStr) {
   if (!dateStr) return null;
   return Math.round((new Date(dateStr).getTime() - Date.now()) / 86400000);
 }
 
-function NewContractModal({ onClose, onSaved }) {
-  const [form, setForm] = useState({ vendor: '', name: '', type: 'support', start_date: '', end_date: '', value: '', renewal_notice_days: 30 });
+function ContractModal({ initial, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    vendor: initial?.vendor || '', name: initial?.name || '', type: initial?.type || 'support',
+    start_date: initial?.start_date || '', end_date: initial?.end_date || '', value: initial?.value ?? '',
+    renewal_notice_days: initial?.renewal_notice_days ?? 30,
+  });
   const [saving, setSaving] = useState(false);
   const submit = async (e) => {
     e.preventDefault();
     setSaving(true);
     try {
-      await api.post('/procurement/contracts', form);
+      if (initial?.id) await api.patch(`/procurement/contracts/${initial.id}`, form);
+      else await api.post('/procurement/contracts', form);
       onSaved();
     } finally {
       setSaving(false);
     }
   };
   return (
-    <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-50 px-4">
-      <form onSubmit={submit} className="card w-full max-w-lg p-5 space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="font-semibold text-slate-800">New contract</h2>
-          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
-        </div>
+    <Modal title={initial?.id ? 'Edit contract' : 'New contract'} onClose={onClose}>
+      <form onSubmit={submit} className="space-y-3">
         <div className="grid grid-cols-2 gap-3">
           <div><label className="label">Vendor</label><input className="input" required value={form.vendor} onChange={(e) => setForm({ ...form, vendor: e.target.value })} /></div>
           <div><label className="label">Contract name</label><input className="input" required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
@@ -42,15 +45,18 @@ function NewContractModal({ onClose, onSaved }) {
         </div>
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
-          <button type="submit" disabled={saving} className="btn-primary">{saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Save</button>
+          <button type="submit" disabled={saving} className="btn-primary">{saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} {initial?.id ? 'Save changes' : 'Save'}</button>
         </div>
       </form>
-    </div>
+    </Modal>
   );
 }
 
-function NewPOModal({ onClose, onSaved }) {
-  const [form, setForm] = useState({ po_number: '', vendor: '', item: '', amount: '', status: 'draft' });
+function POModal({ initial, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    po_number: initial?.po_number || '', vendor: initial?.vendor || '', item: initial?.item || '',
+    amount: initial?.amount ?? '', status: initial?.status || 'draft',
+  });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const submit = async (e) => {
@@ -58,7 +64,8 @@ function NewPOModal({ onClose, onSaved }) {
     setSaving(true);
     setError('');
     try {
-      await api.post('/procurement/purchase-orders', form);
+      if (initial?.id) await api.patch(`/procurement/purchase-orders/${initial.id}`, form);
+      else await api.post('/procurement/purchase-orders', form);
       onSaved();
     } catch (e) {
       setError(e.message);
@@ -67,15 +74,11 @@ function NewPOModal({ onClose, onSaved }) {
     }
   };
   return (
-    <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-50 px-4">
-      <form onSubmit={submit} className="card w-full max-w-lg p-5 space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="font-semibold text-slate-800">New purchase order</h2>
-          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
-        </div>
-        {error && <div className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
+    <Modal title={initial?.id ? 'Edit purchase order' : 'New purchase order'} onClose={onClose}>
+      <form onSubmit={submit} className="space-y-3">
+        {error && <div className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 rounded-lg px-3 py-2">{error}</div>}
         <div className="grid grid-cols-2 gap-3">
-          <div><label className="label">PO number</label><input className="input" required value={form.po_number} onChange={(e) => setForm({ ...form, po_number: e.target.value })} placeholder="PO-1001" /></div>
+          <div><label className="label">PO number</label><input className="input" required disabled={!!initial?.id} value={form.po_number} onChange={(e) => setForm({ ...form, po_number: e.target.value })} placeholder="PO-1001" /></div>
           <div><label className="label">Vendor</label><input className="input" required value={form.vendor} onChange={(e) => setForm({ ...form, vendor: e.target.value })} /></div>
           <div className="col-span-2"><label className="label">Item</label><input className="input" required value={form.item} onChange={(e) => setForm({ ...form, item: e.target.value })} /></div>
           <div><label className="label">Amount ($)</label><input type="number" className="input" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} /></div>
@@ -88,10 +91,10 @@ function NewPOModal({ onClose, onSaved }) {
         </div>
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
-          <button type="submit" disabled={saving} className="btn-primary">{saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Save</button>
+          <button type="submit" disabled={saving} className="btn-primary">{saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} {initial?.id ? 'Save changes' : 'Save'}</button>
         </div>
       </form>
-    </div>
+    </Modal>
   );
 }
 
@@ -100,8 +103,8 @@ export default function Procurement() {
   const [contracts, setContracts] = useState([]);
   const [pos, setPos] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [showNewContract, setShowNewContract] = useState(false);
-  const [showNewPO, setShowNewPO] = useState(false);
+  const [contractModal, setContractModal] = useState(null); // null | 'new' | contract
+  const [poModal, setPoModal] = useState(null); // null | 'new' | po
 
   const load = async () => {
     setLoading(true);
@@ -118,15 +121,15 @@ export default function Procurement() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-semibold text-slate-800">Contracts &amp; Purchase Orders</h1>
-          <p className="text-sm text-slate-500">Vendor agreements, renewal tracking, procurement</p>
-        </div>
-        <button onClick={() => tab === 'contracts' ? setShowNewContract(true) : setShowNewPO(true)} className="btn-primary">
-          <Plus size={14} /> {tab === 'contracts' ? 'New contract' : 'New PO'}
-        </button>
-      </div>
+      <PageHeader
+        title="Contracts & Purchase Orders"
+        description="Vendor agreements, renewal tracking, procurement"
+        actions={
+          <button onClick={() => tab === 'contracts' ? setContractModal('new') : setPoModal('new')} className="btn-primary">
+            <Plus size={14} /> {tab === 'contracts' ? 'New contract' : 'New PO'}
+          </button>
+        }
+      />
 
       <div className="flex gap-2">
         <button onClick={() => setTab('contracts')} className={tab === 'contracts' ? 'btn-primary text-xs' : 'btn-secondary text-xs'}>Contracts</button>
@@ -136,9 +139,9 @@ export default function Procurement() {
       {loading && <div className="text-slate-400 text-sm py-10 text-center">Loading…</div>}
 
       {tab === 'contracts' && !loading && (
-        <div className="card overflow-hidden">
+        <div className="card overflow-hidden overflow-x-auto">
           <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+            <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wide">
               <tr>
                 <th className="text-left px-4 py-2.5 font-medium">Vendor</th>
                 <th className="text-left px-4 py-2.5 font-medium">Contract</th>
@@ -156,19 +159,24 @@ export default function Procurement() {
                 const days = daysUntil(c.end_date);
                 const urgent = days !== null && days <= c.renewal_notice_days;
                 return (
-                  <tr key={c.id} className="border-t border-slate-100">
-                    <td className="px-4 py-2.5 font-medium text-slate-800">{c.vendor}</td>
-                    <td className="px-4 py-2.5 text-slate-600">{c.name}</td>
-                    <td className="px-4 py-2.5 capitalize text-slate-600">{c.type}</td>
-                    <td className="px-4 py-2.5 text-slate-600">{c.value ? `$${Number(c.value).toLocaleString()}` : '—'}</td>
+                  <tr key={c.id} className="border-t border-slate-100 dark:border-slate-800">
+                    <td className="px-4 py-2.5 font-medium text-slate-800 dark:text-slate-100">{c.vendor}</td>
+                    <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">{c.name}</td>
+                    <td className="px-4 py-2.5 capitalize text-slate-600 dark:text-slate-300">{c.type}</td>
+                    <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">{c.value ? `$${Number(c.value).toLocaleString()}` : '—'}</td>
                     <td className="px-4 py-2.5">
                       {days !== null ? (
-                        <span className={`badge ${urgent ? 'bg-red-50 text-red-600' : 'bg-slate-100 text-slate-600'}`}>
+                        <span className={`badge ${urgent ? 'bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400' : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'}`}>
                           {urgent && <AlertTriangle size={11} />} {days >= 0 ? `${days}d left` : 'expired'}
                         </span>
                       ) : '—'}
                     </td>
-                    <td className="px-4 py-2.5 text-right"><button onClick={() => removeContract(c.id)} className="text-slate-400 hover:text-red-500"><Trash2 size={15} /></button></td>
+                    <td className="px-4 py-2.5 text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        <button onClick={() => setContractModal(c)} className="text-slate-400 hover:text-brand-600"><Pencil size={14} /></button>
+                        <button onClick={() => removeContract(c.id)} className="text-slate-400 hover:text-red-500"><Trash2 size={15} /></button>
+                      </div>
+                    </td>
                   </tr>
                 );
               })}
@@ -178,9 +186,9 @@ export default function Procurement() {
       )}
 
       {tab === 'pos' && !loading && (
-        <div className="card overflow-hidden">
+        <div className="card overflow-hidden overflow-x-auto">
           <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+            <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wide">
               <tr>
                 <th className="text-left px-4 py-2.5 font-medium">PO #</th>
                 <th className="text-left px-4 py-2.5 font-medium">Vendor</th>
@@ -195,13 +203,18 @@ export default function Procurement() {
                 <tr><td colSpan={6} className="text-center py-10 text-slate-400"><ClipboardList className="mx-auto mb-2 text-slate-300" size={26} /> No purchase orders yet.</td></tr>
               )}
               {pos.map((p) => (
-                <tr key={p.id} className="border-t border-slate-100">
-                  <td className="px-4 py-2.5 font-mono text-xs text-slate-600">{p.po_number}</td>
-                  <td className="px-4 py-2.5 font-medium text-slate-800">{p.vendor}</td>
-                  <td className="px-4 py-2.5 text-slate-600">{p.item}</td>
-                  <td className="px-4 py-2.5 text-slate-600">{p.amount ? `$${Number(p.amount).toLocaleString()}` : '—'}</td>
-                  <td className="px-4 py-2.5"><span className="badge bg-slate-100 text-slate-600 capitalize">{p.status}</span></td>
-                  <td className="px-4 py-2.5 text-right"><button onClick={() => removePO(p.id)} className="text-slate-400 hover:text-red-500"><Trash2 size={15} /></button></td>
+                <tr key={p.id} className="border-t border-slate-100 dark:border-slate-800">
+                  <td className="px-4 py-2.5 font-mono text-xs text-slate-600 dark:text-slate-300">{p.po_number}</td>
+                  <td className="px-4 py-2.5 font-medium text-slate-800 dark:text-slate-100">{p.vendor}</td>
+                  <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">{p.item}</td>
+                  <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">{p.amount ? `$${Number(p.amount).toLocaleString()}` : '—'}</td>
+                  <td className="px-4 py-2.5"><span className="badge bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300 capitalize">{p.status}</span></td>
+                  <td className="px-4 py-2.5 text-right">
+                    <div className="flex items-center justify-end gap-2">
+                      <button onClick={() => setPoModal(p)} className="text-slate-400 hover:text-brand-600"><Pencil size={14} /></button>
+                      <button onClick={() => removePO(p.id)} className="text-slate-400 hover:text-red-500"><Trash2 size={15} /></button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -209,8 +222,8 @@ export default function Procurement() {
         </div>
       )}
 
-      {showNewContract && <NewContractModal onClose={() => setShowNewContract(false)} onSaved={() => { setShowNewContract(false); load(); }} />}
-      {showNewPO && <NewPOModal onClose={() => setShowNewPO(false)} onSaved={() => { setShowNewPO(false); load(); }} />}
+      {contractModal && <ContractModal initial={contractModal === 'new' ? null : contractModal} onClose={() => setContractModal(null)} onSaved={() => { setContractModal(null); load(); }} />}
+      {poModal && <POModal initial={poModal === 'new' ? null : poModal} onClose={() => setPoModal(null)} onSaved={() => { setPoModal(null); load(); }} />}
     </div>
   );
 }

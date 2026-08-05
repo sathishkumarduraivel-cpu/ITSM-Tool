@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { ArrowLeft, Sparkles, Loader2, Send, Wand2, Tags, Lock, ShieldCheck, Check, X, Boxes, Star } from 'lucide-react';
-import { api } from '../lib/api.js';
+import { ArrowLeft, Sparkles, Loader2, Send, Wand2, Tags, Lock, ShieldCheck, Check, X, Boxes, Star, Paperclip, Download, Trash2, UserCircle2 } from 'lucide-react';
+import { api, getStoredToken } from '../lib/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { PriorityBadge, StatusBadge, TypeBadge } from '../components/Badge.jsx';
 
@@ -73,6 +73,8 @@ export default function TicketDetail() {
   const [aiError, setAiError] = useState('');
   const [suggestion, setSuggestion] = useState('');
   const [fieldError, setFieldError] = useState('');
+  const [attachments, setAttachments] = useState([]);
+  const [uploading, setUploading] = useState(false);
 
   const load = async () => {
     const data = await api.get(`/tickets/${id}`);
@@ -82,6 +84,46 @@ export default function TicketDetail() {
     setApprovals(data.approvals || []);
     setLinkedAssets(data.linkedAssets || []);
     setCsat(data.csat);
+    setAttachments(data.attachments || []);
+  };
+
+  const uploadFiles = async (fileList) => {
+    if (!fileList || !fileList.length) return;
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      for (const f of fileList) formData.append('files', f);
+      await api.upload(`/tickets/${id}/attachments`, formData);
+      await load();
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const removeAttachment = async (attId) => {
+    await api.del(`/tickets/${id}/attachments/${attId}`);
+    load();
+  };
+
+  const downloadAttachment = async (att) => {
+    const resp = await fetch(`/api/tickets/${id}/attachments/${att.id}/download`, {
+      headers: { authorization: `Bearer ${getStoredToken()}` },
+    });
+    if (!resp.ok) return;
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = att.filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const formatSize = (bytes) => {
+    if (!bytes) return '';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
   useEffect(() => {
@@ -279,9 +321,46 @@ export default function TicketDetail() {
               </button>
             </form>
           </div>
+
+          <div className="card p-4">
+            <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3 flex items-center gap-1.5"><Paperclip size={14} /> Attachments</h3>
+            <div className="space-y-1.5 mb-3">
+              {attachments.length === 0 && <p className="text-sm text-slate-400">No files attached.</p>}
+              {attachments.map((a) => (
+                <div key={a.id} className="flex items-center justify-between gap-2 text-sm bg-slate-50 dark:bg-slate-800/60 rounded-lg px-3 py-2">
+                  <button onClick={() => downloadAttachment(a)} className="flex items-center gap-2 min-w-0 text-left hover:text-brand-700 dark:hover:text-brand-400">
+                    <Download size={13} className="shrink-0 text-slate-400" />
+                    <span className="truncate">{a.filename}</span>
+                    <span className="text-xs text-slate-400 shrink-0">{formatSize(a.size)}</span>
+                  </button>
+                  <button onClick={() => removeAttachment(a.id)} className="text-slate-400 hover:text-red-500 shrink-0"><Trash2 size={14} /></button>
+                </div>
+              ))}
+            </div>
+            <label className="btn-secondary text-xs cursor-pointer inline-flex">
+              {uploading ? <Loader2 size={13} className="animate-spin" /> : <Paperclip size={13} />}
+              {uploading ? 'Uploading…' : 'Attach files'}
+              <input type="file" multiple className="hidden" onChange={(e) => uploadFiles(e.target.files)} disabled={uploading} />
+            </label>
+          </div>
         </div>
 
         <div className="space-y-4">
+          <div className="card p-4 space-y-3">
+            <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 flex items-center gap-1.5"><UserCircle2 size={14} /> Requester</h3>
+            <div className="text-sm">
+              <div className="text-slate-800 dark:text-slate-100 font-medium">{ticket.requester_name || 'Unknown'}</div>
+              {ticket.requester_email && <div className="text-slate-500 dark:text-slate-400 text-xs">{ticket.requester_email}</div>}
+            </div>
+            {ticket.assignee_name && (
+              <div className="text-sm pt-2 border-t border-slate-100 dark:border-slate-800">
+                <div className="text-xs text-slate-400 mb-0.5">Assigned to</div>
+                <div className="text-slate-800 dark:text-slate-100 font-medium">{ticket.assignee_name}</div>
+                {ticket.assignee_email && <div className="text-slate-500 dark:text-slate-400 text-xs">{ticket.assignee_email}</div>}
+              </div>
+            )}
+          </div>
+
           <div className="card p-4 space-y-3">
             <h3 className="text-sm font-semibold text-slate-700">Details</h3>
             <div>

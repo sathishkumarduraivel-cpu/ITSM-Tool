@@ -39,7 +39,14 @@ router.patch('/:id', requireRole('admin'), (req, res) => {
   const { name, config, enabled } = req.body;
   const fields = []; const params = [];
   if (name !== undefined) { fields.push('name = ?'); params.push(name); }
-  if (config !== undefined) { fields.push('config = ?'); params.push(encrypt(JSON.stringify(config))); }
+  if (config !== undefined) {
+    // Merge onto the existing decrypted config rather than replacing it wholesale,
+    // so omitting a secret field (e.g. leaving SMTP password blank when editing)
+    // preserves the previously saved value instead of wiping it.
+    const existing = JSON.parse(decrypt(row.config) || '{}');
+    const merged = { ...existing, ...config };
+    fields.push('config = ?'); params.push(encrypt(JSON.stringify(merged)));
+  }
   if (enabled !== undefined) { fields.push('enabled = ?'); params.push(enabled ? 1 : 0); }
   params.push(req.params.id);
   db.prepare(`UPDATE integrations SET ${fields.join(', ')} WHERE id = ?`).run(...params);

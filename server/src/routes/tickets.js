@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import fs from 'node:fs';
 import { db, uid } from '../db.js';
 import { requireAuth, requireWorkspace } from '../middleware/auth.js';
 import { evaluateAutomations } from '../services/automationEngine.js';
@@ -7,6 +8,7 @@ import { notifyUser, renderTemplate } from '../services/notifications.js';
 import { computeSlaDueDate, findSlaPolicy } from '../services/sla.js';
 import { nextTicketNumber } from '../services/ticketNumbering.js';
 import { listFieldRules, applyFieldRules } from '../services/fieldRules.js';
+import { upload } from '../services/uploads.js';
 
 const router = Router();
 router.use(requireAuth, requireWorkspace);
@@ -173,6 +175,52 @@ router.delete('/:id/assets/:assetId', (req, res) => {
   const ticket = getTicket(req.params.id, req.workspaceId);
   if (!ticket) return res.status(404).json({ error: 'Not found' });
   db.prepare('DELETE FROM ticket_assets WHERE ticket_id = ? AND asset_id = ?').run(req.params.id, req.params.assetId);
+  res.json({ ok: true });
+});
+
+// ---- Attachments ----
+router.post('/:id/attachments', (req, res) => {
+  const ticket = getTicket(req.params.id, req.workspaceId);
+  if (!ticket) return res.status(404).json({ error: 'Not found' });
+  upload.array('files', 5)(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message });
+    const files = req.files || [];
+    for (const f of files) {
+      db.prepare(
+        'INSERT INTO attachments (id, workspace_id, ticket_id, filename, stored_path, mime, size, uploaded_by) VALUES (?,?,?,?,?,?,?,?)'
+      ).run(uid('att'), req.workspaceId, req.params.id, f.originalname, f.path, f.mimetype, f.size, req.user.id);
+    }
+    if (files.length) {
+      db.prepare('INSERT INTO ticket_history (id, ticket_id, event, detail) VALUES (?,?,?,?)').run(
+        uid('h'), req.params.id, 'attachment_added', files.map((f) => f.originalname).join(', ')
+      );
+    }
+    res.status(201).json({ ok: true, count: files.length });
+  });
+});
+
+router.get('/:id/attachments', (req, res) => {
+  const ticket = getTicket(req.params.id, req.workspaceId);
+  if (!ticket) return res.status(404).json({ error: 'Not found' });
+  const rows = db.prepare('SELECT id, filename, mime, size, uploaded_by, created_at FROM attachments WHERE ticket_id = ? ORDER BY created_at DESC').all(req.params.id);
+  res.json({ attachments: rows });
+});
+
+router.get('/:id/attachments/:attachmentId/download', (req, res) => {
+  const ticket = getTicket(req.params.id, req.workspaceId);
+  if (!ticket) return res.status(404).json({ error: 'Not found' });
+  const att = db.prepare('SELECT * FROM attachments WHERE id = ? AND ticket_id = ? AND workspace_id = ?').get(req.params.attachmentId, req.params.id, req.workspaceId);
+  if (!att) return res.status(404).json({ error: 'Not found' });
+  res.download(att.stored_path, att.filename);
+});
+
+router.delete('/:id/attachments/:attachmentId', (req, res) => {
+  const ticket = getTicket(req.params.id, req.workspaceId);
+  if (!ticket) return res.status(404).json({ error: 'Not found' });
+  const att = db.prepare('SELECT * FROM attachments WHERE id = ? AND ticket_id = ? AND workspace_id = ?').get(req.params.attachmentId, req.params.id, req.workspaceId);
+  if (!att) return res.status(404).json({ error: 'Not found' });
+  try { fs.unlinkSync(att.stored_path); } catch { /* file already gone */ }
+  db.prepare('DELETE FROM attachments WHERE id = ?').run(att.id);
   res.json({ ok: true });
 });
 

@@ -1,11 +1,17 @@
 import { useEffect, useState } from 'react';
-import { Plus, X, Loader2, Timer, Trash2, AlertTriangle } from 'lucide-react';
+import { Plus, Loader2, Timer, Trash2, AlertTriangle, Pencil } from 'lucide-react';
 import { api } from '../lib/api.js';
+import Modal from '../components/Modal.jsx';
+import PageHeader from '../components/PageHeader.jsx';
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-function NewPolicyModal({ onClose, onSaved }) {
-  const [form, setForm] = useState({ name: '', priority: '', category: '', team: '', response_minutes: 60, resolution_minutes: 1440, business_hours_only: false });
+function PolicyModal({ initial, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    name: initial?.name || '', priority: initial?.priority || '', category: initial?.category || '', team: initial?.team || '',
+    response_minutes: initial?.response_minutes ?? 60, resolution_minutes: initial?.resolution_minutes ?? 1440,
+    business_hours_only: initial ? !!initial.business_hours_only : false,
+  });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -14,7 +20,8 @@ function NewPolicyModal({ onClose, onSaved }) {
     setSaving(true);
     setError('');
     try {
-      await api.post('/sla/policies', form);
+      if (initial?.id) await api.patch(`/sla/policies/${initial.id}`, form);
+      else await api.post('/sla/policies', form);
       onSaved();
     } catch (e) {
       setError(e.message);
@@ -24,13 +31,9 @@ function NewPolicyModal({ onClose, onSaved }) {
   };
 
   return (
-    <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-50 px-4">
-      <form onSubmit={submit} className="card w-full max-w-lg p-5 space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="font-semibold text-slate-800">New SLA policy</h2>
-          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
-        </div>
-        {error && <div className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
+    <Modal title={initial?.id ? 'Edit SLA policy' : 'New SLA policy'} onClose={onClose}>
+      <form onSubmit={submit} className="space-y-3">
+        {error && <div className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 rounded-lg px-3 py-2">{error}</div>}
         <div>
           <label className="label">Name</label>
           <input className="input" required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
@@ -62,18 +65,18 @@ function NewPolicyModal({ onClose, onSaved }) {
             <input type="number" className="input" value={form.resolution_minutes} onChange={(e) => setForm({ ...form, resolution_minutes: Number(e.target.value) })} />
           </div>
         </div>
-        <label className="flex items-center gap-2 text-sm text-slate-600">
+        <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
           <input type="checkbox" checked={form.business_hours_only} onChange={(e) => setForm({ ...form, business_hours_only: e.target.checked })} />
           Count only business hours toward this SLA
         </label>
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
           <button type="submit" disabled={saving} className="btn-primary">
-            {saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Save policy
+            {saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} {initial?.id ? 'Save changes' : 'Save policy'}
           </button>
         </div>
       </form>
-    </div>
+    </Modal>
   );
 }
 
@@ -84,7 +87,7 @@ export default function SlaPolicies() {
   );
   const [atRisk, setAtRisk] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [showNew, setShowNew] = useState(false);
+  const [modal, setModal] = useState(null); // null | 'new' | policy
   const [savingHours, setSavingHours] = useState(false);
 
   const load = async () => {
@@ -125,20 +128,18 @@ export default function SlaPolicies() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-semibold text-slate-800">SLA Policies</h1>
-          <p className="text-sm text-slate-500">Response &amp; resolution targets, business hours, breach risk</p>
-        </div>
-        <button onClick={() => setShowNew(true)} className="btn-primary"><Plus size={14} /> New policy</button>
-      </div>
+      <PageHeader
+        title="SLA Policies"
+        description="Response & resolution targets, business hours, breach risk"
+        actions={<button onClick={() => setModal('new')} className="btn-primary"><Plus size={14} /> New policy</button>}
+      />
 
       {atRisk.length > 0 && (
-        <div className="card p-4 bg-red-50 border-red-100">
-          <h3 className="text-sm font-semibold text-red-700 mb-2 flex items-center gap-1.5"><AlertTriangle size={14} /> {atRisk.length} ticket(s) at risk or breached</h3>
+        <div className="card p-4 bg-red-50 dark:bg-red-500/10 border-red-100 dark:border-red-900">
+          <h3 className="text-sm font-semibold text-red-700 dark:text-red-400 mb-2 flex items-center gap-1.5"><AlertTriangle size={14} /> {atRisk.length} ticket(s) at risk or breached</h3>
           <div className="space-y-1">
             {atRisk.slice(0, 6).map((t) => (
-              <div key={t.id} className="text-sm text-red-700 flex items-center justify-between">
+              <div key={t.id} className="text-sm text-red-700 dark:text-red-400 flex items-center justify-between">
                 <span>{t.number} — {t.title}</span>
                 <span className="text-xs">{new Date(t.sla_due_at).toLocaleString()}</span>
               </div>
@@ -149,9 +150,9 @@ export default function SlaPolicies() {
 
       {loading && <div className="text-slate-400 text-sm py-10 text-center">Loading…</div>}
 
-      <div className="card overflow-hidden">
+      <div className="card overflow-hidden overflow-x-auto">
         <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+          <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wide">
             <tr>
               <th className="text-left px-4 py-2.5 font-medium">Name</th>
               <th className="text-left px-4 py-2.5 font-medium">Matches</th>
@@ -165,14 +166,19 @@ export default function SlaPolicies() {
               <tr><td colSpan={5} className="text-center py-8 text-slate-400"><Timer className="mx-auto mb-1 text-slate-300" size={22} /> No custom policies — a flat default applies.</td></tr>
             )}
             {policies.map((p) => (
-              <tr key={p.id} className="border-t border-slate-100">
-                <td className="px-4 py-2.5 font-medium text-slate-800">{p.name}</td>
-                <td className="px-4 py-2.5 text-slate-600 text-xs">
+              <tr key={p.id} className="border-t border-slate-100 dark:border-slate-800">
+                <td className="px-4 py-2.5 font-medium text-slate-800 dark:text-slate-100">{p.name}</td>
+                <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300 text-xs">
                   {[p.priority && `priority=${p.priority}`, p.category && `category=${p.category}`, p.team && `team=${p.team}`].filter(Boolean).join(', ') || 'any ticket'}
                 </td>
-                <td className="px-4 py-2.5 text-slate-600">{p.response_minutes}m</td>
-                <td className="px-4 py-2.5 text-slate-600">{p.resolution_minutes}m</td>
-                <td className="px-4 py-2.5 text-right"><button onClick={() => remove(p.id)} className="text-slate-400 hover:text-red-500"><Trash2 size={15} /></button></td>
+                <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">{p.response_minutes}m</td>
+                <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">{p.resolution_minutes}m</td>
+                <td className="px-4 py-2.5 text-right">
+                  <div className="flex items-center justify-end gap-2">
+                    <button onClick={() => setModal(p)} className="text-slate-400 hover:text-brand-600"><Pencil size={14} /></button>
+                    <button onClick={() => remove(p.id)} className="text-slate-400 hover:text-red-500"><Trash2 size={15} /></button>
+                  </div>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -180,11 +186,11 @@ export default function SlaPolicies() {
       </div>
 
       <div className="card p-4">
-        <h3 className="text-sm font-semibold text-slate-700 mb-3">Business hours (used when a policy has "business hours only" checked)</h3>
+        <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3">Business hours (used when a policy has "business hours only" checked)</h3>
         <div className="space-y-2">
           {businessHours.map((h, i) => (
             <div key={i} className="flex items-center gap-3">
-              <label className="flex items-center gap-2 w-24 text-sm text-slate-600">
+              <label className="flex items-center gap-2 w-24 text-sm text-slate-600 dark:text-slate-300">
                 <input type="checkbox" checked={h.enabled} onChange={(e) => setBusinessHours(businessHours.map((x, idx) => idx === i ? { ...x, enabled: e.target.checked } : x))} />
                 {DAYS[i]}
               </label>
@@ -199,7 +205,7 @@ export default function SlaPolicies() {
         </button>
       </div>
 
-      {showNew && <NewPolicyModal onClose={() => setShowNew(false)} onSaved={() => { setShowNew(false); load(); }} />}
+      {modal && <PolicyModal initial={modal === 'new' ? null : modal} onClose={() => setModal(null)} onSaved={() => { setModal(null); load(); }} />}
     </div>
   );
 }

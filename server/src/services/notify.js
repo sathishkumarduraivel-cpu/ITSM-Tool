@@ -1,10 +1,11 @@
 import fetch from 'node-fetch';
+import nodemailer from 'nodemailer';
 import { db } from '../db.js';
 import { decrypt } from './crypto.js';
 
-// Generic outbound notifier. In this MVP, "email" and "slack"/"teams" simply
-// deliver via a configured webhook URL (works with Slack/Teams incoming webhooks
-// out of the box). Real SMTP/Jira wiring can be dropped into the switch below.
+// Generic outbound notifier. Slack/Teams/webhook deliver via a configured
+// webhook URL. Email delivers for real via nodemailer/SMTP once host/user/pass
+// are configured on the integration; Jira remains simulated (no API wired up).
 export async function sendIntegrationMessage(integration, payload) {
   const config = JSON.parse(decrypt(integration.config) || '{}');
   try {
@@ -23,9 +24,26 @@ export async function sendIntegrationMessage(integration, payload) {
       return { ok: true };
     }
     if (integration.type === 'email_smtp') {
-      // Placeholder: log-only delivery so the MVP runs without real SMTP creds.
-      console.log(`[email_smtp:${integration.name}] To: ${config.to_default || '(ticket requester)'} — ${payload.text}`);
-      return { ok: true, simulated: true };
+      const to = payload.to || config.to_default;
+      if (!config.host || !config.user || !to) {
+        // Not fully configured yet — fall back to a simulated send so the
+        // rest of the flow (notifications, automations) doesn't break.
+        console.log(`[email_smtp:${integration.name}] SMTP not fully configured — simulated. To: ${to || '(none)'} — ${payload.text}`);
+        return { ok: true, simulated: true };
+      }
+      const transporter = nodemailer.createTransport({
+        host: config.host,
+        port: Number(config.port) || 587,
+        secure: !!config.secure,
+        auth: config.user ? { user: config.user, pass: config.pass } : undefined,
+      });
+      await transporter.sendMail({
+        from: config.from || config.user,
+        to,
+        subject: payload.subject || 'ITSM AI Notification',
+        text: payload.text,
+      });
+      return { ok: true };
     }
     if (integration.type === 'jira') {
       console.log(`[jira:${integration.name}] Would create/update Jira issue — ${payload.text}`);

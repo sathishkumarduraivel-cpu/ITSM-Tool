@@ -5,6 +5,7 @@ const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
+  const [workspaces, setWorkspaces] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const loadMe = useCallback(async () => {
@@ -13,8 +14,9 @@ export function AuthProvider({ children }) {
       return;
     }
     try {
-      const { user } = await api.get('/auth/me');
-      setUser(user);
+      const data = await api.get('/auth/me');
+      setUser(data.user);
+      setWorkspaces(data.workspaces || []);
     } catch {
       setToken(null);
     } finally {
@@ -30,6 +32,7 @@ export function AuthProvider({ children }) {
     const data = await api.post('/auth/login', { email, password });
     setToken(data.token);
     setUser(data.user);
+    setWorkspaces(data.workspaces || []);
     return data.user;
   };
 
@@ -37,16 +40,26 @@ export function AuthProvider({ children }) {
     const data = await api.post('/auth/register', payload);
     setToken(data.token);
     setUser(data.user);
+    setWorkspaces(data.workspaces || []);
+    return data.user;
+  };
+
+  const switchWorkspace = async (workspaceId) => {
+    const data = await api.post('/auth/switch-workspace', { workspace_id: workspaceId });
+    setToken(data.token);
+    setUser(data.user);
+    setWorkspaces(data.workspaces || []);
     return data.user;
   };
 
   const logout = () => {
     setToken(null);
     setUser(null);
+    setWorkspaces([]);
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout }}>
+    <AuthContext.Provider value={{ user, workspaces, loading, login, register, logout, switchWorkspace }}>
       {children}
     </AuthContext.Provider>
   );

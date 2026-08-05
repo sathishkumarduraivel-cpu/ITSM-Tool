@@ -1,6 +1,10 @@
 import { useEffect, useState } from 'react';
 import { Plus, X, Loader2, Workflow, Trash2, ToggleLeft, ToggleRight, ChevronDown, ChevronUp, Zap } from 'lucide-react';
 import { api } from '../lib/api.js';
+import Modal from '../components/Modal.jsx';
+import EmptyState from '../components/EmptyState.jsx';
+import { SkeletonRows } from '../components/Skeleton.jsx';
+import PageHeader from '../components/PageHeader.jsx';
 
 const EVENTS = [
   { value: 'ticket_created', label: 'Ticket created' },
@@ -15,6 +19,34 @@ const OPS = [
   { value: 'in', label: 'is one of (comma list)' },
 ];
 
+// Fields with a known, valid set of values get a dropdown instead of free text
+// — this is what makes conditions like `type = request` reliable to author.
+const FIELD_ENUMS = {
+  priority: ['low', 'medium', 'high', 'critical'],
+  status: ['open', 'in_progress', 'on_hold', 'resolved', 'closed'],
+  type: ['incident', 'request', 'problem', 'change'],
+};
+
+function ConditionValueInput({ field, value, onChange, teams }) {
+  if (FIELD_ENUMS[field]) {
+    return (
+      <select className="input" value={value} onChange={(e) => onChange(e.target.value)}>
+        <option value="">Select value…</option>
+        {FIELD_ENUMS[field].map((v) => <option key={v} value={v}>{v}</option>)}
+      </select>
+    );
+  }
+  if (field === 'team' && teams.length > 0) {
+    return (
+      <select className="input" value={value} onChange={(e) => onChange(e.target.value)}>
+        <option value="">Select team…</option>
+        {teams.map((t) => <option key={t} value={t}>{t}</option>)}
+      </select>
+    );
+  }
+  return <input className="input" value={value} onChange={(e) => onChange(e.target.value)} placeholder="value" />;
+}
+
 const ACTION_TYPES = [
   { value: 'set_priority', label: 'Set priority' },
   { value: 'set_status', label: 'Set status' },
@@ -25,6 +57,7 @@ const ACTION_TYPES = [
   { value: 'notify_integration', label: 'Notify integration (Slack/Teams/Webhook)' },
   { value: 'ai_categorize', label: 'AI: auto-categorize ticket' },
   { value: 'ai_suggest_resolution', label: 'AI: post suggested resolution' },
+  { value: 'auto_approve', label: 'Auto-approve pending approval' },
 ];
 
 function emptyAction(type = 'set_priority') {
@@ -82,11 +115,14 @@ function ActionEditor({ action, onChange, onRemove, agents, integrations }) {
       {(action.type === 'ai_categorize' || action.type === 'ai_suggest_resolution') && (
         <p className="text-xs text-slate-500">Uses your default AI provider (configure under AI Settings).</p>
       )}
+      {action.type === 'auto_approve' && (
+        <p className="text-xs text-slate-500">Automatically approves any pending approval steps on the triggering ticket, skipping manual review.</p>
+      )}
     </div>
   );
 }
 
-function WorkflowModal({ initial, onClose, onSaved, agents, integrations }) {
+function WorkflowModal({ initial, onClose, onSaved, agents, integrations, teams }) {
   const [name, setName] = useState(initial?.name || '');
   const [description, setDescription] = useState(initial?.description || '');
   const [event, setEvent] = useState(initial?.trigger?.event || 'ticket_created');
@@ -120,13 +156,9 @@ function WorkflowModal({ initial, onClose, onSaved, agents, integrations }) {
   };
 
   return (
-    <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-50 px-4 py-8 overflow-y-auto">
-      <form onSubmit={submit} className="card w-full max-w-2xl p-5 space-y-4 my-auto">
-        <div className="flex items-center justify-between">
-          <h2 className="font-semibold text-slate-800">{initial?.id ? 'Edit workflow' : 'New automation workflow'}</h2>
-          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
-        </div>
-        {error && <div className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
+    <Modal title={initial?.id ? 'Edit workflow' : 'New automation workflow'} onClose={onClose} maxWidth="max-w-2xl">
+      <form onSubmit={submit} className="space-y-4">
+        {error && <div className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 rounded-lg px-3 py-2">{error}</div>}
 
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -159,7 +191,9 @@ function WorkflowModal({ initial, onClose, onSaved, agents, integrations }) {
                 <select className="input w-auto" value={c.op} onChange={(e) => updateCondition(i, { op: e.target.value })}>
                   {OPS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
-                <input className="input" value={c.value} onChange={(e) => updateCondition(i, { value: e.target.value })} placeholder="value" />
+                <div className="flex-1">
+                  <ConditionValueInput field={c.field} value={c.value} onChange={(v) => updateCondition(i, { value: v })} teams={teams} />
+                </div>
                 <button type="button" onClick={() => removeCondition(i)} className="text-slate-400 hover:text-red-500 shrink-0"><Trash2 size={15} /></button>
               </div>
             ))}
@@ -192,7 +226,7 @@ function WorkflowModal({ initial, onClose, onSaved, agents, integrations }) {
           </button>
         </div>
       </form>
-    </div>
+    </Modal>
   );
 }
 
@@ -200,20 +234,23 @@ export default function Automations() {
   const [workflows, setWorkflows] = useState([]);
   const [agents, setAgents] = useState([]);
   const [integrations, setIntegrations] = useState([]);
+  const [teams, setTeams] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null); // null | 'new' | workflow object
   const [expanded, setExpanded] = useState(null);
 
   const load = async () => {
     setLoading(true);
-    const [wf, users, integ] = await Promise.all([
+    const [wf, users, integ, teamsRes] = await Promise.all([
       api.get('/automations'),
       api.get('/auth/users'),
       api.get('/integrations'),
+      api.get('/tickets/teams'),
     ]);
     setWorkflows(wf.automations);
     setAgents(users.users.filter((u) => u.role === 'agent' || u.role === 'admin'));
     setIntegrations(integ.integrations);
+    setTeams(teamsRes.teams);
     setLoading(false);
   };
 
@@ -232,20 +269,16 @@ export default function Automations() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-semibold text-slate-800">Automation</h1>
-          <p className="text-sm text-slate-500">Trigger → conditions → actions, including built-in AI steps</p>
-        </div>
-        <button onClick={() => setModal('new')} className="btn-primary"><Plus size={14} /> New workflow</button>
-      </div>
+      <PageHeader
+        title="Automation"
+        description="Trigger → conditions → actions, including built-in AI steps"
+        actions={<button onClick={() => setModal('new')} className="btn-primary"><Plus size={14} /> New workflow</button>}
+      />
 
-      {loading && <div className="text-slate-400 text-sm py-10 text-center">Loading…</div>}
+      {loading && <SkeletonRows count={3} />}
 
       {!loading && workflows.length === 0 && (
-        <div className="card p-10 text-center text-slate-400">
-          <Workflow className="mx-auto mb-2 text-slate-300" size={28} /> No automations yet — create one to auto-triage, escalate, or notify.
-        </div>
+        <EmptyState icon={Workflow} description="No automations yet — create one to auto-triage, escalate, or notify." />
       )}
 
       <div className="space-y-2">
@@ -257,12 +290,12 @@ export default function Automations() {
                   {wf.enabled ? <ToggleRight size={26} /> : <ToggleLeft size={26} />}
                 </button>
                 <div className="min-w-0">
-                  <div className="font-medium text-slate-800 truncate">{wf.name}</div>
+                  <div className="font-medium text-slate-800 dark:text-slate-100 truncate">{wf.name}</div>
                   <div className="text-xs text-slate-500 truncate">{wf.description}</div>
                 </div>
               </div>
               <div className="flex items-center gap-3 shrink-0">
-                <span className="badge bg-slate-100 text-slate-600">{wf.trigger.event.replace('_', ' ')}</span>
+                <span className="badge bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">{wf.trigger.event.replace('_', ' ')}</span>
                 <span className="text-xs text-slate-400">{wf.run_count} runs</span>
                 <button onClick={() => setModal(wf)} className="btn-ghost text-xs">Edit</button>
                 <button onClick={() => remove(wf)} className="text-slate-400 hover:text-red-500"><Trash2 size={15} /></button>
@@ -272,7 +305,7 @@ export default function Automations() {
               </div>
             </div>
             {expanded === wf.id && (
-              <div className="mt-3 pt-3 border-t border-slate-100 text-sm space-y-2">
+              <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 text-sm space-y-2">
                 <div>
                   <span className="text-slate-500">Conditions: </span>
                   {wf.conditions.length === 0 ? <span className="text-slate-400">always runs</span> : (
@@ -297,6 +330,7 @@ export default function Automations() {
           onSaved={() => { setModal(null); load(); }}
           agents={agents}
           integrations={integrations}
+          teams={teams}
         />
       )}
     </div>

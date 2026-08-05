@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Plus, X, Loader2, Boxes, Link2, Ticket as TicketIcon, Trash2 } from 'lucide-react';
+import { Plus, X, Loader2, Boxes, Link2, Ticket as TicketIcon, Trash2, Pencil } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
+import Modal from '../components/Modal.jsx';
+import PageHeader from '../components/PageHeader.jsx';
 
 const REL_TYPES = ['depends_on', 'hosted_on', 'connected_to'];
 
@@ -35,22 +37,22 @@ function AssetDetailModal({ asset, allAssets, onClose, onChanged }) {
   if (!detail) return null;
 
   return (
-    <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-50 px-4 py-8 overflow-y-auto" onClick={onClose}>
+    <div className="fixed inset-0 bg-slate-900/40 dark:bg-slate-950/60 flex items-center justify-center z-50 px-4 py-8 overflow-y-auto" onClick={onClose}>
       <div className="card w-full max-w-2xl p-5 space-y-4 my-auto" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="font-semibold text-slate-800">{asset.name}</h2>
+            <h2 className="font-semibold text-slate-800 dark:text-slate-100">{asset.name}</h2>
             <span className="font-mono text-xs text-slate-400">{asset.tag}</span>
           </div>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
         </div>
 
         <div>
-          <h3 className="text-sm font-semibold text-slate-700 mb-2 flex items-center gap-1.5"><Link2 size={14} /> Depends on</h3>
+          <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2 flex items-center gap-1.5"><Link2 size={14} /> Depends on</h3>
           <div className="space-y-1">
             {detail.dependsOn.length === 0 && <p className="text-xs text-slate-400">No dependencies recorded.</p>}
             {detail.dependsOn.map((r) => (
-              <div key={r.rel_id} className="flex items-center justify-between text-sm bg-slate-50 rounded-md px-2 py-1.5">
+              <div key={r.rel_id} className="flex items-center justify-between text-sm bg-slate-50 dark:bg-slate-800/60 rounded-md px-2 py-1.5">
                 <span>{r.name} <span className="text-xs text-slate-400">({r.relationship_type.replace('_', ' ')})</span></span>
                 <button onClick={() => removeRelationship(r.rel_id)} className="text-slate-400 hover:text-red-500"><Trash2 size={13} /></button>
               </div>
@@ -70,10 +72,10 @@ function AssetDetailModal({ asset, allAssets, onClose, onChanged }) {
 
         {detail.dependedOnBy.length > 0 && (
           <div>
-            <h3 className="text-sm font-semibold text-slate-700 mb-2">Impact — depended on by</h3>
+            <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2">Impact — depended on by</h3>
             <div className="space-y-1">
               {detail.dependedOnBy.map((r) => (
-                <div key={r.rel_id} className="text-sm bg-amber-50 text-amber-700 rounded-md px-2 py-1.5">
+                <div key={r.rel_id} className="text-sm bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400 rounded-md px-2 py-1.5">
                   {r.name} would be impacted ({r.relationship_type.replace('_', ' ')} this asset)
                 </div>
               ))}
@@ -82,11 +84,11 @@ function AssetDetailModal({ asset, allAssets, onClose, onChanged }) {
         )}
 
         <div>
-          <h3 className="text-sm font-semibold text-slate-700 mb-2 flex items-center gap-1.5"><TicketIcon size={14} /> Linked tickets</h3>
+          <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2 flex items-center gap-1.5"><TicketIcon size={14} /> Linked tickets</h3>
           {detail.linkedTickets.length === 0 && <p className="text-xs text-slate-400">No tickets linked to this asset.</p>}
           <div className="space-y-1">
             {detail.linkedTickets.map((t) => (
-              <button key={t.id} onClick={() => navigate(`/tickets/${t.id}`)} className="w-full text-left text-sm bg-slate-50 hover:bg-slate-100 rounded-md px-2 py-1.5">
+              <button key={t.id} onClick={() => navigate(`/tickets/${t.id}`)} className="w-full text-left text-sm bg-slate-50 dark:bg-slate-800/60 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md px-2 py-1.5">
                 {t.number} — {t.title}
               </button>
             ))}
@@ -101,14 +103,17 @@ const TYPES = ['hardware', 'software', 'license', 'service'];
 const STATUSES = ['in_use', 'in_stock', 'retired', 'maintenance'];
 
 const STATUS_STYLES = {
-  in_use: 'bg-emerald-50 text-emerald-700',
-  in_stock: 'bg-brand-50 text-brand-700',
-  retired: 'bg-slate-100 text-slate-500',
-  maintenance: 'bg-amber-50 text-amber-700',
+  in_use: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400',
+  in_stock: 'bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-400',
+  retired: 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400',
+  maintenance: 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400',
 };
 
-function NewAssetModal({ onClose, onCreated }) {
-  const [form, setForm] = useState({ tag: '', name: '', type: 'hardware', status: 'in_stock', vendor: '', location: '' });
+function AssetModal({ initial, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    tag: initial?.tag || '', name: initial?.name || '', type: initial?.type || 'hardware', status: initial?.status || 'in_stock',
+    vendor: initial?.vendor || '', location: initial?.location || '',
+  });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -117,8 +122,9 @@ function NewAssetModal({ onClose, onCreated }) {
     setSaving(true);
     setError('');
     try {
-      const { asset } = await api.post('/assets', form);
-      onCreated(asset);
+      if (initial?.id) await api.patch(`/assets/${initial.id}`, form);
+      else await api.post('/assets', form);
+      onSaved();
     } catch (e) {
       setError(e.message);
     } finally {
@@ -127,13 +133,9 @@ function NewAssetModal({ onClose, onCreated }) {
   };
 
   return (
-    <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-50 px-4">
-      <form onSubmit={submit} className="card w-full max-w-lg p-5 space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="font-semibold text-slate-800">New asset</h2>
-          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
-        </div>
-        {error && <div className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
+    <Modal title={initial?.id ? 'Edit asset' : 'New asset'} onClose={onClose}>
+      <form onSubmit={submit} className="space-y-3">
+        {error && <div className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 rounded-lg px-3 py-2">{error}</div>}
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="label">Asset tag</label>
@@ -167,18 +169,18 @@ function NewAssetModal({ onClose, onCreated }) {
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
           <button type="submit" disabled={saving} className="btn-primary">
-            {saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Add asset
+            {saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} {initial?.id ? 'Save changes' : 'Add asset'}
           </button>
         </div>
       </form>
-    </div>
+    </Modal>
   );
 }
 
 export default function Assets() {
   const [assets, setAssets] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [showNew, setShowNew] = useState(false);
+  const [modal, setModal] = useState(null); // null | 'new' | asset object
   const [detailAsset, setDetailAsset] = useState(null);
 
   const load = async () => {
@@ -192,17 +194,15 @@ export default function Assets() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-semibold text-slate-800">Assets</h1>
-          <p className="text-sm text-slate-500">Hardware, software, licenses &amp; services</p>
-        </div>
-        <button onClick={() => setShowNew(true)} className="btn-primary"><Plus size={14} /> New asset</button>
-      </div>
+      <PageHeader
+        title="Assets"
+        description="Hardware, software, licenses & services"
+        actions={<button onClick={() => setModal('new')} className="btn-primary"><Plus size={14} /> New asset</button>}
+      />
 
-      <div className="card overflow-hidden">
+      <div className="card overflow-hidden overflow-x-auto">
         <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+          <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wide">
             <tr>
               <th className="text-left px-4 py-2.5 font-medium">Tag</th>
               <th className="text-left px-4 py-2.5 font-medium">Name</th>
@@ -210,31 +210,35 @@ export default function Assets() {
               <th className="text-left px-4 py-2.5 font-medium">Status</th>
               <th className="text-left px-4 py-2.5 font-medium">Vendor</th>
               <th className="text-left px-4 py-2.5 font-medium">Location</th>
+              <th className="text-left px-4 py-2.5 font-medium"></th>
             </tr>
           </thead>
           <tbody>
-            {loading && <tr><td colSpan={6} className="text-center py-10 text-slate-400">Loading…</td></tr>}
+            {loading && <tr><td colSpan={7} className="text-center py-10 text-slate-400">Loading…</td></tr>}
             {!loading && assets.length === 0 && (
-              <tr><td colSpan={6} className="text-center py-10 text-slate-400">
+              <tr><td colSpan={7} className="text-center py-10 text-slate-400">
                 <Boxes className="mx-auto mb-2 text-slate-300" size={28} /> No assets yet.
               </td></tr>
             )}
             {!loading && assets.map((a) => (
-              <tr key={a.id} onClick={() => setDetailAsset(a)} className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer">
-                <td className="px-4 py-2.5 font-mono text-xs text-slate-600">{a.tag}</td>
-                <td className="px-4 py-2.5 font-medium text-slate-800">{a.name}</td>
-                <td className="px-4 py-2.5 capitalize text-slate-600">{a.type}</td>
+              <tr key={a.id} onClick={() => setDetailAsset(a)} className="border-t border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/40 cursor-pointer">
+                <td className="px-4 py-2.5 font-mono text-xs text-slate-600 dark:text-slate-300">{a.tag}</td>
+                <td className="px-4 py-2.5 font-medium text-slate-800 dark:text-slate-100">{a.name}</td>
+                <td className="px-4 py-2.5 capitalize text-slate-600 dark:text-slate-300">{a.type}</td>
                 <td className="px-4 py-2.5"><span className={`badge ${STATUS_STYLES[a.status]}`}>{a.status.replace('_', ' ')}</span></td>
-                <td className="px-4 py-2.5 text-slate-600">{a.vendor || '—'}</td>
-                <td className="px-4 py-2.5 text-slate-600">{a.location || '—'}</td>
+                <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">{a.vendor || '—'}</td>
+                <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">{a.location || '—'}</td>
+                <td className="px-4 py-2.5 text-right">
+                  <button onClick={(e) => { e.stopPropagation(); setModal(a); }} className="text-slate-400 hover:text-brand-600"><Pencil size={14} /></button>
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
 
-      {showNew && (
-        <NewAssetModal onClose={() => setShowNew(false)} onCreated={() => { setShowNew(false); load(); }} />
+      {modal && (
+        <AssetModal initial={modal === 'new' ? null : modal} onClose={() => setModal(null)} onSaved={() => { setModal(null); load(); }} />
       )}
       {detailAsset && (
         <AssetDetailModal asset={detailAsset} allAssets={assets} onClose={() => setDetailAsset(null)} onChanged={load} />

@@ -71,13 +71,6 @@ export default function Login() {
           <div className="text-center text-sm">
             <Link to="/register" className="text-brand-600 hover:text-brand-700 font-medium">Create an account</Link>
           </div>
-
-          <div className="text-xs text-slate-400 bg-slate-50 dark:bg-slate-800/60 rounded-xl p-3 space-y-1">
-            <div className="font-medium text-slate-500 dark:text-slate-400">Demo accounts (after running the seed script):</div>
-            <div>admin@itsm.ai / Admin@123 — Admin</div>
-            <div>priya@itsm.ai / Agent@123 — Agent</div>
-            <div>sam@company.com / User@123 — Requester</div>
-          </div>
         </form>
       </div>
     </div>

@@ -44,6 +44,8 @@ function Home() {
 
 export default function App() {
   return (
+    <>
+    <div className="grain-overlay" />
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
@@ -73,5 +75,6 @@ export default function App() {
         }
       />
     </Routes>
+    </>
   );
 }

@@ -62,7 +62,7 @@ export default function GlobalSearch() {
 
   return (
     <div className="relative" ref={ref}>
-      <div className="relative">
+      <div className="relative command-glow rounded-full">
         <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
         <input
           ref={inputRef}

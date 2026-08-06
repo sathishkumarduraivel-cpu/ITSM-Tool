@@ -15,7 +15,64 @@ body {
   text-rendering: optimizeLegibility;
 }
 .dark body {
-  background-color: #0a0b14;
+  background-color: #07080D;
+}
+
+/* Film-grain — the signature texture of premium dark consoles: a fixed,
+   near-invisible layer of noise so dark surfaces read as textured obsidian
+   rather than flat color. Inline SVG turbulence filter, no external asset. */
+.grain-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0.035;
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+.dark .grain-overlay {
+  opacity: 0.05;
+  mix-blend-mode: overlay;
+}
+
+/* Animated conic-gradient ring — the "AI-native" focal-point treatment,
+   used on the global command/search bar. Registering --angle via @property
+   lets the browser interpolate the rotation smoothly instead of snapping. */
+@property --angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+@keyframes rotateAngle {
+  to { --angle: 360deg; }
+}
+.command-glow {
+  position: relative;
+  z-index: 0;
+}
+.command-glow::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  z-index: -1;
+  border-radius: inherit;
+  padding: 1px;
+  background: conic-gradient(from var(--angle), transparent 0%, #33E3FF 12%, transparent 26%, transparent 74%, #7166FF 88%, transparent 100%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: 0;
+  animation: rotateAngle 7s linear infinite;
+  transition: opacity 0.2s ease;
+}
+.dark .command-glow::before {
+  opacity: 0.45;
+}
+.command-glow:focus-within::before {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .command-glow::before { animation: none; }
 }
 
 h1, h2, h3 {

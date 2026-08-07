@@ -354,7 +354,7 @@ function TicketDetailPanel({ ticketId, onOpenCopilot }) {
       </div>
 
       <button onClick={onOpenCopilot} className="btn-primary text-xs w-full justify-center">
-        <Bot size={13} /> Open in AI Copilot
+        <Bot size={13} /> Open in Sona
       </button>
     </div>
   );
@@ -397,7 +397,7 @@ function CopilotDrawer({ ticketId, open, onClose }) {
               <Bot size={14} className="text-white" />
             </div>
             <div>
-              <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">AI Copilot</div>
+              <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">Sona</div>
               {ticket && <div className="text-[11px] text-slate-400 font-mono">{ticket.number}</div>}
             </div>
           </div>
@@ -405,7 +405,7 @@ function CopilotDrawer({ ticketId, open, onClose }) {
         </div>
 
         <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2.5">
-          {!ticket && <p className="text-sm text-slate-400 text-center mt-6">Select a ticket to bring it into the Copilot.</p>}
+          {!ticket && <p className="text-sm text-slate-400 text-center mt-6">Select a ticket to bring it into Sona.</p>}
           {ticket && (
             <div className="text-xs text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800/60 rounded-lg px-3 py-2">
               {ticket.title}
@@ -664,7 +664,7 @@ export default function Dashboard() {
         <button
           onClick={() => setCopilotOpen(true)}
           className="fixed bottom-6 right-6 z-30 w-14 h-14 rounded-full bg-gradient-to-br from-brand-500 to-brand-700 shadow-glow-brand flex items-center justify-center text-white hover:scale-105 transition-transform"
-          title="Open AI Copilot"
+          title="Open Sona"
         >
           <Bot size={22} />
         </button>

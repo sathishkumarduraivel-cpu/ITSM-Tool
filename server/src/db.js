@@ -403,6 +403,11 @@ CREATE TABLE IF NOT EXISTS group_members (
 // Additive migrations for columns introduced after the initial tickets table
 // (safe no-ops if the column already exists).
 const ticketColumnMigrations = [
+  // Test mode lets an automation evaluate against real ticket events without
+  // executing its actions — it logs what it would have done instead. Kept as
+  // a column on automations itself (not a separate enabled-like flag) so an
+  // automation is always in exactly one of: off / test / live.
+  "ALTER TABLE automations ADD COLUMN test_mode INTEGER DEFAULT 0",
   "ALTER TABLE tickets ADD COLUMN risk TEXT",
   "ALTER TABLE tickets ADD COLUMN planned_start TEXT",
   "ALTER TABLE tickets ADD COLUMN planned_end TEXT",

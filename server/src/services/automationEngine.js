@@ -39,6 +39,36 @@ function logRun(automationId, ticketId, status, detail) {
   ).run(uid('log'), automationId, ticketId || null, status, detail || '');
 }
 
+// Describes what an action WOULD do, without doing it — no DB writes, no AI
+// calls, no outbound notifications. Mirrors runAction's return messages so a
+// test-mode log reads the same as a real one, just prefixed "would".
+export function describeAction(action) {
+  switch (action.type) {
+    case 'set_priority':
+      return `would set priority -> ${action.priority}`;
+    case 'set_status':
+      return `would set status -> ${action.status}`;
+    case 'assign_team':
+      return `would set group -> ${action.team}`;
+    case 'assign_agent':
+      return `would assign to agent ${action.agent_id}`;
+    case 'tag_category':
+      return `would set category -> ${action.category}`;
+    case 'add_comment':
+      return 'would add a comment';
+    case 'notify_integration':
+      return `would notify integration${action.integration_id ? '' : '(s)'}: "${action.message || 'Automation triggered'}"`;
+    case 'ai_categorize':
+      return 'would ask AI to auto-categorize this ticket';
+    case 'ai_suggest_resolution':
+      return 'would ask AI to post a suggested resolution';
+    case 'auto_approve':
+      return 'would auto-approve any pending approvals on this ticket';
+    default:
+      return `would run unknown action type: ${action.type}`;
+  }
+}
+
 async function runAction(action, ticket) {
   const t = () => db.prepare('SELECT * FROM tickets WHERE id = ?').get(ticket.id);
   switch (action.type) {
@@ -103,6 +133,13 @@ async function runAction(action, ticket) {
   }
 }
 
+// Exported so routes (e.g. the "test against last 30 days" endpoint) can
+// check a ticket against a workflow's conditions using the exact same logic
+// evaluateAutomations uses live, without duplicating it.
+export function ticketMatchesConditions(ticket, conditions) {
+  return conditions.every((c) => matchCondition(ticket, c));
+}
+
 export async function evaluateAutomations(event, ticket) {
   const rows = db.prepare('SELECT * FROM automations WHERE enabled = 1 AND workspace_id = ?').all(ticket.workspace_id);
   for (const row of rows) {
@@ -119,6 +156,13 @@ export async function evaluateAutomations(event, ticket) {
     if (!allMatch) {
       continue;
     }
+
+    if (row.test_mode) {
+      const results = actions.map(describeAction);
+      logRun(row.id, ticket.id, 'test_match', results.join('; '));
+      continue;
+    }
+
     try {
       const results = [];
       for (const action of actions) {

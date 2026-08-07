@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Plus, X, Loader2, Workflow, Trash2, ToggleLeft, ToggleRight, ChevronDown, ChevronUp, Zap } from 'lucide-react';
+import { Plus, X, Loader2, Workflow, Trash2, ChevronDown, ChevronUp, Zap, FlaskConical, ListChecks, PlayCircle } from 'lucide-react';
 import { api } from '../lib/api.js';
 import Modal from '../components/Modal.jsx';
 import EmptyState from '../components/EmptyState.jsx';
@@ -126,6 +126,52 @@ function ActionEditor({ action, onChange, onRemove, agents, integrations, groups
   );
 }
 
+// A workflow is always in exactly one of three states — no separate
+// "enabled" + "test" toggles that could contradict each other:
+//  off  -> not evaluated at all
+//  test -> evaluated against real tickets, but only logs what it would do
+//  live -> evaluated and actually executes
+const MODES = [
+  { key: 'off', label: 'Off', on: 'bg-slate-400 text-white' },
+  { key: 'test', label: 'Test', on: 'bg-amber-500 text-white' },
+  { key: 'live', label: 'Live', on: 'bg-emerald-500 text-white' },
+];
+
+function modeOf(wf) {
+  if (!wf.enabled) return 'off';
+  return wf.test_mode ? 'test' : 'live';
+}
+
+function ModeControl({ wf, onChange }) {
+  const current = modeOf(wf);
+  const patchFor = {
+    off: { enabled: false, test_mode: false },
+    test: { enabled: true, test_mode: true },
+    live: { enabled: true, test_mode: false },
+  };
+  return (
+    <div className="flex items-center rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden shrink-0">
+      {MODES.map((m) => (
+        <button
+          key={m.key}
+          type="button"
+          onClick={() => onChange(patchFor[m.key])}
+          className={`px-2.5 py-1 text-[11px] font-semibold transition-colors ${
+            current === m.key ? m.on : 'bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800'
+          }`}
+          title={
+            m.key === 'off' ? 'Not evaluated at all' :
+            m.key === 'test' ? 'Checks real tickets, only logs what it would do — nothing actually happens' :
+            'Fully live — actions run for real'
+          }
+        >
+          {m.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function WorkflowModal({ initial, onClose, onSaved, agents, integrations, groups }) {
   const [name, setName] = useState(initial?.name || '');
   const [description, setDescription] = useState(initial?.description || '');
@@ -243,6 +289,9 @@ export default function Automations() {
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null); // null | 'new' | workflow object
   const [expanded, setExpanded] = useState(null);
+  const [logs, setLogs] = useState({}); // { [workflowId]: rows }
+  const [testResults, setTestResults] = useState({}); // { [workflowId]: { checked, matched, results } }
+  const [testing, setTesting] = useState(null); // workflow id currently running a test-run
 
   const load = async () => {
     setLoading(true);
@@ -261,8 +310,8 @@ export default function Automations() {
 
   useEffect(() => { load(); }, []);
 
-  const toggle = async (wf) => {
-    await api.patch(`/automations/${wf.id}`, { enabled: !wf.enabled });
+  const setMode = async (wf, patch) => {
+    await api.patch(`/automations/${wf.id}`, patch);
     load();
   };
 
@@ -270,6 +319,25 @@ export default function Automations() {
     if (!confirm(`Delete workflow "${wf.name}"?`)) return;
     await api.del(`/automations/${wf.id}`);
     load();
+  };
+
+  const toggleExpand = async (id) => {
+    const next = expanded === id ? null : id;
+    setExpanded(next);
+    if (next && !logs[next]) {
+      const { logs: rows } = await api.get(`/automations/${next}/logs`);
+      setLogs((l) => ({ ...l, [next]: rows }));
+    }
+  };
+
+  const runTest = async (id) => {
+    setTesting(id);
+    try {
+      const res = await api.post(`/automations/${id}/test-run`, {});
+      setTestResults((r) => ({ ...r, [id]: res }));
+    } finally {
+      setTesting(null);
+    }
   };
 
   return (
@@ -287,45 +355,108 @@ export default function Automations() {
       )}
 
       <div className="space-y-2">
-        {workflows.map((wf) => (
-          <div key={wf.id} className="card p-4">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-3 min-w-0">
-                <button onClick={() => toggle(wf)} className={wf.enabled ? 'text-emerald-500' : 'text-slate-300'} title="Toggle enabled">
-                  {wf.enabled ? <ToggleRight size={26} /> : <ToggleLeft size={26} />}
-                </button>
-                <div className="min-w-0">
-                  <div className="font-medium text-slate-800 dark:text-slate-100 truncate">{wf.name}</div>
-                  <div className="text-xs text-slate-500 truncate">{wf.description}</div>
+        {workflows.map((wf) => {
+          const mode = modeOf(wf);
+          const wfLogs = logs[wf.id];
+          const wfTest = testResults[wf.id];
+          return (
+            <div key={wf.id} className="card p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  <ModeControl wf={wf} onChange={(patch) => setMode(wf, patch)} />
+                  <div className="min-w-0">
+                    <div className="font-medium text-slate-800 dark:text-slate-100 truncate">{wf.name}</div>
+                    <div className="text-xs text-slate-500 truncate">{wf.description}</div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 shrink-0">
+                  <span className="badge bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">{wf.trigger.event.replace('_', ' ')}</span>
+                  <span className="text-xs text-slate-400">{wf.run_count} runs</span>
+                  <button onClick={() => setModal(wf)} className="btn-ghost text-xs">Edit</button>
+                  <button onClick={() => remove(wf)} className="text-slate-400 hover:text-red-500"><Trash2 size={15} /></button>
+                  <button onClick={() => toggleExpand(wf.id)} className="text-slate-400 hover:text-slate-600">
+                    {expanded === wf.id ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+                  </button>
                 </div>
               </div>
-              <div className="flex items-center gap-3 shrink-0">
-                <span className="badge bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">{wf.trigger.event.replace('_', ' ')}</span>
-                <span className="text-xs text-slate-400">{wf.run_count} runs</span>
-                <button onClick={() => setModal(wf)} className="btn-ghost text-xs">Edit</button>
-                <button onClick={() => remove(wf)} className="text-slate-400 hover:text-red-500"><Trash2 size={15} /></button>
-                <button onClick={() => setExpanded(expanded === wf.id ? null : wf.id)} className="text-slate-400 hover:text-slate-600">
-                  {expanded === wf.id ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
-                </button>
-              </div>
+
+              {mode === 'test' && (
+                <div className="mt-3 flex items-center gap-1.5 text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-500/10 rounded-lg px-2.5 py-1.5">
+                  <FlaskConical size={13} /> Test mode — watching real tickets, but not acting on them. Nothing here is affecting live data.
+                </div>
+              )}
+
+              {expanded === wf.id && (
+                <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 text-sm space-y-3">
+                  <div>
+                    <span className="text-slate-500">Conditions: </span>
+                    {wf.conditions.length === 0 ? <span className="text-slate-400">always runs</span> : (
+                      <span className="text-slate-700 dark:text-slate-200">{wf.conditions.map((c) => `${FIELD_LABELS[c.field] || c.field} ${c.op} "${c.value}"`).join('  AND  ')}</span>
+                    )}
+                  </div>
+                  <div>
+                    <span className="text-slate-500">Actions: </span>
+                    <span className="text-slate-700 dark:text-slate-200">{wf.actions.map((a) => ACTION_TYPES.find((t) => t.value === a.type)?.label || a.type).join('  →  ')}</span>
+                  </div>
+                  {wf.last_run_at && <div className="text-xs text-slate-400">Last ran: {new Date(wf.last_run_at).toLocaleString()}</div>}
+
+                  {/* Instant feedback: check against the last 30 days without waiting for new tickets */}
+                  <div className="card-flat p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-semibold text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+                        <PlayCircle size={13} /> Test against last 30 days
+                      </span>
+                      <button onClick={() => runTest(wf.id)} disabled={testing === wf.id} className="btn-secondary text-xs">
+                        {testing === wf.id ? <Loader2 size={12} className="animate-spin" /> : <PlayCircle size={12} />} Run check
+                      </button>
+                    </div>
+                    {wfTest && (
+                      <div className="space-y-1.5">
+                        <p className="text-xs text-slate-500">
+                          Checked {wfTest.checked} ticket(s) from the last 30 days — {wfTest.matched} would have matched.
+                        </p>
+                        {wfTest.results.slice(0, 10).map((r) => (
+                          <div key={r.ticket.id} className="text-xs bg-white dark:bg-slate-900 rounded-md px-2 py-1.5 border border-slate-100 dark:border-slate-800">
+                            <span className="font-mono text-slate-400">{r.ticket.number}</span>{' '}
+                            <span className="text-slate-700 dark:text-slate-200">{r.ticket.title}</span>
+                            <div className="text-slate-400 mt-0.5">{r.would.join('; ')}</div>
+                          </div>
+                        ))}
+                        {wfTest.results.length > 10 && (
+                          <p className="text-[11px] text-slate-400">+ {wfTest.results.length - 10} more not shown</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Run log: real executions ("Ran") and, in Test mode, dry-run matches ("Would run") */}
+                  <div className="card-flat p-3">
+                    <div className="text-xs font-semibold text-slate-600 dark:text-slate-300 flex items-center gap-1.5 mb-2">
+                      <ListChecks size={13} /> Run log
+                    </div>
+                    {!wfLogs && <p className="text-xs text-slate-400">Loading…</p>}
+                    {wfLogs?.length === 0 && <p className="text-xs text-slate-400">No runs recorded yet.</p>}
+                    <div className="space-y-1.5">
+                      {wfLogs?.slice(0, 10).map((log) => (
+                        <div key={log.id} className="text-xs flex items-start gap-2">
+                          <span className={`badge shrink-0 ${
+                            log.status === 'success' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' :
+                            log.status === 'test_match' ? 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400' :
+                            'bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400'
+                          }`}>
+                            {log.status === 'success' ? 'Ran' : log.status === 'test_match' ? 'Would run' : 'Error'}
+                          </span>
+                          <span className="text-slate-500 dark:text-slate-400">{log.detail}</span>
+                          <span className="text-slate-300 dark:text-slate-600 ml-auto shrink-0 font-mono">{new Date(log.created_at).toLocaleString()}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
-            {expanded === wf.id && (
-              <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 text-sm space-y-2">
-                <div>
-                  <span className="text-slate-500">Conditions: </span>
-                  {wf.conditions.length === 0 ? <span className="text-slate-400">always runs</span> : (
-                    <span className="text-slate-700">{wf.conditions.map((c) => `${FIELD_LABELS[c.field] || c.field} ${c.op} "${c.value}"`).join('  AND  ')}</span>
-                  )}
-                </div>
-                <div>
-                  <span className="text-slate-500">Actions: </span>
-                  <span className="text-slate-700">{wf.actions.map((a) => ACTION_TYPES.find((t) => t.value === a.type)?.label || a.type).join('  →  ')}</span>
-                </div>
-                {wf.last_run_at && <div className="text-xs text-slate-400">Last ran: {new Date(wf.last_run_at).toLocaleString()}</div>}
-              </div>
-            )}
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {modal && (

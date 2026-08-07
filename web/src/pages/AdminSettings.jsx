@@ -704,15 +704,28 @@ function FieldManagerHub() {
 }
 
 // ============================== Business Rules ==============================
-// Conditional visibility / required / format-validation logic layered on top
-// of whatever fields exist for a type — built-in ones above, plus anything
-// Field Manager created. Never creates fields itself.
+// Business Rule Logic Engine: named IF/THEN rules with AND/OR-combined
+// conditions and multiple actions per rule, evaluated in priority order.
+// Targets whatever fields exist for a type — built-in ones above, plus
+// anything Field Manager created. Never creates fields itself.
 
-const CONDITION_OPS = [
+const OPERATORS = [
   { value: 'equals', label: 'equals' },
   { value: 'not_equals', label: 'does not equal' },
   { value: 'contains', label: 'contains' },
-  { value: 'in', label: 'is one of (comma-separated)' },
+  { value: 'greater_than', label: 'is greater than' },
+  { value: 'less_than', label: 'is less than' },
+  { value: 'is_empty', label: 'is empty' },
+  { value: 'is_not_empty', label: 'is not empty' },
+];
+const ACTION_TYPES = [
+  { value: 'show_field', label: 'Show field' },
+  { value: 'hide_field', label: 'Hide field' },
+  { value: 'mandate_field', label: 'Mandate field (required)' },
+  { value: 'set_options', label: 'Set dropdown options' },
+  { value: 'remove_options', label: 'Remove dropdown options' },
+  { value: 'set_value', label: 'Set field value' },
+  { value: 'validate_field', label: 'Validate format' },
 ];
 const VALIDATION_TYPES = [
   { value: '', label: 'None' },
@@ -721,6 +734,7 @@ const VALIDATION_TYPES = [
   { value: 'max_length', label: 'Maximum length' },
   { value: 'number_range', label: 'Number between (min,max)' },
 ];
+const emptyAction = () => ({ type: 'show_field', field: '', options: [], value: '', validation_type: '', validation_value: '', validation_message: '' });
 
 // Built-in fields for a type plus whatever custom fields Field Manager has
 // created for it — the full set Business Rules can target or react to.
@@ -737,160 +751,262 @@ function useTypeCatalog(type) {
   return [...builtinCatalog(type), ...catalogItemField, ...customFields.map((f) => ({ key: f.field_key, label: f.label, custom: true }))];
 }
 
-// Live list of real Service Catalog item names, for the "Service Item"
-// field's value picker — never a free-text guess at a name that might not exist.
-function useCatalogItemNames(type) {
-  const [items, setItems] = useState([]);
+// Every option-bearing field's real base options for a type (built-in enums,
+// Field Manager dropdowns, live Service Catalog names) — what a condition's
+// value picker and the Set/Remove Dropdown Options actions work against.
+function useFieldOptionsMap(type) {
+  const [map, setMap] = useState({});
   useEffect(() => {
-    if (type !== 'request') { setItems([]); return; }
-    api.get('/catalog/items').then(({ items }) => setItems(items)).catch(() => setItems([]));
+    if (!type) { setMap({}); return; }
+    api.get(`/business-rules/options?ticket_type=${type}`).then(({ options }) => setMap(options)).catch(() => setMap({}));
   }, [type]);
-  return items;
+  return map;
 }
 
-// Rule builder in a modal. When opened from the Business Rules hub's own
-// top-right "Create rule" (no type pre-chosen) it asks for the ticket type
-// first, then reveals only that type's own fields — built-in and custom.
-// When opened from inside a type's own manager, the type is already fixed.
-function RuleModal({ initialType, field, rule, onClose, onSaved }) {
-  const [type, setType] = useState(initialType || '');
-  const catalog = useTypeCatalog(type);
-  const catalogItems = useCatalogItemNames(type);
-  const [selectedField, setSelectedField] = useState(field || '');
-  const [visible, setVisible] = useState(rule ? !!rule.visible : true);
-  const [required, setRequired] = useState(rule ? !!rule.required : false);
-  const [conditionField, setConditionField] = useState(rule?.condition_field || '');
-  const [conditionOp, setConditionOp] = useState(rule?.condition_op || 'equals');
-  const [conditionValue, setConditionValue] = useState(rule?.condition_value || '');
-  const [validationType, setValidationType] = useState(rule?.validation_type || '');
-  const [validationValue, setValidationValue] = useState(rule?.validation_value || '');
-  const [validationMessage, setValidationMessage] = useState(rule?.validation_message || '');
-  const [saving, setSaving] = useState(false);
+function ConditionRow({ condition, catalog, fieldOptionsMap, onChange, onRemove }) {
+  const options = fieldOptionsMap[condition.field];
+  const needsValue = condition.operator !== 'is_empty' && condition.operator !== 'is_not_empty';
+  return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <select className="input w-auto" value={condition.field} onChange={(e) => onChange({ ...condition, field: e.target.value })}>
+        <option value="">Choose a field…</option>
+        {catalog.map((f) => <option key={f.key} value={f.key}>{f.label}{f.custom ? ' (custom)' : ''}</option>)}
+      </select>
+      <select className="input w-auto" value={condition.operator} onChange={(e) => onChange({ ...condition, operator: e.target.value })}>
+        {OPERATORS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+      {needsValue && (
+        options ? (
+          <select className="input w-auto" value={condition.value} onChange={(e) => onChange({ ...condition, value: e.target.value })}>
+            <option value="">Choose…</option>
+            {options.map((o) => <option key={o} value={o}>{o}</option>)}
+          </select>
+        ) : (
+          <input className="input w-auto" placeholder="value" value={condition.value} onChange={(e) => onChange({ ...condition, value: e.target.value })} />
+        )
+      )}
+      <button type="button" onClick={onRemove} className="text-slate-400 hover:text-red-500 p-1.5"><X size={14} /></button>
+    </div>
+  );
+}
 
-  useEffect(() => {
-    if (!field && catalog.length && !selectedField) setSelectedField(catalog[0].key);
-  }, [catalog, field, selectedField]);
-
-  const labelFor = (key) => catalog.find((f) => f.key === key)?.label || FIELD_META[key]?.label || key;
-  // A condition can react to any of this type's own fields, minus the one
-  // being configured right now (Priority/Status are already universal
-  // members of `catalog` via UNIVERSAL_FIELDS, so no need to add them again).
-  const conditionCandidates = catalog.map((f) => f.key).filter((k) => k !== selectedField);
-
-  const save = async () => {
-    setSaving(true);
-    const patch = {
-      visible, required,
-      condition_field: conditionField || null,
-      condition_op: conditionField ? conditionOp : null,
-      condition_value: conditionField ? conditionValue : null,
-      validation_type: validationType || null,
-      validation_value: validationType ? validationValue : null,
-      validation_message: validationType ? validationMessage : null,
-    };
-    if (rule) {
-      await api.patch(`/field-rules/${rule.id}`, patch);
-    } else {
-      await api.post('/field-rules', { ticket_type: type, field_name: selectedField, ...patch });
-    }
-    setSaving(false);
-    onSaved();
+function ActionRow({ action, catalog, fieldOptionsMap, onChange, onRemove }) {
+  const needsOptionPicker = action.type === 'set_options' || action.type === 'remove_options';
+  const optionBearingFields = catalog.filter((f) => fieldOptionsMap[f.key] !== undefined);
+  const fieldChoices = needsOptionPicker ? optionBearingFields : catalog;
+  const baseOptions = fieldOptionsMap[action.field] || [];
+  const toggleOption = (opt) => {
+    const has = (action.options || []).includes(opt);
+    onChange({ ...action, options: has ? action.options.filter((o) => o !== opt) : [...(action.options || []), opt] });
   };
 
   return (
-    <Modal title={field ? `Edit rule — ${labelFor(field)}` : 'Create rule'} onClose={onClose}>
+    <div className="rounded-lg border border-slate-200 dark:border-white/10 p-3 space-y-2">
+      <div className="flex items-center gap-2 flex-wrap">
+        <select
+          className="input w-auto"
+          value={action.type}
+          onChange={(e) => onChange({ ...action, type: e.target.value, field: needsOptionPicker !== (e.target.value === 'set_options' || e.target.value === 'remove_options') ? '' : action.field })}
+        >
+          {ACTION_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+        </select>
+        <select className="input w-auto" value={action.field} onChange={(e) => onChange({ ...action, field: e.target.value })}>
+          <option value="">Choose a field…</option>
+          {fieldChoices.map((f) => <option key={f.key} value={f.key}>{f.label}{f.custom ? ' (custom)' : ''}</option>)}
+        </select>
+        <button type="button" onClick={onRemove} className="text-slate-400 hover:text-red-500 p-1.5 ml-auto"><X size={14} /></button>
+      </div>
+
+      {needsOptionPicker && action.field && (
+        <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-sm text-slate-600 dark:text-slate-300 pl-1">
+          {baseOptions.length === 0 && <span className="text-xs text-slate-400">This field has no options of its own yet.</span>}
+          {baseOptions.map((opt) => (
+            <label key={opt} className="flex items-center gap-1.5">
+              <input type="checkbox" checked={(action.options || []).includes(opt)} onChange={() => toggleOption(opt)} /> {opt}
+            </label>
+          ))}
+        </div>
+      )}
+
+      {action.type === 'set_value' && action.field && (
+        fieldOptionsMap[action.field] ? (
+          <select className="input w-auto" value={action.value} onChange={(e) => onChange({ ...action, value: e.target.value })}>
+            <option value="">Choose a value…</option>
+            {fieldOptionsMap[action.field].map((o) => <option key={o} value={o}>{o}</option>)}
+          </select>
+        ) : (
+          <input className="input w-auto" placeholder="value" value={action.value} onChange={(e) => onChange({ ...action, value: e.target.value })} />
+        )
+      )}
+
+      {action.type === 'validate_field' && action.field && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <select className="input w-auto" value={action.validation_type} onChange={(e) => onChange({ ...action, validation_type: e.target.value })}>
+            {VALIDATION_TYPES.map((v) => <option key={v.value} value={v.value}>{v.label}</option>)}
+          </select>
+          {action.validation_type && (
+            <>
+              <input
+                className="input w-auto"
+                placeholder={action.validation_type === 'regex' ? 'e.g. ^AT-\\d{4}$' : action.validation_type === 'number_range' ? 'e.g. 1,100' : 'e.g. 10'}
+                value={action.validation_value}
+                onChange={(e) => onChange({ ...action, validation_value: e.target.value })}
+              />
+              <input
+                className="input w-auto"
+                placeholder="Custom error message (optional)"
+                value={action.validation_message}
+                onChange={(e) => onChange({ ...action, validation_message: e.target.value })}
+              />
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Full rule builder. When opened from the Business Rules hub's own top-right
+// "Create rule" (no type pre-chosen) it asks for the ticket type first, then
+// reveals only that type's own fields — built-in and custom.
+function RuleBuilderModal({ initialType, rule, onClose, onSaved }) {
+  const [type, setType] = useState(initialType || '');
+  const catalog = useTypeCatalog(type);
+  const fieldOptionsMap = useFieldOptionsMap(type);
+  const [name, setName] = useState(rule?.name || '');
+  const [logic, setLogic] = useState(rule?.conditions?.logic || 'AND');
+  const [conditions, setConditions] = useState(rule?.conditions?.rules || []);
+  const [actions, setActions] = useState(rule?.actions?.length ? rule.actions.map((a) => ({ options: [], value: '', validation_type: '', validation_value: '', validation_message: '', ...a })) : [emptyAction()]);
+  const [priority, setPriority] = useState(rule?.priority ?? 100);
+  const [status, setStatus] = useState(rule?.status || 'active');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const setCondition = (i, next) => setConditions(conditions.map((c, idx) => (idx === i ? next : c)));
+  const setAction = (i, next) => setActions(actions.map((a, idx) => (idx === i ? next : a)));
+
+  const save = async () => {
+    setError('');
+    if (!name.trim()) { setError('Rule name is required.'); return; }
+    if (!type) { setError('Choose a ticket type.'); return; }
+    const cleanActions = actions.filter((a) => a.field);
+    if (!cleanActions.length) { setError('Add at least one action with a field selected.'); return; }
+    const cleanConditions = conditions.filter((c) => c.field);
+    setSaving(true);
+    try {
+      const payload = {
+        ticket_type: type, name: name.trim(),
+        conditions: { logic, rules: cleanConditions },
+        actions: cleanActions,
+        priority: Number(priority) || 100,
+        status,
+      };
+      if (rule) {
+        await api.patch(`/business-rules/${rule.id}`, payload);
+      } else {
+        await api.post('/business-rules', payload);
+      }
+      onSaved();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title={rule ? 'Edit rule' : 'Create rule'} maxWidth="max-w-2xl" onClose={onClose}>
       <div className="space-y-4">
+        {error && <div className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 rounded-lg px-3 py-2">{error}</div>}
+
         {!initialType && (
           <div>
             <label className="label">Ticket type</label>
-            <select className="input" value={type} onChange={(e) => { setType(e.target.value); setSelectedField(''); setConditionField(''); }}>
+            <select className="input" value={type} onChange={(e) => { setType(e.target.value); setConditions([]); setActions([emptyAction()]); }}>
               <option value="">Choose a ticket type…</option>
               {TICKET_TYPES.map((t) => <option key={t} value={t}>{TYPE_META[t].label}</option>)}
             </select>
           </div>
         )}
 
-        {type && !field && (
-          <div>
-            <label className="label">Field</label>
-            <select className="input" value={selectedField} onChange={(e) => setSelectedField(e.target.value)}>
-              {catalog.map((f) => <option key={f.key} value={f.key}>{f.label}{f.custom ? ' (custom)' : ''}</option>)}
-            </select>
-          </div>
-        )}
-
         {type && (
           <>
-            <div className="flex items-center gap-4">
-              <label className="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-300">
-                <input type="checkbox" checked={visible} onChange={(e) => setVisible(e.target.checked)} /> Visible
-              </label>
-              <label className="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-300">
-                <input type="checkbox" checked={required} disabled={!visible} onChange={(e) => setRequired(e.target.checked)} /> Required
-              </label>
-            </div>
-
-            <div>
-              <div className="label mb-1.5">Only apply this rule when…</div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <select className="input w-auto" value={conditionField} onChange={(e) => setConditionField(e.target.value)}>
-                  <option value="">Always (no condition)</option>
-                  {conditionCandidates.map((k) => <option key={k} value={k}>{labelFor(k)}</option>)}
-                </select>
-                {conditionField && (
-                  <>
-                    <select className="input w-auto" value={conditionOp} onChange={(e) => setConditionOp(e.target.value)}>
-                      {CONDITION_OPS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                    </select>
-                    {conditionField === 'catalog_item_name' ? (
-                      <select className="input w-auto" value={conditionValue} onChange={(e) => setConditionValue(e.target.value)}>
-                        <option value="">Choose a service item…</option>
-                        {catalogItems.map((item) => <option key={item.id} value={item.name}>{item.name}</option>)}
-                      </select>
-                    ) : (
-                      <input className="input w-auto" placeholder="value" value={conditionValue} onChange={(e) => setConditionValue(e.target.value)} />
-                    )}
-                  </>
-                )}
+            <div className="grid grid-cols-3 gap-3">
+              <div className="col-span-2">
+                <label className="label">Rule name</label>
+                <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Require Subcategory for Hardware" />
               </div>
-              {conditionField && (
-                <p className="text-xs text-slate-400 mt-1.5">
-                  When {labelFor(conditionField)} {CONDITION_OPS.find((o) => o.value === conditionOp)?.label} "{conditionValue || '…'}", this field will be {visible ? 'visible' : 'hidden'}{required && visible ? ' and required' : ''}.
-                  In every other case it uses the default instead (visible, not required) — e.g. to make a field hidden normally and only shown in this one case, set the condition to the opposite (e.g. "does not equal") and uncheck Visible above.
-                </p>
-              )}
+              <div>
+                <label className="label">Priority</label>
+                <input type="number" className="input" value={priority} onChange={(e) => setPriority(e.target.value)} title="Lower runs first" />
+              </div>
             </div>
 
+            <label className="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-300">
+              <input type="checkbox" checked={status === 'active'} onChange={(e) => setStatus(e.target.checked ? 'active' : 'inactive')} /> Active
+            </label>
+
             <div>
-              <div className="label mb-1.5">Format validation</div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <select className="input w-auto" value={validationType} onChange={(e) => setValidationType(e.target.value)}>
-                  {VALIDATION_TYPES.map((v) => <option key={v.value} value={v.value}>{v.label}</option>)}
-                </select>
-                {validationType && (
-                  <input
-                    className="input w-auto"
-                    placeholder={validationType === 'regex' ? 'e.g. ^AT-\\d{4}$' : validationType === 'number_range' ? 'e.g. 1,100' : 'e.g. 10'}
-                    value={validationValue}
-                    onChange={(e) => setValidationValue(e.target.value)}
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="label mb-0">
+                  IF — match{' '}
+                  <select className="input w-auto inline-block py-1 px-2 text-xs" value={logic} onChange={(e) => setLogic(e.target.value)}>
+                    <option value="AND">ALL (AND)</option>
+                    <option value="OR">ANY (OR)</option>
+                  </select>
+                  {' '}of the following
+                </div>
+              </div>
+              <div className="space-y-2">
+                {conditions.map((c, i) => (
+                  <ConditionRow
+                    key={i}
+                    condition={c}
+                    catalog={catalog}
+                    fieldOptionsMap={fieldOptionsMap}
+                    onChange={(next) => setCondition(i, next)}
+                    onRemove={() => setConditions(conditions.filter((_, idx) => idx !== i))}
                   />
-                )}
+                ))}
+                {conditions.length === 0 && <p className="text-xs text-slate-400">No conditions — this rule always applies.</p>}
+                <button
+                  type="button"
+                  onClick={() => setConditions([...conditions, { field: catalog[0]?.key || '', operator: 'equals', value: '' }])}
+                  className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline flex items-center gap-0.5"
+                >
+                  <Plus size={13} /> Add condition
+                </button>
               </div>
-              {validationType && (
-                <input
-                  className="input mt-2"
-                  placeholder="Custom error message shown to the user (optional)"
-                  value={validationMessage}
-                  onChange={(e) => setValidationMessage(e.target.value)}
-                />
-              )}
+            </div>
+
+            <div>
+              <div className="label mb-1.5">THEN — do the following</div>
+              <div className="space-y-2">
+                {actions.map((a, i) => (
+                  <ActionRow
+                    key={i}
+                    action={a}
+                    catalog={catalog}
+                    fieldOptionsMap={fieldOptionsMap}
+                    onChange={(next) => setAction(i, next)}
+                    onRemove={() => setActions(actions.filter((_, idx) => idx !== i))}
+                  />
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setActions([...actions, emptyAction()])}
+                  className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline flex items-center gap-0.5"
+                >
+                  <Plus size={13} /> Add action
+                </button>
+              </div>
             </div>
           </>
         )}
 
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
-          <button type="button" disabled={saving || !type || !selectedField} onClick={save} className="btn-primary">
+          <button type="button" disabled={saving || !type} onClick={save} className="btn-primary">
             {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Save rule
           </button>
         </div>
@@ -899,25 +1015,43 @@ function RuleModal({ initialType, field, rule, onClose, onSaved }) {
   );
 }
 
-// One ticket type's own Business Rules manager — only ever shows fields that
-// actually exist for that type (built-in + Field Manager's custom ones).
+// One ticket type's own Business Rules manager — a list of named rules,
+// sorted by priority, each summarizing its own IF/THEN in plain language.
 function TypeRuleManager({ type, onBack }) {
   const [rules, setRules] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [modalField, setModalField] = useState(undefined); // undefined = closed, null = create (pick field), string = edit that field
+  const [modalRule, setModalRule] = useState(undefined); // undefined = closed, null = create, object = edit
   const catalog = useTypeCatalog(type);
   const meta = TYPE_META[type];
 
   const load = async () => {
     setLoading(true);
-    const { rules } = await api.get(`/field-rules?ticket_type=${type}`);
-    setRules(rules.filter((r) => !r.category));
+    const { rules } = await api.get(`/business-rules?ticket_type=${type}`);
+    setRules(rules);
     setLoading(false);
   };
-
   useEffect(() => { load(); }, [type]);
 
-  const ruleFor = (key) => rules.find((r) => r.field_name === key);
+  const labelFor = (key) => catalog.find((f) => f.key === key)?.label || FIELD_META[key]?.label || key;
+  const describeConditions = (conditions) => {
+    if (!conditions?.rules?.length) return 'always';
+    return conditions.rules
+      .map((c) => `${labelFor(c.field)} ${OPERATORS.find((o) => o.value === c.operator)?.label || c.operator}${['is_empty', 'is_not_empty'].includes(c.operator) ? '' : ` "${c.value}"`}`)
+      .join(conditions.logic === 'OR' ? ' OR ' : ' AND ');
+  };
+  const describeActions = (actions) => (actions || [])
+    .map((a) => `${ACTION_TYPES.find((t) => t.value === a.type)?.label || a.type} → ${labelFor(a.field)}`)
+    .join('; ');
+
+  const toggleStatus = async (rule) => {
+    await api.patch(`/business-rules/${rule.id}`, { status: rule.status === 'active' ? 'inactive' : 'active' });
+    load();
+  };
+  const remove = async (rule) => {
+    if (!confirm(`Delete rule "${rule.name}"?`)) return;
+    await api.del(`/business-rules/${rule.id}`);
+    load();
+  };
 
   return (
     <div className="space-y-4">
@@ -927,56 +1061,51 @@ function TypeRuleManager({ type, onBack }) {
 
       <PageHeader
         title={`${meta.label} business rules`}
-        description={`Only fields that exist on ${meta.label.toLowerCase()} tickets — built-in and custom. What you configure here is exactly what happens when someone creates a ${meta.label.toLowerCase()} ticket.`}
-        actions={<button onClick={() => setModalField(null)} className="btn-primary"><Plus size={14} /> Create rule</button>}
+        description={`Named IF/THEN rules, evaluated in priority order (lower runs first). Targets built-in fields and anything Field Manager created for ${meta.label.toLowerCase()} tickets.`}
+        actions={<button onClick={() => setModalRule(null)} className="btn-primary"><Plus size={14} /> Create rule</button>}
       />
 
-      {loading || !catalog.length ? (
+      {loading ? (
         <div className="text-slate-400 text-sm py-10 text-center">Loading…</div>
+      ) : rules.length === 0 ? (
+        <EmptyState title="No business rules yet" description={`Create a rule to show, hide, mandate, or auto-populate fields on ${meta.label.toLowerCase()} tickets.`} />
       ) : (
         <div className="card divide-y divide-slate-100 dark:divide-slate-800">
-          {catalog.map((f) => {
-            const rule = ruleFor(f.key);
-            const visible = rule ? !!rule.visible : true;
-            const required = rule ? !!rule.required : false;
-            const conditional = !!rule?.condition_field;
-            const validated = !!(rule?.validation_type && rule.validation_type !== 'none');
-            return (
-              <div key={f.key} className="flex items-center gap-3 px-4 py-3">
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium text-slate-700 dark:text-slate-200 flex items-center gap-1.5 flex-wrap">
-                    {f.label}
-                    {f.custom && <span className="badge bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">custom</span>}
-                    {conditional && <span className="badge bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-300">conditional</span>}
-                    {validated && <span className="badge bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">validated</span>}
-                  </div>
-                  {!visible && <div className="text-xs text-slate-400 mt-0.5">Hidden on the {meta.label.toLowerCase()} form</div>}
+          {rules.map((rule) => (
+            <div key={rule.id} className="flex items-start gap-3 px-4 py-3">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-sm font-medium text-slate-700 dark:text-slate-200">{rule.name}</span>
+                  <span className="badge bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">priority {rule.priority}</span>
+                  <button
+                    type="button"
+                    onClick={() => toggleStatus(rule)}
+                    className={`badge ${rule.status === 'active' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'}`}
+                    title="Click to toggle"
+                  >
+                    {rule.status === 'active' ? 'Active' : 'Inactive'}
+                  </button>
                 </div>
-                <span className={`badge ${visible ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'}`}>
-                  {visible ? 'Visible' : 'Hidden'}
-                </span>
-                {required && <span className="badge bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400">Required</span>}
-                <button
-                  type="button"
-                  onClick={() => setModalField(f.key)}
-                  className="text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-                  title="Edit rule"
-                >
-                  <Pencil size={14} />
-                </button>
+                <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">IF {describeConditions(rule.conditions)}</div>
+                <div className="text-xs text-slate-500 dark:text-slate-400">THEN {describeActions(rule.actions)}</div>
               </div>
-            );
-          })}
+              <button type="button" onClick={() => setModalRule(rule)} className="text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors" title="Edit rule">
+                <Pencil size={14} />
+              </button>
+              <button type="button" onClick={() => remove(rule)} className="text-slate-400 hover:text-red-500 p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors" title="Delete rule">
+                <Trash2 size={14} />
+              </button>
+            </div>
+          ))}
         </div>
       )}
 
-      {modalField !== undefined && (
-        <RuleModal
+      {modalRule !== undefined && (
+        <RuleBuilderModal
           initialType={type}
-          field={modalField}
-          rule={modalField ? ruleFor(modalField) : null}
-          onClose={() => setModalField(undefined)}
-          onSaved={() => { setModalField(undefined); load(); }}
+          rule={modalRule}
+          onClose={() => setModalRule(undefined)}
+          onSaved={() => { setModalRule(undefined); load(); }}
         />
       )}
     </div>
@@ -993,7 +1122,7 @@ function BusinessRulesHub() {
 
   const loadCounts = () => {
     setLoadingCounts(true);
-    api.get('/field-rules').then(({ rules }) => setAllRules(rules)).finally(() => setLoadingCounts(false));
+    api.get('/business-rules').then(({ rules }) => setAllRules(rules)).finally(() => setLoadingCounts(false));
   };
 
   useEffect(() => {
@@ -1009,7 +1138,7 @@ function BusinessRulesHub() {
     <div className="space-y-4">
       <PageHeader
         title="Business Rules"
-        description="Conditional visibility, required, and format-validation logic — e.g. only require Subcategory when Category = Hardware."
+        description="Named IF/THEN rules — show, hide, mandate, restrict dropdown options, or auto-populate a field based on any combination of AND/OR conditions."
         actions={<button onClick={() => setCreating(true)} className="btn-primary"><Plus size={14} /> Create rule</button>}
       />
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1038,7 +1167,7 @@ function BusinessRulesHub() {
       </div>
 
       {creating && (
-        <RuleModal onClose={() => setCreating(false)} onSaved={() => { setCreating(false); loadCounts(); }} />
+        <RuleBuilderModal onClose={() => setCreating(false)} onSaved={() => { setCreating(false); loadCounts(); }} />
       )}
     </div>
   );

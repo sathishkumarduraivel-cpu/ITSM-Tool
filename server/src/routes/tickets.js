@@ -7,7 +7,7 @@ import { getProvider, summarizeTicket, suggestResolution, categorizeTicket } fro
 import { notifyUser, renderTemplate } from '../services/notifications.js';
 import { computeSlaDueDate, findSlaPolicy } from '../services/sla.js';
 import { nextTicketNumber } from '../services/ticketNumbering.js';
-import { listFieldRules, applyFieldRules } from '../services/fieldRules.js';
+import { listBusinessRules, applyBusinessRules, buildFieldOptionsMap } from '../services/businessRules.js';
 import { listCustomFields, normalizeCustomValues, saveCustomValues, getCustomValues } from '../services/customFields.js';
 import { upload } from '../services/uploads.js';
 import { computeBlastRadius } from '../services/blastRadius.js';
@@ -64,11 +64,12 @@ router.get('/:id', (req, res) => {
   ).all(ticket.id);
   const csat = db.prepare('SELECT * FROM csat_surveys WHERE ticket_id = ?').get(ticket.id);
   const attachments = db.prepare('SELECT id, filename, mime, size, uploaded_by, created_at FROM attachments WHERE ticket_id = ? ORDER BY created_at DESC').all(ticket.id);
-  const fieldRules = listFieldRules(req.workspaceId, ticket.type, ticket.category);
+  const businessRules = listBusinessRules(req.workspaceId, ticket.type);
+  const fieldOptions = buildFieldOptionsMap(req.workspaceId, ticket.type);
   const blastRadius = computeBlastRadius(linkedAssets.map((a) => a.id), req.workspaceId);
   const customFields = listCustomFields(req.workspaceId, ticket.type);
   const custom = getCustomValues(ticket.id);
-  res.json({ ticket, comments, history, approvals, linkedAssets, csat: csat || null, attachments, fieldRules, blastRadius, customFields, custom });
+  res.json({ ticket, comments, history, approvals, linkedAssets, csat: csat || null, attachments, businessRules, fieldOptions, blastRadius, customFields, custom });
 });
 
 router.post('/', async (req, res) => {
@@ -91,10 +92,11 @@ router.post('/', async (req, res) => {
 
   // Business Rules can target/condition on built-in AND custom fields, so
   // give it one flat, mutable view -- hiding a field here deletes its key,
-  // and we read the persisted values back out of this same object below, so
-  // a hidden field's value is actually dropped, not just hidden in the UI.
+  // set_value writes through, and we read the persisted values back out of
+  // this same object below, so both effects are real, not just cosmetic in the UI.
   const evalBody = { ...req.body, ...customValues, catalog_item_name: catalogItem?.name || null };
-  const ruleError = applyFieldRules(req.workspaceId, type, evalBody.category, evalBody);
+  const fieldOptions = buildFieldOptionsMap(req.workspaceId, type);
+  const ruleError = applyBusinessRules(req.workspaceId, type, evalBody, fieldOptions);
   if (ruleError) return res.status(400).json({ error: ruleError });
   for (const key of Object.keys(customValues)) {
     if (!(key in evalBody)) delete customValues[key];
@@ -158,7 +160,8 @@ router.patch('/:id', (req, res) => {
   if (customError) return res.status(400).json({ error: customError });
 
   const evalBody = { ...req.body, ...customValues };
-  const ruleError = applyFieldRules(req.workspaceId, ticket.type, evalBody.category ?? ticket.category, evalBody, { partial: true });
+  const fieldOptions = buildFieldOptionsMap(req.workspaceId, ticket.type);
+  const ruleError = applyBusinessRules(req.workspaceId, ticket.type, evalBody, fieldOptions, { partial: true });
   if (ruleError) return res.status(400).json({ error: ruleError });
   for (const key of Object.keys(customValues)) {
     if (!(key in evalBody)) delete customValues[key];

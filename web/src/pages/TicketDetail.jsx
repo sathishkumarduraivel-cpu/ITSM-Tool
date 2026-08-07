@@ -4,7 +4,7 @@ import { ArrowLeft, Sparkles, Loader2, Send, Wand2, Tags, Lock, ShieldCheck, Che
 import { api, getStoredToken } from '../lib/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { PriorityBadge, StatusBadge, TypeBadge } from '../components/Badge.jsx';
-import { useFieldRules } from '../hooks/useFieldRules.js';
+import { useBusinessRules } from '../hooks/useBusinessRules.js';
 
 const STATUSES = ['open', 'in_progress', 'on_hold', 'resolved', 'closed'];
 const PRIORITIES = ['low', 'medium', 'high', 'critical'];
@@ -201,7 +201,7 @@ export default function TicketDetail() {
     load();
   };
 
-  const fieldRules = useFieldRules(ticket?.type, ticket?.category || null, ticket);
+  const fieldRules = useBusinessRules(ticket?.type, ticket);
 
   if (!ticket) return <div className="text-slate-400 text-sm py-20 text-center">Loading ticket…</div>;
 
@@ -402,7 +402,7 @@ export default function TicketDetail() {
               <div>
                 <label className="label">Priority</label>
                 <select className="input" disabled={!isAgent} value={ticket.priority} onChange={(e) => updateField('priority', e.target.value)}>
-                  {PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
+                  {fieldRules.getOptions('priority', PRIORITIES).map((p) => <option key={p} value={p}>{p}</option>)}
                 </select>
               </div>
             )}
@@ -417,7 +417,7 @@ export default function TicketDetail() {
                 <label className="label">Group</label>
                 <select className="input" disabled={!isAgent} value={ticket.team || ''} onChange={(e) => updateField('team', e.target.value)}>
                   <option value="">Unassigned</option>
-                  {groups.map((g) => <option key={g.id} value={g.name}>{g.name}</option>)}
+                  {fieldRules.getOptions('team', groups.map((g) => g.name)).map((name) => <option key={name} value={name}>{name}</option>)}
                   {ticket.team && !groups.some((g) => g.name === ticket.team) && (
                     <option value={ticket.team}>{ticket.team}</option>
                   )}

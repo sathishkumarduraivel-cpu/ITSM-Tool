@@ -7,7 +7,7 @@ import { PriorityBadge, StatusBadge, TypeBadge } from '../components/Badge.jsx';
 import Modal from '../components/Modal.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import { SkeletonRows } from '../components/Skeleton.jsx';
-import { useFieldRules } from '../hooks/useFieldRules.js';
+import { useBusinessRules } from '../hooks/useBusinessRules.js';
 
 const ALL_TYPES = ['incident', 'request', 'problem', 'change'];
 const STATUSES = ['open', 'pending_approval', 'in_progress', 'on_hold', 'resolved', 'closed'];
@@ -32,7 +32,8 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
   // Business Rules can also target/react to custom fields and the synthetic
   // "Service Item" field, so give it a flat view (built-ins + form.custom's
   // keys + the resolved service item name) to evaluate against.
-  const fieldRules = useFieldRules(form.type, form.category || null, { ...form, ...form.custom, catalog_item_name: catalogItemName });
+  const liveValues = { ...form, ...form.custom, catalog_item_name: catalogItemName };
+  const fieldRules = useBusinessRules(form.type, liveValues);
 
   useEffect(() => { api.get('/groups').then(({ groups }) => setGroups(groups)).catch(() => setGroups([])); }, []);
   useEffect(() => {
@@ -45,11 +46,32 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.type]);
 
-  const setCustom = (key, value) => setForm({ ...form, custom: { ...form.custom, [key]: value } });
+  const setCustom = (key, value) => setForm((f) => ({ ...f, custom: { ...f.custom, [key]: value } }));
+
+  // A "Set Field Value" action auto-populates a field -- sync it into real
+  // form state as soon as its rule matches. Runs every render (cheap, pure)
+  // but only ever calls setForm when a computed value actually differs, so
+  // it settles after one extra render instead of looping.
+  useEffect(() => {
+    const builtinAuto = ['priority', 'category', 'subcategory', 'team', 'impact', 'risk', 'planned_start', 'planned_end', 'rollback_plan']
+      .reduce((acc, f) => {
+        const v = fieldRules.getAutoValue(f);
+        if (v !== undefined && form[f] !== v) acc[f] = v;
+        return acc;
+      }, {});
+    const customAuto = customFields.reduce((acc, f) => {
+      const v = fieldRules.getAutoValue(f.field_key);
+      if (v !== undefined && form.custom[f.field_key] !== v) acc[f.field_key] = v;
+      return acc;
+    }, {});
+    if (Object.keys(builtinAuto).length || Object.keys(customAuto).length) {
+      setForm((prev) => ({ ...prev, ...builtinAuto, custom: { ...prev.custom, ...customAuto } }));
+    }
+  });
 
   // Every field below falls back to its current hardcoded default when no
   // Business Rule exists for it, and is otherwise fully governed by that
-  // rule — visibility, requiredness, conditions, format.
+  // rule — visibility, requiredness, conditions, format, options.
   const showPriority = fieldRules.isVisible('priority', true);
   const showCategory = fieldRules.isVisible('category', true);
   const showSubcategory = fieldRules.isVisible('subcategory', true);
@@ -62,13 +84,18 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
   const showRollbackPlan = fieldRules.isVisible('rollback_plan', isChange);
   const showChangeSection = showRisk || showPlannedStart || showPlannedEnd || showRollbackPlan;
 
+  const priorityOptions = fieldRules.getOptions('priority', PRIORITIES);
+  const impactOptions = fieldRules.getOptions('impact', RISKS);
+  const riskOptions = fieldRules.getOptions('risk', RISKS);
+  const teamOptions = fieldRules.getOptions('team', groups.map((g) => g.name));
+
   const ALL_RULED_FIELDS = ['priority', 'category', 'subcategory', 'team', 'impact', 'risk', 'planned_start', 'planned_end', 'rollback_plan'];
 
   const submit = async (e) => {
     e.preventDefault();
     setError('');
-    const firstError = ALL_RULED_FIELDS.map((f) => fieldRules.getError(f, form[f]))
-      .concat(customFields.map((f) => fieldRules.getError(f.field_key, form.custom[f.field_key])))
+    const firstError = ALL_RULED_FIELDS.map((f) => fieldRules.getError(f))
+      .concat(customFields.map((f) => fieldRules.getError(f.field_key)))
       .concat(showServiceItem && fieldRules.isRequired('catalog_item_name') && !form.catalog_item_id ? 'Service Item is required.' : null)
       .find(Boolean);
     if (firstError) { setError(firstError); return; }
@@ -106,7 +133,7 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
             <div>
               <label className="label">Priority{fieldRules.isRequired('priority') && ' *'}</label>
               <select className="input" required={fieldRules.isRequired('priority')} value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })}>
-                {PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
+                {priorityOptions.map((p) => <option key={p} value={p}>{p}</option>)}
               </select>
             </div>
           )}
@@ -114,7 +141,7 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
             <div>
               <label className="label">Category{fieldRules.isRequired('category') && ' *'}</label>
               <input className="input" required={fieldRules.isRequired('category')} value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} placeholder="Optional" />
-              {fieldRules.getError('category', form.category) && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('category', form.category)}</p>}
+              {fieldRules.getError('category') && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('category')}</p>}
             </div>
           )}
         </div>
@@ -129,10 +156,12 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
               onChange={(e) => setForm({ ...form, catalog_item_id: e.target.value })}
             >
               <option value="">Choose a service item…</option>
-              {catalogItems.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+              {catalogItems
+                .filter((item) => fieldRules.getOptions('catalog_item_name', catalogItems.map((i) => i.name)).includes(item.name))
+                .map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
             </select>
-            {fieldRules.getError('catalog_item_name', catalogItemName) && (
-              <p className="text-xs text-red-600 mt-1">{fieldRules.getError('catalog_item_name', catalogItemName)}</p>
+            {fieldRules.getError('catalog_item_name') && (
+              <p className="text-xs text-red-600 mt-1">{fieldRules.getError('catalog_item_name')}</p>
             )}
           </div>
         )}
@@ -143,7 +172,7 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
               <div>
                 <label className="label">Subcategory{fieldRules.isRequired('subcategory') && ' *'}</label>
                 <input className="input" required={fieldRules.isRequired('subcategory')} value={form.subcategory} onChange={(e) => setForm({ ...form, subcategory: e.target.value })} placeholder="Optional" />
-                {fieldRules.getError('subcategory', form.subcategory) && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('subcategory', form.subcategory)}</p>}
+                {fieldRules.getError('subcategory') && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('subcategory')}</p>}
               </div>
             )}
             {showTeam && (
@@ -151,7 +180,7 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
                 <label className="label">Group{fieldRules.isRequired('team') && ' *'}</label>
                 <select className="input" required={fieldRules.isRequired('team')} value={form.team} onChange={(e) => setForm({ ...form, team: e.target.value })}>
                   <option value="">Unassigned</option>
-                  {groups.map((g) => <option key={g.id} value={g.name}>{g.name}</option>)}
+                  {teamOptions.map((name) => <option key={name} value={name}>{name}</option>)}
                 </select>
               </div>
             )}
@@ -159,7 +188,7 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
               <div>
                 <label className="label">Impact{fieldRules.isRequired('impact') && ' *'}</label>
                 <select className="input" required={fieldRules.isRequired('impact')} value={form.impact} onChange={(e) => setForm({ ...form, impact: e.target.value })}>
-                  {RISKS.map((r) => <option key={r} value={r}>{r}</option>)}
+                  {impactOptions.map((r) => <option key={r} value={r}>{r}</option>)}
                 </select>
               </div>
             )}
@@ -171,7 +200,8 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
           if (!visible) return null;
           const required = fieldRules.isRequired(f.field_key, !!f.required);
           const value = form.custom[f.field_key];
-          const err = fieldRules.getError(f.field_key, value);
+          const err = fieldRules.getError(f.field_key);
+          const options = fieldRules.getOptions(f.field_key, f.options);
           return (
             <div key={f.id}>
               <label className="label">{f.label}{required && ' *'}</label>
@@ -184,12 +214,12 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
               {f.field_type === 'select' && (
                 <select className="input" required={required} value={value || ''} onChange={(e) => setCustom(f.field_key, e.target.value)}>
                   <option value="">Choose…</option>
-                  {f.options.map((o) => <option key={o} value={o}>{o}</option>)}
+                  {options.map((o) => <option key={o} value={o}>{o}</option>)}
                 </select>
               )}
               {f.field_type === 'multiselect' && (
                 <div className="input h-auto flex flex-wrap gap-x-4 gap-y-1.5 py-2.5">
-                  {f.options.map((o) => {
+                  {options.map((o) => {
                     const arr = Array.isArray(value) ? value : [];
                     return (
                       <label key={o} className="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-300">
@@ -217,23 +247,23 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
                 <div>
                   <label className="label">Risk{fieldRules.isRequired('risk') && ' *'}</label>
                   <select className="input" required={fieldRules.isRequired('risk')} value={form.risk} onChange={(e) => setForm({ ...form, risk: e.target.value })}>
-                    {RISKS.map((r) => <option key={r} value={r}>{r}</option>)}
+                    {riskOptions.map((r) => <option key={r} value={r}>{r}</option>)}
                   </select>
-                  {fieldRules.getError('risk', form.risk) && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('risk', form.risk)}</p>}
+                  {fieldRules.getError('risk') && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('risk')}</p>}
                 </div>
               )}
               {showPlannedStart && (
                 <div>
                   <label className="label">Planned start{fieldRules.isRequired('planned_start') && ' *'}</label>
                   <input type="datetime-local" className="input" required={fieldRules.isRequired('planned_start')} value={form.planned_start} onChange={(e) => setForm({ ...form, planned_start: e.target.value })} />
-                  {fieldRules.getError('planned_start', form.planned_start) && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('planned_start', form.planned_start)}</p>}
+                  {fieldRules.getError('planned_start') && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('planned_start')}</p>}
                 </div>
               )}
               {showPlannedEnd && (
                 <div>
                   <label className="label">Planned end{fieldRules.isRequired('planned_end') && ' *'}</label>
                   <input type="datetime-local" className="input" required={fieldRules.isRequired('planned_end')} value={form.planned_end} onChange={(e) => setForm({ ...form, planned_end: e.target.value })} />
-                  {fieldRules.getError('planned_end', form.planned_end) && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('planned_end', form.planned_end)}</p>}
+                  {fieldRules.getError('planned_end') && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('planned_end')}</p>}
                 </div>
               )}
             </div>
@@ -241,7 +271,7 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
               <div>
                 <label className="label">Rollback plan{fieldRules.isRequired('rollback_plan') && ' *'}</label>
                 <textarea className="input" rows={2} required={fieldRules.isRequired('rollback_plan')} value={form.rollback_plan} onChange={(e) => setForm({ ...form, rollback_plan: e.target.value })} />
-                {fieldRules.getError('rollback_plan', form.rollback_plan) && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('rollback_plan', form.rollback_plan)}</p>}
+                {fieldRules.getError('rollback_plan') && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('rollback_plan')}</p>}
               </div>
             )}
           </div>

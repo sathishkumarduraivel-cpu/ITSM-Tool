@@ -350,7 +350,11 @@ CREATE TABLE IF NOT EXISTS ticket_counters (
   PRIMARY KEY (workspace_id, type)
 );
 
--- ---- Ticket field visibility/required rules ----
+-- ---- Ticket field visibility/required rules (legacy engine) ----
+-- Superseded by business_rules below (multi-condition AND/OR, multi-action,
+-- priority-ordered, active/inactive). Kept only so existing rows survive a
+-- one-time migration into business_rules on boot -- the app no longer reads
+-- or writes this table.
 CREATE TABLE IF NOT EXISTS ticket_field_rules (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL,
@@ -361,6 +365,26 @@ CREATE TABLE IF NOT EXISTS ticket_field_rules (
   required INTEGER DEFAULT 0,
   sort_order INTEGER DEFAULT 0,
   created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- ---- Business Rule Logic Engine ----
+-- One rule = a named IF/THEN: conditions is one AND/OR group evaluated
+-- against a ticket's current field values, actions is an ordered list
+-- applied when the group matches. Rules run in priority order (lower
+-- runs first) and later rules see any values earlier ones set via
+-- set_value, so ordering is meaningful, not cosmetic. status lets an
+-- admin disable a rule without deleting it.
+CREATE TABLE IF NOT EXISTS business_rules (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  ticket_type TEXT NOT NULL, -- incident | request | problem | change
+  name TEXT NOT NULL,
+  conditions TEXT NOT NULL DEFAULT '{"logic":"AND","rules":[]}', -- JSON: { logic: 'AND'|'OR', rules: [{field, operator, value}] }
+  actions TEXT NOT NULL DEFAULT '[]', -- JSON array: [{type, field, options?, value?}]
+  priority INTEGER NOT NULL DEFAULT 100,
+  status TEXT NOT NULL DEFAULT 'active', -- active | inactive
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
 );
 
 -- ---- Field Manager: admin-defined custom fields per ticket type (distinct
@@ -549,7 +573,7 @@ const tenantTables = [
   'tickets', 'assets', 'kb_articles', 'automations', 'integrations',
   'catalog_categories', 'catalog_items', 'sla_policies', 'business_hours',
   'contracts', 'purchase_orders', 'ai_providers', 'notification_templates',
-  'notifications', 'ticket_field_rules', 'attachments', 'groups', 'ticket_custom_fields',
+  'notifications', 'ticket_field_rules', 'attachments', 'groups', 'ticket_custom_fields', 'business_rules',
 ];
 for (const table of tenantTables) {
   try {
@@ -557,6 +581,30 @@ for (const table of tenantTables) {
   } catch {
     // ignore — table may be empty/not yet populated
   }
+}
+
+// ---- One-time migration: legacy ticket_field_rules -> business_rules ----
+// Each old row (one field, one optional condition, visible/required flags)
+// becomes an equivalent single-condition rule with show/hide + mandate
+// actions, so nothing an admin already configured silently disappears when
+// the new engine takes over. Guarded by a system flag row so it only ever runs once.
+const legacyMigratedFlag = db.prepare('SELECT value FROM workspace_settings WHERE workspace_id = ? AND key = ?').get(SYSTEM_WS, 'business_rules_migrated_v1');
+if (!legacyMigratedFlag) {
+  const legacyRows = db.prepare('SELECT * FROM ticket_field_rules').all();
+  for (const row of legacyRows) {
+    const actions = [{ type: row.visible ? 'show_field' : 'hide_field', field: row.field_name }];
+    if (row.required) actions.push({ type: 'mandate_field', field: row.field_name });
+    const conditions = row.condition_field
+      ? { logic: 'AND', rules: [{ field: row.condition_field, operator: row.condition_op || 'equals', value: row.condition_value || '' }] }
+      : { logic: 'AND', rules: [] };
+    db.prepare(
+      'INSERT INTO business_rules (id, workspace_id, ticket_type, name, conditions, actions, priority, status) VALUES (?,?,?,?,?,?,?,?)'
+    ).run(
+      uid('brl'), row.workspace_id || DEFAULT_WORKSPACE_ID, row.ticket_type,
+      `Migrated: ${row.field_name}`, JSON.stringify(conditions), JSON.stringify(actions), 100, 'active'
+    );
+  }
+  db.prepare('INSERT OR REPLACE INTO workspace_settings (workspace_id, key, value) VALUES (?,?,?)').run(SYSTEM_WS, 'business_rules_migrated_v1', '1');
 }
 
 // seed ticket_counters from existing ticket numbers so numbering continues rather than resetting

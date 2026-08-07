@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { ArrowLeft, Sparkles, Loader2, Send, Wand2, Tags, Lock, ShieldCheck, Check, X, Boxes, Star, Paperclip, Download, Trash2, UserCircle2 } from 'lucide-react';
+import { ArrowLeft, Sparkles, Loader2, Send, Wand2, Tags, Lock, ShieldCheck, Check, X, Boxes, Star, Paperclip, Download, Trash2, UserCircle2, Radar } from 'lucide-react';
 import { api, getStoredToken } from '../lib/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { PriorityBadge, StatusBadge, TypeBadge } from '../components/Badge.jsx';
@@ -77,6 +77,7 @@ export default function TicketDetail() {
   const [attachments, setAttachments] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [groups, setGroups] = useState([]);
+  const [blastRadius, setBlastRadius] = useState(null);
 
   const load = async () => {
     const data = await api.get(`/tickets/${id}`);
@@ -87,6 +88,7 @@ export default function TicketDetail() {
     setLinkedAssets(data.linkedAssets || []);
     setCsat(data.csat);
     setAttachments(data.attachments || []);
+    setBlastRadius(data.blastRadius || null);
   };
 
   const uploadFiles = async (fileList) => {
@@ -436,6 +438,25 @@ export default function TicketDetail() {
                   </div>
                 ))}
               </div>
+
+              {blastRadius && blastRadius.affectedCount > 0 && (
+                <div className="mb-3 p-2.5 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-100 dark:border-amber-900">
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-700 dark:text-amber-400 mb-1">
+                    <Radar size={13} /> Blast radius: {blastRadius.score}/100
+                  </div>
+                  <p className="text-xs text-amber-700/90 dark:text-amber-400/90 mb-1.5">
+                    {blastRadius.affectedCount} other asset{blastRadius.affectedCount === 1 ? '' : 's'} would be affected if the linked asset{linkedAssets.length === 1 ? '' : 's'} went down.
+                  </p>
+                  <div className="space-y-0.5 max-h-32 overflow-y-auto">
+                    {blastRadius.affected.map((a) => (
+                      <div key={a.id} className="text-[11px] text-amber-800/80 dark:text-amber-300/80 truncate">
+                        {a.name} <span className="text-amber-600/70 dark:text-amber-500/70">({a.relationship.replace('_', ' ')}, {a.depth} hop{a.depth === 1 ? '' : 's'} away)</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <select className="input text-sm" value="" onChange={(e) => linkAsset(e.target.value)}>
                 <option value="">Link an asset…</option>
                 {allAssets.filter((a) => !linkedAssets.some((la) => la.id === a.id)).map((a) => (

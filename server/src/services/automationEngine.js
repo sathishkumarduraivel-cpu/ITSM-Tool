@@ -2,6 +2,7 @@ import { db, uid } from './../db.js';
 import { getProvider, categorizeTicket, suggestResolution } from './aiClient.js';
 import { sendIntegrationMessage, getEnabledIntegrations } from './notify.js';
 import { autoApprovePending } from './approvalEngine.js';
+import { notifyRole } from './notifications.js';
 
 // Workflow shape stored in DB:
 // trigger:    { event: 'ticket_created'|'ticket_updated'|'sla_at_risk', filters?: {...} }
@@ -9,6 +10,32 @@ import { autoApprovePending } from './approvalEngine.js';
 // actions:    [{ type, ...params }]
 //   types: set_priority, set_status, assign_team, assign_agent, add_comment,
 //          notify_integration, ai_categorize, ai_suggest_resolution, tag_category, auto_approve
+
+// ---- Safety Guardrail Matrix ----
+// Two axes decide a tier: how sensitive the data/system touched is, and how
+// reversible the action is. In this app's current action set almost
+// everything is internal ticket metadata and trivially reversible (Tier A).
+// The one real outlier is auto_approve: it bypasses a human governance gate
+// (the approval/CAB chain) rather than just editing a field, so even though
+// its direct effect is "semi-reversible" (the underlying ticket can still be
+// re-reviewed), the act of skipping human sign-off is exactly the kind of
+// thing this matrix exists to catch. Tier C actions never execute
+// unattended -- they land in automation_pending_actions for a human decision.
+export const ACTION_RISK_TIERS = {
+  set_priority: { tier: 'A', reason: 'Reversible, internal ticket metadata only.' },
+  set_status: { tier: 'A', reason: 'Reversible, internal ticket metadata only.' },
+  assign_team: { tier: 'A', reason: 'Reversible routing decision, internal only.' },
+  assign_agent: { tier: 'A', reason: 'Reversible routing decision, internal only.' },
+  tag_category: { tier: 'A', reason: 'Reversible, internal ticket metadata only.' },
+  add_comment: { tier: 'A', reason: 'Reversible (editable), internal by default.' },
+  ai_categorize: { tier: 'A', reason: 'Reversible, internal ticket metadata only.' },
+  ai_suggest_resolution: { tier: 'A', reason: 'Posts a comment for a human to read and act on.' },
+  notify_integration: { tier: 'B', reason: "Can't be unsent, but low-consequence if wrong (a chat ping)." },
+  auto_approve: { tier: 'C', reason: 'Bypasses a human governance gate (the approval/CAB chain) -- requires a human decision every time.' },
+};
+function tierOf(actionType) {
+  return ACTION_RISK_TIERS[actionType]?.tier || 'A';
+}
 
 function getField(ticket, field) {
   return ticket[field];
@@ -69,7 +96,7 @@ export function describeAction(action) {
   }
 }
 
-async function runAction(action, ticket) {
+export async function runAction(action, ticket) {
   const t = () => db.prepare('SELECT * FROM tickets WHERE id = ?').get(ticket.id);
   switch (action.type) {
     case 'set_priority':
@@ -163,9 +190,25 @@ export async function evaluateAutomations(event, ticket) {
       continue;
     }
 
+    // Safety Guardrail Matrix: split by tier before running anything. Tier
+    // C actions never execute here -- they queue for a human decision.
+    const autoActions = actions.filter((a) => tierOf(a.type) !== 'C');
+    const gatedActions = actions.filter((a) => tierOf(a.type) === 'C');
+
+    for (const action of gatedActions) {
+      const id = uid('pend');
+      db.prepare(
+        'INSERT INTO automation_pending_actions (id, workspace_id, automation_id, ticket_id, action, tier) VALUES (?,?,?,?,?,?)'
+      ).run(id, ticket.workspace_id, row.id, ticket.id, JSON.stringify(action), tierOf(action.type));
+      notifyRole('admin', 'Automation needs your approval', `"${row.name}" wants to: ${describeAction(action).replace('would ', '')} on ${ticket.number}`, `/tickets/${ticket.id}`, ticket.workspace_id);
+      logRun(row.id, ticket.id, 'awaiting_approval', `Tier ${tierOf(action.type)} — ${describeAction(action)}`);
+    }
+
+    if (autoActions.length === 0) continue;
+
     try {
       const results = [];
-      for (const action of actions) {
+      for (const action of autoActions) {
         // eslint-disable-next-line no-await-in-loop
         results.push(await runAction(action, ticket));
       }
@@ -174,5 +217,31 @@ export async function evaluateAutomations(event, ticket) {
     } catch (e) {
       logRun(row.id, ticket.id, 'error', e.message);
     }
+  }
+}
+
+// ---- Human decisions on gated (Tier C) actions ----
+
+export async function decidePendingAction(pendingId, workspaceId, approve, decidedByUserId) {
+  const pending = db.prepare('SELECT * FROM automation_pending_actions WHERE id = ? AND workspace_id = ?').get(pendingId, workspaceId);
+  if (!pending) return null;
+  if (pending.status !== 'pending') return pending;
+
+  if (!approve) {
+    db.prepare("UPDATE automation_pending_actions SET status = 'rejected', decided_by = ?, decided_at = datetime('now') WHERE id = ?").run(decidedByUserId, pendingId);
+    logRun(pending.automation_id, pending.ticket_id, 'rejected', 'Human rejected the pending action.');
+    return { ...pending, status: 'rejected' };
+  }
+
+  const action = JSON.parse(pending.action);
+  const ticket = db.prepare('SELECT * FROM tickets WHERE id = ?').get(pending.ticket_id);
+  try {
+    const result = ticket ? await runAction(action, ticket) : 'ticket no longer exists';
+    db.prepare("UPDATE automation_pending_actions SET status = 'approved', decided_by = ?, decided_at = datetime('now') WHERE id = ?").run(decidedByUserId, pendingId);
+    logRun(pending.automation_id, pending.ticket_id, 'success', `Approved by human — ${result}`);
+    return { ...pending, status: 'approved' };
+  } catch (e) {
+    logRun(pending.automation_id, pending.ticket_id, 'error', `Approved but failed to run: ${e.message}`);
+    throw e;
   }
 }

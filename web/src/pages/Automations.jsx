@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Plus, X, Loader2, Workflow, Trash2, ChevronDown, ChevronUp, Zap, FlaskConical, ListChecks, PlayCircle, Bot } from 'lucide-react';
+import { Plus, X, Loader2, Workflow, Trash2, ChevronDown, ChevronUp, Zap, FlaskConical, ListChecks, PlayCircle, Bot, ShieldAlert, Check } from 'lucide-react';
 import { api } from '../lib/api.js';
 import Modal from '../components/Modal.jsx';
 import EmptyState from '../components/EmptyState.jsx';
@@ -65,16 +65,33 @@ function emptyAction(type = 'set_priority') {
   return { type };
 }
 
-function ActionEditor({ action, onChange, onRemove, agents, integrations, groups }) {
+const TIER_STYLE = {
+  A: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400',
+  B: 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400',
+  C: 'bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400',
+};
+
+function ActionEditor({ action, onChange, onRemove, agents, integrations, groups, riskTiers }) {
   const set = (patch) => onChange({ ...action, ...patch });
+  const risk = riskTiers?.[action.type];
   return (
     <div className="border border-slate-200 rounded-lg p-3 space-y-2 bg-slate-50">
-      <div className="flex items-center justify-between">
-        <select className="input w-auto" value={action.type} onChange={(e) => onChange(emptyAction(e.target.value))}>
-          {ACTION_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
-        </select>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <select className="input w-auto" value={action.type} onChange={(e) => onChange(emptyAction(e.target.value))}>
+            {ACTION_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+          </select>
+          {risk && (
+            <span className={`badge shrink-0 ${TIER_STYLE[risk.tier]}`} title={risk.reason}>
+              Tier {risk.tier}
+            </span>
+          )}
+        </div>
         <button type="button" onClick={onRemove} className="text-slate-400 hover:text-red-500"><Trash2 size={15} /></button>
       </div>
+      {risk?.tier === 'C' && (
+        <p className="text-xs text-red-600 dark:text-red-400">This action needs a human decision every time it fires — it won't run automatically, even in Live mode.</p>
+      )}
 
       {action.type === 'set_priority' && (
         <select className="input" value={action.priority || 'medium'} onChange={(e) => set({ priority: e.target.value })}>
@@ -221,7 +238,7 @@ function SonaDraftModal({ onClose, onDrafted }) {
   );
 }
 
-function WorkflowModal({ initial, onClose, onSaved, agents, integrations, groups }) {
+function WorkflowModal({ initial, onClose, onSaved, agents, integrations, groups, riskTiers }) {
   const [name, setName] = useState(initial?.name || '');
   const [description, setDescription] = useState(initial?.description || '');
   const [event, setEvent] = useState(initial?.trigger?.event || 'ticket_created');
@@ -319,6 +336,7 @@ function WorkflowModal({ initial, onClose, onSaved, agents, integrations, groups
                 agents={agents}
                 integrations={integrations}
                 groups={groups}
+                riskTiers={riskTiers}
               />
             ))}
           </div>
@@ -347,19 +365,26 @@ export default function Automations() {
   const [logs, setLogs] = useState({}); // { [workflowId]: rows }
   const [testResults, setTestResults] = useState({}); // { [workflowId]: { checked, matched, results } }
   const [testing, setTesting] = useState(null); // workflow id currently running a test-run
+  const [riskTiers, setRiskTiers] = useState({});
+  const [pending, setPending] = useState([]);
+  const [deciding, setDeciding] = useState(null);
 
   const load = async () => {
     setLoading(true);
-    const [wf, users, integ, groupsRes] = await Promise.all([
+    const [wf, users, integ, groupsRes, tiersRes, pendingRes] = await Promise.all([
       api.get('/automations'),
       api.get('/auth/users'),
       api.get('/integrations'),
       api.get('/groups'),
+      api.get('/automations/risk-tiers'),
+      api.get('/automations/pending'),
     ]);
     setWorkflows(wf.automations);
     setAgents(users.users.filter((u) => u.role === 'agent' || u.role === 'admin'));
     setIntegrations(integ.integrations);
     setGroups(groupsRes.groups);
+    setRiskTiers(tiersRes.tiers);
+    setPending(pendingRes.pending);
     setLoading(false);
   };
 
@@ -368,6 +393,18 @@ export default function Automations() {
   const setMode = async (wf, patch) => {
     await api.patch(`/automations/${wf.id}`, patch);
     load();
+  };
+
+  const decide = async (pendingAction, approve) => {
+    setDeciding(pendingAction.id);
+    try {
+      await api.post(`/automations/pending/${pendingAction.id}/${approve ? 'approve' : 'reject'}`, {});
+      load();
+    } catch (e) {
+      alert(e.message);
+    } finally {
+      setDeciding(null);
+    }
   };
 
   const remove = async (wf) => {
@@ -407,6 +444,31 @@ export default function Automations() {
           </>
         }
       />
+
+      {pending.length > 0 && (
+        <div className="card p-4 border-red-100 dark:border-red-900">
+          <h3 className="text-sm font-semibold text-red-700 dark:text-red-400 mb-2 flex items-center gap-1.5">
+            <ShieldAlert size={14} /> Needs your approval ({pending.length})
+          </h3>
+          <div className="space-y-2">
+            {pending.map((p) => (
+              <div key={p.id} className="flex items-center justify-between gap-3 bg-red-50 dark:bg-red-500/10 rounded-lg px-3 py-2">
+                <div className="min-w-0 text-sm">
+                  <span className="font-medium text-slate-700 dark:text-slate-200">{p.automation_name}</span>
+                  <span className="text-slate-500 dark:text-slate-400"> wants to {p.description}</span>
+                  {p.ticket_number && <span className="text-slate-400 font-mono text-xs"> · {p.ticket_number}</span>}
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button disabled={deciding === p.id} onClick={() => decide(p, false)} className="btn-secondary text-xs">Reject</button>
+                  <button disabled={deciding === p.id} onClick={() => decide(p, true)} className="btn-primary text-xs">
+                    {deciding === p.id ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />} Approve
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {loading && <SkeletonRows count={3} />}
 
@@ -502,9 +564,12 @@ export default function Automations() {
                           <span className={`badge shrink-0 ${
                             log.status === 'success' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' :
                             log.status === 'test_match' ? 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400' :
+                            log.status === 'awaiting_approval' ? 'bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400' :
+                            log.status === 'rejected' ? 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400' :
                             'bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400'
                           }`}>
-                            {log.status === 'success' ? 'Ran' : log.status === 'test_match' ? 'Would run' : 'Error'}
+                            {log.status === 'success' ? 'Ran' : log.status === 'test_match' ? 'Would run' :
+                             log.status === 'awaiting_approval' ? 'Needs approval' : log.status === 'rejected' ? 'Rejected' : 'Error'}
                           </span>
                           <span className="text-slate-500 dark:text-slate-400">{log.detail}</span>
                           <span className="text-slate-300 dark:text-slate-600 ml-auto shrink-0 font-mono">{new Date(log.created_at).toLocaleString()}</span>
@@ -534,6 +599,7 @@ export default function Automations() {
           agents={agents}
           integrations={integrations}
           groups={groups}
+          riskTiers={riskTiers}
         />
       )}
     </div>

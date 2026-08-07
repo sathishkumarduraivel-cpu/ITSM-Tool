@@ -398,6 +398,24 @@ CREATE TABLE IF NOT EXISTS group_members (
   FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+
+-- ---- Safety Guardrail Matrix: Tier C automation actions (ones that bypass
+-- a governance gate, e.g. auto-approving a pending approval) don't execute
+-- unattended -- they land here for a human to approve or reject first. ----
+CREATE TABLE IF NOT EXISTS automation_pending_actions (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  automation_id TEXT NOT NULL,
+  ticket_id TEXT,
+  action TEXT NOT NULL, -- json blob of the single action {type, ...params}
+  tier TEXT NOT NULL DEFAULT 'C',
+  status TEXT NOT NULL DEFAULT 'pending', -- pending | approved | rejected
+  decided_by TEXT,
+  decided_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (automation_id) REFERENCES automations(id) ON DELETE CASCADE,
+  FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE
+);
 `);
 
 // Additive migrations for columns introduced after the initial tickets table

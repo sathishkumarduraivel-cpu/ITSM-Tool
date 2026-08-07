@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { db, uid } from '../db.js';
 import { requireAuth, requireWorkspace, requireRole } from '../middleware/auth.js';
-import { ticketMatchesConditions, describeAction } from '../services/automationEngine.js';
+import { ticketMatchesConditions, describeAction, ACTION_RISK_TIERS, decidePendingAction } from '../services/automationEngine.js';
 import { getProvider, draftWorkflow } from '../services/aiClient.js';
 
 const router = Router();
@@ -20,6 +20,47 @@ router.get('/', (req, res) => {
       actions: JSON.parse(r.actions),
     })),
   });
+});
+
+// The Safety Guardrail Matrix's tier for each action type, so the builder UI
+// can show a risk badge as the admin composes a workflow.
+router.get('/risk-tiers', (req, res) => {
+  res.json({ tiers: ACTION_RISK_TIERS });
+});
+
+// Tier C actions (currently just auto_approve) queued for a human decision,
+// across every workflow in this workspace.
+router.get('/pending', (req, res) => {
+  const rows = db.prepare(
+    `SELECT p.*, a.name AS automation_name, t.number AS ticket_number, t.title AS ticket_title
+     FROM automation_pending_actions p
+     JOIN automations a ON a.id = p.automation_id
+     LEFT JOIN tickets t ON t.id = p.ticket_id
+     WHERE p.workspace_id = ? AND p.status = 'pending'
+     ORDER BY p.created_at DESC`
+  ).all(req.workspaceId);
+  res.json({
+    pending: rows.map((r) => {
+      const action = JSON.parse(r.action);
+      return { ...r, action, description: describeAction(action).replace('would ', '') };
+    }),
+  });
+});
+
+router.post('/pending/:id/approve', async (req, res) => {
+  try {
+    const result = await decidePendingAction(req.params.id, req.workspaceId, true, req.user.id);
+    if (!result) return res.status(404).json({ error: 'Not found' });
+    res.json({ ok: true, status: result.status });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.post('/pending/:id/reject', async (req, res) => {
+  const result = await decidePendingAction(req.params.id, req.workspaceId, false, req.user.id);
+  if (!result) return res.status(404).json({ error: 'Not found' });
+  res.json({ ok: true, status: result.status });
 });
 
 router.get('/:id/logs', (req, res) => {

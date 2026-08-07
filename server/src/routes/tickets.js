@@ -9,6 +9,7 @@ import { computeSlaDueDate, findSlaPolicy } from '../services/sla.js';
 import { nextTicketNumber } from '../services/ticketNumbering.js';
 import { listFieldRules, applyFieldRules } from '../services/fieldRules.js';
 import { upload } from '../services/uploads.js';
+import { computeBlastRadius } from '../services/blastRadius.js';
 
 const router = Router();
 router.use(requireAuth, requireWorkspace);
@@ -62,7 +63,8 @@ router.get('/:id', (req, res) => {
   const csat = db.prepare('SELECT * FROM csat_surveys WHERE ticket_id = ?').get(ticket.id);
   const attachments = db.prepare('SELECT id, filename, mime, size, uploaded_by, created_at FROM attachments WHERE ticket_id = ? ORDER BY created_at DESC').all(ticket.id);
   const fieldRules = listFieldRules(req.workspaceId, ticket.type, ticket.category);
-  res.json({ ticket, comments, history, approvals, linkedAssets, csat: csat || null, attachments, fieldRules });
+  const blastRadius = computeBlastRadius(linkedAssets.map((a) => a.id), req.workspaceId);
+  res.json({ ticket, comments, history, approvals, linkedAssets, csat: csat || null, attachments, fieldRules, blastRadius });
 });
 
 router.post('/', async (req, res) => {

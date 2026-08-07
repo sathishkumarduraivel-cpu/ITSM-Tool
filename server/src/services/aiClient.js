@@ -211,6 +211,52 @@ export async function askAssistant(provider, question, context) {
   ]);
 }
 
+// Admin-facing helper: turns a plain-English description into a draft
+// automation using the exact schema/vocabulary the visual workflow builder
+// understands, grounded in the workspace's real groups/agents/integrations
+// so it never invents a group or agent that doesn't exist. The draft is
+// always returned for human review in the builder before saving -- this
+// function never creates anything itself.
+export async function draftWorkflow(provider, description, context) {
+  const { groups = [], agents = [], integrations = [] } = context;
+  const prompt = `You are configuring an automation workflow for an ITSM platform. Output ONLY strict JSON (no markdown fences, no commentary) matching exactly this shape:
+{"name": string, "description": string, "trigger": {"event": "ticket_created"|"ticket_updated"}, "conditions": [{"field": string, "op": string, "value": string}], "actions": [{"type": string, ...action-specific keys}]}
+
+Allowed condition fields: priority, status, type, category, team, title, description.
+Allowed operators: equals, not_equals, contains, in (value is a comma-separated list for "in").
+Allowed priority values: low, medium, high, critical.
+Allowed status values: open, in_progress, on_hold, resolved, closed.
+Allowed type values: incident, request, problem, change.
+"team" means the ticket's assigned group. Real groups in this workspace (use these exact names, never invent one): ${groups.map((g) => g.name).join(', ') || '(none configured)'}.
+
+Allowed action types and their required keys:
+- set_priority: {"priority"}
+- set_status: {"status"}
+- assign_team: {"team"} -- must be one of the real group names above
+- assign_agent: {"agent_id"} -- one of these real agent ids: ${agents.map((a) => `${a.id} (${a.name})`).join(', ') || '(none available)'}
+- tag_category: {"category", "subcategory"(optional)}
+- add_comment: {"body"}
+- notify_integration: {"message", "integration_id"(optional)} -- real integrations: ${integrations.map((i) => `${i.id} (${i.name}, ${i.type})`).join(', ') || '(none configured)'}
+- ai_categorize: {} (no extra keys)
+- ai_suggest_resolution: {} (no extra keys)
+- auto_approve: {} (no extra keys)
+
+If the request doesn't specify a group/agent/integration that actually exists above, either omit that action or pick the closest real match -- never fabricate a name or id.
+
+The admin's request: "${description}"`;
+
+  const text = await chatComplete(
+    provider,
+    [
+      { role: 'system', content: 'You configure ITSM automation workflows. Always answer with valid JSON only, matching the requested shape exactly.' },
+      { role: 'user', content: prompt },
+    ],
+    { json: true, max_tokens: 500, temperature: 0.2 }
+  );
+  const cleaned = text.trim().replace(/^```json/i, '').replace(/^```/, '').replace(/```$/, '');
+  return JSON.parse(cleaned);
+}
+
 // Light, requester-facing helper: turns a rough, informal description into a
 // clear one suitable for a ticket, without touching or seeing any ticket
 // data — just rewords what the person typed.

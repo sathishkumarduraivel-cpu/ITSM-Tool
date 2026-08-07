@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Plus, X, Loader2, Workflow, Trash2, ChevronDown, ChevronUp, Zap, FlaskConical, ListChecks, PlayCircle } from 'lucide-react';
+import { Plus, X, Loader2, Workflow, Trash2, ChevronDown, ChevronUp, Zap, FlaskConical, ListChecks, PlayCircle, Bot } from 'lucide-react';
 import { api } from '../lib/api.js';
 import Modal from '../components/Modal.jsx';
 import EmptyState from '../components/EmptyState.jsx';
@@ -172,6 +172,55 @@ function ModeControl({ wf, onChange }) {
   );
 }
 
+// Sona drafts trigger/conditions/actions from a plain-English description.
+// This modal only ever produces a draft handed to the normal WorkflowModal
+// for review — it never saves anything itself.
+function SonaDraftModal({ onClose, onDrafted }) {
+  const [description, setDescription] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!description.trim()) return;
+    setLoading(true);
+    setError('');
+    try {
+      const { draft } = await api.post('/automations/draft', { description: description.trim() });
+      onDrafted(draft);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Modal title="Ask Sona to build a workflow" onClose={onClose}>
+      <form onSubmit={submit} className="space-y-3">
+        <p className="text-sm text-slate-500 dark:text-slate-400">
+          Describe what you want in plain English. Sona drafts the trigger, conditions, and actions — you'll review and can edit everything before it saves.
+        </p>
+        {error && <div className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 rounded-lg px-3 py-2">{error}</div>}
+        <textarea
+          className="input"
+          rows={3}
+          autoFocus
+          placeholder="e.g. When a critical VPN incident comes in, assign it to the Network group and notify Slack."
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+        />
+        <div className="flex justify-end gap-2 pt-2">
+          <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+          <button type="submit" disabled={loading || !description.trim()} className="btn-primary">
+            {loading ? <Loader2 size={14} className="animate-spin" /> : <Bot size={14} />} Draft it
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 function WorkflowModal({ initial, onClose, onSaved, agents, integrations, groups }) {
   const [name, setName] = useState(initial?.name || '');
   const [description, setDescription] = useState(initial?.description || '');
@@ -206,8 +255,13 @@ function WorkflowModal({ initial, onClose, onSaved, agents, integrations, groups
   };
 
   return (
-    <Modal title={initial?.id ? 'Edit workflow' : 'New automation workflow'} onClose={onClose} maxWidth="max-w-2xl">
+    <Modal title={initial?.id ? 'Edit workflow' : initial?._fromSona ? "Review Sona's draft" : 'New automation workflow'} onClose={onClose} maxWidth="max-w-2xl">
       <form onSubmit={submit} className="space-y-4">
+        {initial?._fromSona && (
+          <div className="text-sm text-brand-700 dark:text-brand-400 bg-brand-50 dark:bg-brand-500/10 rounded-lg px-3 py-2 flex items-center gap-1.5">
+            <Bot size={14} className="shrink-0" /> Sona's draft — check everything below before saving.
+          </div>
+        )}
         {error && <div className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 rounded-lg px-3 py-2">{error}</div>}
 
         <div className="grid grid-cols-2 gap-3">
@@ -288,6 +342,7 @@ export default function Automations() {
   const [groups, setGroups] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null); // null | 'new' | workflow object
+  const [sonaOpen, setSonaOpen] = useState(false);
   const [expanded, setExpanded] = useState(null);
   const [logs, setLogs] = useState({}); // { [workflowId]: rows }
   const [testResults, setTestResults] = useState({}); // { [workflowId]: { checked, matched, results } }
@@ -345,7 +400,12 @@ export default function Automations() {
       <PageHeader
         title="Automation"
         description="Trigger → conditions → actions, including built-in AI steps"
-        actions={<button onClick={() => setModal('new')} className="btn-primary"><Plus size={14} /> New workflow</button>}
+        actions={
+          <>
+            <button onClick={() => setSonaOpen(true)} className="btn-secondary"><Bot size={14} /> Ask Sona</button>
+            <button onClick={() => setModal('new')} className="btn-primary"><Plus size={14} /> New workflow</button>
+          </>
+        }
       />
 
       {loading && <SkeletonRows count={3} />}
@@ -458,6 +518,13 @@ export default function Automations() {
           );
         })}
       </div>
+
+      {sonaOpen && (
+        <SonaDraftModal
+          onClose={() => setSonaOpen(false)}
+          onDrafted={(draft) => { setSonaOpen(false); setModal({ ...draft, _fromSona: true }); }}
+        />
+      )}
 
       {modal && (
         <WorkflowModal

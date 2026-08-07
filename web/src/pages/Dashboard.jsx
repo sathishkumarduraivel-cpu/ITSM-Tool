@@ -398,7 +398,7 @@ function CopilotDrawer({ ticketId, open, onClose }) {
             </div>
             <div>
               <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">Sona</div>
-              {ticket && <div className="text-[11px] text-slate-400 font-mono">{ticket.number}</div>}
+              <div className="text-[11px] text-slate-400">{ticket ? <>Working on <span className="font-mono">{ticket.number}</span></> : 'Ticket assistant'}</div>
             </div>
           </div>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"><X size={16} /></button>
@@ -570,16 +570,22 @@ export default function Dashboard() {
         }
       />
 
-      {/* AI Command Bar */}
+      {/* Sona — workspace-wide mode (the robot in the bottom-right corner is
+          also Sona, but scoped to whichever one ticket is selected below) */}
       <div>
+        <div className="flex items-center gap-1.5 mb-1.5 px-1">
+          <Bot size={13} className="text-brand-600 dark:text-brand-400" />
+          <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Sona</span>
+          <span className="text-xs text-slate-400">— ask about your whole service desk</span>
+        </div>
         <form onSubmit={askAI} className="command-glow rounded-full">
           <div className="flex items-center gap-3 card !rounded-full px-4 py-1">
             <div className="w-8 h-8 rounded-full bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center shrink-0">
-              <Sparkles size={14} className="text-white" />
+              <Bot size={14} className="text-white" />
             </div>
             <input
               className="flex-1 bg-transparent border-none outline-none text-sm py-2.5 text-slate-800 dark:text-slate-100 placeholder:text-slate-400"
-              placeholder="Ask AI which tickets need attention, or anything about your service desk…"
+              placeholder="Ask Sona which tickets need attention, or anything about your service desk…"
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
               onFocus={() => chat.length > 0 && setShowChat(true)}
@@ -592,7 +598,7 @@ export default function Dashboard() {
         {showChat && (
           <div className="card p-3 mt-2 animate-fade-in">
             <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">Conversation</span>
+              <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">Sona</span>
               <button onClick={() => setShowChat(false)} className="text-slate-400 hover:text-slate-600"><X size={14} /></button>
             </div>
             <div className="max-h-56 overflow-y-auto space-y-2 pr-1">

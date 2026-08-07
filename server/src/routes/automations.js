@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { db, uid } from '../db.js';
 import { requireAuth, requireWorkspace, requireRole } from '../middleware/auth.js';
 import { ticketMatchesConditions, describeAction } from '../services/automationEngine.js';
+import { getProvider, draftWorkflow } from '../services/aiClient.js';
 
 const router = Router();
 // Workflow automation is configuration, not day-to-day ITSM work — only
@@ -26,6 +27,28 @@ router.get('/:id/logs', (req, res) => {
   if (!automation) return res.status(404).json({ error: 'Not found' });
   const rows = db.prepare('SELECT * FROM automation_logs WHERE automation_id = ? ORDER BY created_at DESC LIMIT 100').all(req.params.id);
   res.json({ logs: rows });
+});
+
+// Sona drafts a workflow from a plain-English description — grounded in the
+// workspace's real groups/agents/integrations so it never invents a target
+// that doesn't exist. This never saves anything; the draft is returned for
+// the admin to review in the normal builder before it becomes a real workflow.
+router.post('/draft', async (req, res) => {
+  try {
+    const { description } = req.body;
+    if (!description || !description.trim()) return res.status(400).json({ error: 'description required' });
+    const groups = db.prepare('SELECT id, name FROM groups WHERE workspace_id = ?').all(req.workspaceId);
+    const agents = db.prepare(
+      `SELECT u.id, u.name FROM workspace_members wm JOIN users u ON u.id = wm.user_id
+       WHERE wm.workspace_id = ? AND wm.role IN ('agent','admin') AND wm.active = 1`
+    ).all(req.workspaceId);
+    const integrations = db.prepare('SELECT id, name, type FROM integrations WHERE workspace_id = ? AND enabled = 1').all(req.workspaceId);
+    const provider = getProvider(req.workspaceId, req.body.provider_id);
+    const draft = await draftWorkflow(provider, description.trim(), { groups, agents, integrations });
+    res.json({ draft });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
 });
 
 router.post('/', (req, res) => {

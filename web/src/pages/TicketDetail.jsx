@@ -78,6 +78,7 @@ export default function TicketDetail() {
   const [uploading, setUploading] = useState(false);
   const [groups, setGroups] = useState([]);
   const [blastRadius, setBlastRadius] = useState(null);
+  const [customValues, setCustomValues] = useState([]);
 
   const load = async () => {
     const data = await api.get(`/tickets/${id}`);
@@ -89,6 +90,7 @@ export default function TicketDetail() {
     setCsat(data.csat);
     setAttachments(data.attachments || []);
     setBlastRadius(data.blastRadius || null);
+    setCustomValues(data.custom || []);
   };
 
   const uploadFiles = async (fileList) => {
@@ -415,6 +417,20 @@ export default function TicketDetail() {
               <PriorityBadge priority={ticket.priority} />
             </div>
           </div>
+
+          {customValues.length > 0 && (
+            <div className="card p-4 space-y-3">
+              <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Custom fields</h3>
+              {customValues.map((f) => (
+                <div key={f.field_key}>
+                  <div className="label">{f.label}</div>
+                  <div className="text-sm text-slate-700 dark:text-slate-200">
+                    {Array.isArray(f.value) ? (f.value.join(', ') || '—') : (f.value || '—')}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
 
           <div className="card p-4 space-y-2 text-sm">
             <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-1">SLA</h3>

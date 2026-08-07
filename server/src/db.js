@@ -363,6 +363,33 @@ CREATE TABLE IF NOT EXISTS ticket_field_rules (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+-- ---- Field Manager: admin-defined custom fields per ticket type (distinct
+-- from Business Rules, which only governs visibility/required/validation of
+-- fields that already exist -- these are the fields themselves). ----
+CREATE TABLE IF NOT EXISTS ticket_custom_fields (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  ticket_type TEXT NOT NULL, -- incident | request | problem | change
+  field_key TEXT NOT NULL, -- stable slug; referenced by stored values and by Business Rules, never changes after creation
+  label TEXT NOT NULL,
+  field_type TEXT NOT NULL DEFAULT 'text', -- text | textarea | select | multiselect
+  options TEXT, -- JSON array of strings, for select/multiselect
+  required INTEGER DEFAULT 0,
+  sort_order INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(workspace_id, ticket_type, field_key)
+);
+
+CREATE TABLE IF NOT EXISTS ticket_custom_field_values (
+  id TEXT PRIMARY KEY,
+  ticket_id TEXT NOT NULL,
+  field_id TEXT NOT NULL,
+  value TEXT, -- plain text; JSON-encoded array for multiselect
+  FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,
+  FOREIGN KEY (field_id) REFERENCES ticket_custom_fields(id) ON DELETE CASCADE,
+  UNIQUE(ticket_id, field_id)
+);
+
 -- ---- Ticket attachments ----
 CREATE TABLE IF NOT EXISTS attachments (
   id TEXT PRIMARY KEY,
@@ -522,7 +549,7 @@ const tenantTables = [
   'tickets', 'assets', 'kb_articles', 'automations', 'integrations',
   'catalog_categories', 'catalog_items', 'sla_policies', 'business_hours',
   'contracts', 'purchase_orders', 'ai_providers', 'notification_templates',
-  'notifications', 'ticket_field_rules', 'attachments', 'groups',
+  'notifications', 'ticket_field_rules', 'attachments', 'groups', 'ticket_custom_fields',
 ];
 for (const table of tenantTables) {
   try {

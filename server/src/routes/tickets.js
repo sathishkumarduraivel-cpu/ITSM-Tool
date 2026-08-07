@@ -8,6 +8,7 @@ import { notifyUser, renderTemplate } from '../services/notifications.js';
 import { computeSlaDueDate, findSlaPolicy } from '../services/sla.js';
 import { nextTicketNumber } from '../services/ticketNumbering.js';
 import { listFieldRules, applyFieldRules } from '../services/fieldRules.js';
+import { listCustomFields, normalizeCustomValues, saveCustomValues, getCustomValues } from '../services/customFields.js';
 import { upload } from '../services/uploads.js';
 import { computeBlastRadius } from '../services/blastRadius.js';
 
@@ -64,18 +65,34 @@ router.get('/:id', (req, res) => {
   const attachments = db.prepare('SELECT id, filename, mime, size, uploaded_by, created_at FROM attachments WHERE ticket_id = ? ORDER BY created_at DESC').all(ticket.id);
   const fieldRules = listFieldRules(req.workspaceId, ticket.type, ticket.category);
   const blastRadius = computeBlastRadius(linkedAssets.map((a) => a.id), req.workspaceId);
-  res.json({ ticket, comments, history, approvals, linkedAssets, csat: csat || null, attachments, fieldRules, blastRadius });
+  const customFields = listCustomFields(req.workspaceId, ticket.type);
+  const custom = getCustomValues(ticket.id);
+  res.json({ ticket, comments, history, approvals, linkedAssets, csat: csat || null, attachments, fieldRules, blastRadius, customFields, custom });
 });
 
 router.post('/', async (req, res) => {
-  const {
-    title, description, type = 'incident', priority = 'medium', category, subcategory, team, impact, requester_id, source = 'portal',
-    risk, planned_start, planned_end, rollback_plan,
-  } = req.body;
+  const { title, type = 'incident', custom } = req.body;
   if (!title) return res.status(400).json({ error: 'title required' });
 
-  const ruleError = applyFieldRules(req.workspaceId, type, category, req.body);
+  const customDefs = listCustomFields(req.workspaceId, type);
+  const { values: customValues, error: customError } = normalizeCustomValues(customDefs, custom);
+  if (customError) return res.status(400).json({ error: customError });
+
+  // Business Rules can target/condition on built-in AND custom fields, so
+  // give it one flat, mutable view -- hiding a field here deletes its key,
+  // and we read the persisted values back out of this same object below, so
+  // a hidden field's value is actually dropped, not just hidden in the UI.
+  const evalBody = { ...req.body, ...customValues };
+  const ruleError = applyFieldRules(req.workspaceId, type, evalBody.category, evalBody);
   if (ruleError) return res.status(400).json({ error: ruleError });
+  for (const key of Object.keys(customValues)) {
+    if (!(key in evalBody)) delete customValues[key];
+  }
+
+  const {
+    description, priority = 'medium', category, subcategory, team, impact, requester_id, source = 'portal',
+    risk, planned_start, planned_end, rollback_plan,
+  } = evalBody;
 
   const id = uid('tkt');
   const number = nextTicketNumber(req.workspaceId, type);
@@ -96,6 +113,7 @@ router.post('/', async (req, res) => {
     risk || null, planned_start || null, planned_end || null, rollback_plan || null, cab_status
   );
   db.prepare('INSERT INTO ticket_history (id, ticket_id, event, detail) VALUES (?,?,?,?)').run(uid('h'), id, 'created', `Ticket created via ${source}`);
+  if (Object.keys(customValues).length) saveCustomValues(id, customDefs, customValues);
 
   if (isChange) {
     db.prepare('INSERT INTO approvals (id, ticket_id, approver_role, step_order, status) VALUES (?,?,?,?,?)').run(
@@ -109,7 +127,7 @@ router.post('/', async (req, res) => {
 
   const ticket = getTicket(id, req.workspaceId);
   evaluateAutomations('ticket_created', ticket).catch((e) => console.error('automation error', e));
-  res.status(201).json({ ticket });
+  res.status(201).json({ ticket, custom: getCustomValues(id) });
 });
 
 router.patch('/:id', (req, res) => {
@@ -121,21 +139,32 @@ router.patch('/:id', (req, res) => {
     return res.status(409).json({ error: 'This change is not yet CAB-approved. It cannot move to in_progress until approval is granted.' });
   }
 
-  const ruleError = applyFieldRules(req.workspaceId, ticket.type, req.body.category ?? ticket.category, req.body, { partial: true });
+  const customDefs = listCustomFields(req.workspaceId, ticket.type);
+  const { values: customValues, error: customError } = normalizeCustomValues(customDefs, req.body.custom);
+  if (customError) return res.status(400).json({ error: customError });
+
+  const evalBody = { ...req.body, ...customValues };
+  const ruleError = applyFieldRules(req.workspaceId, ticket.type, evalBody.category ?? ticket.category, evalBody, { partial: true });
   if (ruleError) return res.status(400).json({ error: ruleError });
+  for (const key of Object.keys(customValues)) {
+    if (!(key in evalBody)) delete customValues[key];
+  }
 
   const allowed = ['title', 'description', 'status', 'priority', 'category', 'subcategory', 'assignee_id', 'team', 'impact', 'risk', 'planned_start', 'planned_end', 'rollback_plan'];
   const fields = [];
   const params = [];
   for (const key of allowed) {
-    if (req.body[key] !== undefined) { fields.push(`${key} = ?`); params.push(req.body[key]); }
+    if (evalBody[key] !== undefined) { fields.push(`${key} = ?`); params.push(evalBody[key]); }
   }
-  if (!fields.length) return res.status(400).json({ error: 'No valid fields to update' });
-  if (req.body.status === 'resolved' && ticket.status !== 'resolved') { fields.push("resolved_at = datetime('now')"); }
-  if (req.body.status === 'closed' && ticket.status !== 'closed') { fields.push("closed_at = datetime('now')"); }
-  fields.push("updated_at = datetime('now')");
-  params.push(req.params.id);
-  db.prepare(`UPDATE tickets SET ${fields.join(', ')} WHERE id = ?`).run(...params);
+  if (Object.keys(customValues).length) saveCustomValues(req.params.id, customDefs, customValues);
+  if (!fields.length && !Object.keys(customValues).length) return res.status(400).json({ error: 'No valid fields to update' });
+  if (fields.length) {
+    if (req.body.status === 'resolved' && ticket.status !== 'resolved') { fields.push("resolved_at = datetime('now')"); }
+    if (req.body.status === 'closed' && ticket.status !== 'closed') { fields.push("closed_at = datetime('now')"); }
+    fields.push("updated_at = datetime('now')");
+    params.push(req.params.id);
+    db.prepare(`UPDATE tickets SET ${fields.join(', ')} WHERE id = ?`).run(...params);
+  }
   db.prepare('INSERT INTO ticket_history (id, ticket_id, event, detail) VALUES (?,?,?,?)').run(
     uid('h'), req.params.id, 'updated', Object.keys(req.body).join(', ')
   );
@@ -150,7 +179,7 @@ router.patch('/:id', (req, res) => {
 
   const updated = getTicket(req.params.id, req.workspaceId);
   evaluateAutomations('ticket_updated', updated).catch((e) => console.error('automation error', e));
-  res.json({ ticket: updated });
+  res.json({ ticket: updated, custom: getCustomValues(req.params.id) });
 });
 
 router.post('/:id/comments', (req, res) => {

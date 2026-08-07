@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   Loader2, Save, UserPlus, Users, ListChecks, UsersRound, Layers,
   Workflow, ArrowLeft, ChevronRight, Plus, Trash2, ChevronDown, ChevronUp, X,
-  AlertTriangle, Inbox, Search, GitBranch, Pencil,
+  AlertTriangle, Inbox, Search, GitBranch, Pencil, ShieldCheck,
 } from 'lucide-react';
 import { api } from '../lib/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -16,7 +16,8 @@ const SECTIONS = [
   { key: 'groups', label: 'Groups', description: 'Organize agents into groups, e.g. Network, Facilities, Service Desk', icon: UsersRound },
   { key: 'workspaces', label: 'Workspaces', description: 'Add, rename or remove workspaces you belong to', icon: Layers },
   { key: 'workflows', label: 'Workflows & Automation', description: 'Trigger → conditions → actions, including built-in AI steps', icon: Workflow },
-  { key: 'fields', label: 'Field Manager', description: 'A separate field manager per ticket type — design what shows, what’s required, and how it behaves', icon: ListChecks },
+  { key: 'fieldManager', label: 'Field Manager', description: 'Create custom fields — text, paragraph, dropdown, multi-select — separately for each ticket type', icon: ListChecks },
+  { key: 'businessRules', label: 'Business Rules', description: 'Conditional visibility, required and validation logic per ticket type', icon: ShieldCheck },
 ];
 
 function AddUserModal({ onClose, onSaved, groups }) {
@@ -454,9 +455,10 @@ function WorkspacesTab() {
 }
 
 const TICKET_TYPES = ['incident', 'request', 'problem', 'change'];
-// Each ticket type only ever shows the fields that actually exist on its
-// form — a Change has Risk/Planned dates/Rollback plan, nothing else does.
-// This is the catalog a type's field manager is scoped to.
+// The built-in fields that already exist on each ticket type's form (Change
+// has Risk/Planned dates/Rollback plan on top of the common four; nothing
+// else does). Field Manager's custom fields are layered on top of this list
+// per type, not a replacement for it.
 const TYPE_FIELD_CATALOG = {
   incident: ['category', 'subcategory', 'team', 'impact'],
   request: ['category', 'subcategory', 'team', 'impact'],
@@ -481,6 +483,228 @@ const TYPE_META = {
   problem: { label: 'Problem', icon: Search, tile: 'from-purple-400 to-purple-600' },
   change: { label: 'Change', icon: GitBranch, tile: 'from-teal-400 to-teal-600' },
 };
+const builtinCatalog = (type) => TYPE_FIELD_CATALOG[type].map((key) => ({ key, label: FIELD_META[key].label }));
+
+// ============================== Field Manager ==============================
+// Creates the fields themselves (text / paragraph / dropdown / multi-select),
+// separately for each ticket type. Distinct from Business Rules below, which
+// only governs behavior of fields that already exist here or in the schema.
+
+const CUSTOM_FIELD_TYPES = [
+  { value: 'text', label: 'Text' },
+  { value: 'textarea', label: 'Paragraph' },
+  { value: 'select', label: 'Dropdown' },
+  { value: 'multiselect', label: 'Multi-select dropdown' },
+];
+
+function CustomFieldModal({ type, field, onClose, onSaved }) {
+  const [label, setLabel] = useState(field?.label || '');
+  const [fieldType, setFieldType] = useState(field?.field_type || 'text');
+  const [options, setOptions] = useState(field?.options?.length ? field.options : ['']);
+  const [required, setRequired] = useState(field ? !!field.required : false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const isDropdown = fieldType === 'select' || fieldType === 'multiselect';
+
+  const setOption = (i, val) => setOptions(options.map((o, idx) => (idx === i ? val : o)));
+  const addOption = () => setOptions([...options, '']);
+  const removeOption = (i) => setOptions(options.filter((_, idx) => idx !== i));
+
+  const save = async () => {
+    setError('');
+    if (!label.trim()) { setError('Label is required.'); return; }
+    const cleanOptions = options.map((o) => o.trim()).filter(Boolean);
+    if (isDropdown && cleanOptions.length === 0) { setError('Add at least one option.'); return; }
+    setSaving(true);
+    try {
+      const payload = { label: label.trim(), field_type: fieldType, options: cleanOptions, required };
+      if (field) {
+        await api.patch(`/custom-fields/${field.id}`, payload);
+      } else {
+        await api.post('/custom-fields', { ticket_type: type, ...payload });
+      }
+      onSaved();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title={field ? `Edit field — ${field.label}` : `Add field — ${TYPE_META[type].label}`} onClose={onClose}>
+      <div className="space-y-4">
+        {error && <div className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 rounded-lg px-3 py-2">{error}</div>}
+        <div>
+          <label className="label">Label</label>
+          <input className="input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. Affected system" />
+        </div>
+        <div>
+          <label className="label">Field type</label>
+          <select className="input" value={fieldType} onChange={(e) => setFieldType(e.target.value)}>
+            {CUSTOM_FIELD_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+          </select>
+        </div>
+        {isDropdown && (
+          <div>
+            <label className="label">Options</label>
+            <div className="space-y-2">
+              {options.map((o, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <input className="input" value={o} onChange={(e) => setOption(i, e.target.value)} placeholder={`Option ${i + 1}`} />
+                  {options.length > 1 && (
+                    <button type="button" onClick={() => removeOption(i)} className="text-slate-400 hover:text-red-500 p-1.5"><X size={14} /></button>
+                  )}
+                </div>
+              ))}
+              <button type="button" onClick={addOption} className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline flex items-center gap-0.5">
+                <Plus size={13} /> Add option
+              </button>
+            </div>
+          </div>
+        )}
+        <label className="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-300">
+          <input type="checkbox" checked={required} onChange={(e) => setRequired(e.target.checked)} /> Always required
+        </label>
+        <div className="flex justify-end gap-2 pt-2">
+          <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+          <button type="button" disabled={saving} onClick={save} className="btn-primary">
+            {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Save field
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function TypeFieldDesigner({ type, onBack }) {
+  const [fields, setFields] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [modalField, setModalField] = useState(undefined); // undefined = closed, null = add new, object = edit existing
+  const [deleting, setDeleting] = useState(null);
+  const meta = TYPE_META[type];
+
+  const load = async () => {
+    setLoading(true);
+    const { fields } = await api.get(`/custom-fields?ticket_type=${type}`);
+    setFields(fields);
+    setLoading(false);
+  };
+
+  useEffect(() => { load(); }, [type]);
+
+  const remove = async (field) => {
+    if (!confirm(`Delete "${field.label}"? Any Business Rule referencing it will be removed too.`)) return;
+    setDeleting(field.id);
+    await api.del(`/custom-fields/${field.id}`);
+    setDeleting(null);
+    load();
+  };
+
+  return (
+    <div className="space-y-4">
+      <button onClick={onBack} className="text-xs text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 flex items-center gap-1">
+        <ArrowLeft size={13} /> All field managers
+      </button>
+
+      <PageHeader
+        title={`${meta.label} field manager`}
+        description={`Built-in fields (${builtinCatalog(type).map((f) => f.label).join(', ')}) always exist. Add custom fields below — they'll appear on the ${meta.label.toLowerCase()} form right away.`}
+        actions={<button onClick={() => setModalField(null)} className="btn-primary"><Plus size={14} /> Add field</button>}
+      />
+
+      {loading ? (
+        <div className="text-slate-400 text-sm py-10 text-center">Loading…</div>
+      ) : fields.length === 0 ? (
+        <EmptyState title="No custom fields yet" description={`Add a field to collect more detail on ${meta.label.toLowerCase()} tickets.`} />
+      ) : (
+        <div className="card divide-y divide-slate-100 dark:divide-slate-800">
+          {fields.map((f) => (
+            <div key={f.id} className="flex items-center gap-3 px-4 py-3">
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-slate-700 dark:text-slate-200 flex items-center gap-1.5 flex-wrap">
+                  {f.label}
+                  <span className="badge bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                    {CUSTOM_FIELD_TYPES.find((t) => t.value === f.field_type)?.label}
+                  </span>
+                  {!!f.required && <span className="badge bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400">Required</span>}
+                </div>
+                {f.options?.length > 0 && <div className="text-xs text-slate-400 mt-0.5">{f.options.join(', ')}</div>}
+              </div>
+              <button type="button" onClick={() => setModalField(f)} className="text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors" title="Edit field">
+                <Pencil size={14} />
+              </button>
+              <button type="button" disabled={deleting === f.id} onClick={() => remove(f)} className="text-slate-400 hover:text-red-500 p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors" title="Delete field">
+                {deleting === f.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {modalField !== undefined && (
+        <CustomFieldModal type={type} field={modalField} onClose={() => setModalField(undefined)} onSaved={() => { setModalField(undefined); load(); }} />
+      )}
+    </div>
+  );
+}
+
+function FieldManagerHub() {
+  const [activeType, setActiveType] = useState(null);
+  const [counts, setCounts] = useState({});
+  const [loadingCounts, setLoadingCounts] = useState(true);
+
+  useEffect(() => {
+    if (activeType) return;
+    setLoadingCounts(true);
+    Promise.all(TICKET_TYPES.map((t) => api.get(`/custom-fields?ticket_type=${t}`).then((r) => [t, r.fields.length]).catch(() => [t, 0])))
+      .then((pairs) => setCounts(Object.fromEntries(pairs)))
+      .finally(() => setLoadingCounts(false));
+  }, [activeType]);
+
+  if (activeType) {
+    return <TypeFieldDesigner type={activeType} onBack={() => setActiveType(null)} />;
+  }
+
+  return (
+    <div className="space-y-4">
+      <PageHeader
+        title="Field Manager"
+        description="A separate field manager for each ticket type — add text, paragraph, dropdown or multi-select fields that show up right on that type's ticket form."
+      />
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {TICKET_TYPES.map((type) => {
+          const meta = TYPE_META[type];
+          const Icon = meta.icon;
+          const count = counts[type] || 0;
+          return (
+            <button key={type} onClick={() => setActiveType(type)} className="card p-4 flex items-start gap-3 text-left hover:shadow-card-hover dark:hover:shadow-card-hover-dark transition-shadow group">
+              <div className={`icon-tile w-11 h-11 rounded-xl bg-gradient-to-b ${meta.tile} text-white shrink-0`}>
+                <Icon size={18} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <div className="font-medium text-slate-800 dark:text-slate-100">{meta.label} field manager</div>
+                  {!loadingCounts && (
+                    <span className="badge bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">{count} custom field{count === 1 ? '' : 's'}</span>
+                  )}
+                </div>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Built-in: {builtinCatalog(type).map((f) => f.label).join(', ')}</p>
+              </div>
+              <ChevronRight size={16} className="text-slate-300 dark:text-slate-600 shrink-0 mt-1 group-hover:translate-x-0.5 transition-transform" />
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ============================== Business Rules ==============================
+// Conditional visibility / required / format-validation logic layered on top
+// of whatever fields exist for a type — built-in ones above, plus anything
+// Field Manager created. Never creates fields itself.
+
 const CONDITION_OPS = [
   { value: 'equals', label: 'equals' },
   { value: 'not_equals', label: 'does not equal' },
@@ -495,11 +719,26 @@ const VALIDATION_TYPES = [
   { value: 'number_range', label: 'Number between (min,max)' },
 ];
 
-// Full-screen rule builder, opened either from the type manager's top-right
-// "Create rule" button (field starts unset — admin picks one from this
-// type's catalog) or from a field row's pencil icon (field is fixed).
-function RuleModal({ type, catalog, field, rule, onClose, onSaved }) {
-  const [selectedField, setSelectedField] = useState(field || catalog[0]);
+// Built-in fields for a type plus whatever custom fields Field Manager has
+// created for it — the full set Business Rules can target or react to.
+function useTypeCatalog(type) {
+  const [customFields, setCustomFields] = useState([]);
+  useEffect(() => {
+    if (!type) { setCustomFields([]); return; }
+    api.get(`/custom-fields?ticket_type=${type}`).then(({ fields }) => setCustomFields(fields)).catch(() => setCustomFields([]));
+  }, [type]);
+  if (!type) return [];
+  return [...builtinCatalog(type), ...customFields.map((f) => ({ key: f.field_key, label: f.label, custom: true }))];
+}
+
+// Rule builder in a modal. When opened from the Business Rules hub's own
+// top-right "Create rule" (no type pre-chosen) it asks for the ticket type
+// first, then reveals only that type's own fields — built-in and custom.
+// When opened from inside a type's own manager, the type is already fixed.
+function RuleModal({ initialType, field, rule, onClose, onSaved }) {
+  const [type, setType] = useState(initialType || '');
+  const catalog = useTypeCatalog(type);
+  const [selectedField, setSelectedField] = useState(field || '');
   const [visible, setVisible] = useState(rule ? !!rule.visible : true);
   const [required, setRequired] = useState(rule ? !!rule.required : false);
   const [conditionField, setConditionField] = useState(rule?.condition_field || '');
@@ -510,9 +749,14 @@ function RuleModal({ type, catalog, field, rule, onClose, onSaved }) {
   const [validationMessage, setValidationMessage] = useState(rule?.validation_message || '');
   const [saving, setSaving] = useState(false);
 
-  // A condition can react to this type's own fields (minus itself) plus the
-  // two universal fields every ticket has regardless of type.
-  const conditionCandidates = ['priority', 'status', ...catalog].filter((f) => f !== selectedField);
+  useEffect(() => {
+    if (!field && catalog.length && !selectedField) setSelectedField(catalog[0].key);
+  }, [catalog, field, selectedField]);
+
+  const labelFor = (key) => catalog.find((f) => f.key === key)?.label || FIELD_META[key]?.label || key;
+  // A condition can react to this type's own fields (minus the one being
+  // configured) plus the two universal fields every ticket has.
+  const conditionCandidates = ['priority', 'status', ...catalog.map((f) => f.key)].filter((k) => k !== selectedField);
 
   const save = async () => {
     setSaving(true);
@@ -535,72 +779,86 @@ function RuleModal({ type, catalog, field, rule, onClose, onSaved }) {
   };
 
   return (
-    <Modal title={field ? `Edit rule — ${FIELD_META[field].label}` : `Create rule — ${TYPE_META[type].label}`} onClose={onClose}>
+    <Modal title={field ? `Edit rule — ${labelFor(field)}` : 'Create rule'} onClose={onClose}>
       <div className="space-y-4">
-        {!field && (
+        {!initialType && (
           <div>
-            <label className="label">Field</label>
-            <select className="input" value={selectedField} onChange={(e) => setSelectedField(e.target.value)}>
-              {catalog.map((f) => <option key={f} value={f}>{FIELD_META[f].label}</option>)}
+            <label className="label">Ticket type</label>
+            <select className="input" value={type} onChange={(e) => { setType(e.target.value); setSelectedField(''); setConditionField(''); }}>
+              <option value="">Choose a ticket type…</option>
+              {TICKET_TYPES.map((t) => <option key={t} value={t}>{TYPE_META[t].label}</option>)}
             </select>
           </div>
         )}
 
-        <div className="flex items-center gap-4">
-          <label className="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-300">
-            <input type="checkbox" checked={visible} onChange={(e) => setVisible(e.target.checked)} /> Visible
-          </label>
-          <label className="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-300">
-            <input type="checkbox" checked={required} disabled={!visible} onChange={(e) => setRequired(e.target.checked)} /> Required
-          </label>
-        </div>
-
-        <div>
-          <div className="label mb-1.5">Only apply this rule when…</div>
-          <div className="flex items-center gap-2 flex-wrap">
-            <select className="input w-auto" value={conditionField} onChange={(e) => setConditionField(e.target.value)}>
-              <option value="">Always (no condition)</option>
-              {conditionCandidates.map((f) => <option key={f} value={f}>{FIELD_META[f]?.label || f}</option>)}
+        {type && !field && (
+          <div>
+            <label className="label">Field</label>
+            <select className="input" value={selectedField} onChange={(e) => setSelectedField(e.target.value)}>
+              {catalog.map((f) => <option key={f.key} value={f.key}>{f.label}{f.custom ? ' (custom)' : ''}</option>)}
             </select>
-            {conditionField && (
-              <>
-                <select className="input w-auto" value={conditionOp} onChange={(e) => setConditionOp(e.target.value)}>
-                  {CONDITION_OPS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </div>
+        )}
+
+        {type && (
+          <>
+            <div className="flex items-center gap-4">
+              <label className="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-300">
+                <input type="checkbox" checked={visible} onChange={(e) => setVisible(e.target.checked)} /> Visible
+              </label>
+              <label className="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-300">
+                <input type="checkbox" checked={required} disabled={!visible} onChange={(e) => setRequired(e.target.checked)} /> Required
+              </label>
+            </div>
+
+            <div>
+              <div className="label mb-1.5">Only apply this rule when…</div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <select className="input w-auto" value={conditionField} onChange={(e) => setConditionField(e.target.value)}>
+                  <option value="">Always (no condition)</option>
+                  {conditionCandidates.map((k) => <option key={k} value={k}>{labelFor(k)}</option>)}
                 </select>
-                <input className="input w-auto" placeholder="value" value={conditionValue} onChange={(e) => setConditionValue(e.target.value)} />
-              </>
-            )}
-          </div>
-        </div>
+                {conditionField && (
+                  <>
+                    <select className="input w-auto" value={conditionOp} onChange={(e) => setConditionOp(e.target.value)}>
+                      {CONDITION_OPS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                    </select>
+                    <input className="input w-auto" placeholder="value" value={conditionValue} onChange={(e) => setConditionValue(e.target.value)} />
+                  </>
+                )}
+              </div>
+            </div>
 
-        <div>
-          <div className="label mb-1.5">Format validation</div>
-          <div className="flex items-center gap-2 flex-wrap">
-            <select className="input w-auto" value={validationType} onChange={(e) => setValidationType(e.target.value)}>
-              {VALIDATION_TYPES.map((v) => <option key={v.value} value={v.value}>{v.label}</option>)}
-            </select>
-            {validationType && (
-              <input
-                className="input w-auto"
-                placeholder={validationType === 'regex' ? 'e.g. ^AT-\\d{4}$' : validationType === 'number_range' ? 'e.g. 1,100' : 'e.g. 10'}
-                value={validationValue}
-                onChange={(e) => setValidationValue(e.target.value)}
-              />
-            )}
-          </div>
-          {validationType && (
-            <input
-              className="input mt-2"
-              placeholder="Custom error message shown to the user (optional)"
-              value={validationMessage}
-              onChange={(e) => setValidationMessage(e.target.value)}
-            />
-          )}
-        </div>
+            <div>
+              <div className="label mb-1.5">Format validation</div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <select className="input w-auto" value={validationType} onChange={(e) => setValidationType(e.target.value)}>
+                  {VALIDATION_TYPES.map((v) => <option key={v.value} value={v.value}>{v.label}</option>)}
+                </select>
+                {validationType && (
+                  <input
+                    className="input w-auto"
+                    placeholder={validationType === 'regex' ? 'e.g. ^AT-\\d{4}$' : validationType === 'number_range' ? 'e.g. 1,100' : 'e.g. 10'}
+                    value={validationValue}
+                    onChange={(e) => setValidationValue(e.target.value)}
+                  />
+                )}
+              </div>
+              {validationType && (
+                <input
+                  className="input mt-2"
+                  placeholder="Custom error message shown to the user (optional)"
+                  value={validationMessage}
+                  onChange={(e) => setValidationMessage(e.target.value)}
+                />
+              )}
+            </div>
+          </>
+        )}
 
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
-          <button type="button" disabled={saving} onClick={save} className="btn-primary">
+          <button type="button" disabled={saving || !type || !selectedField} onClick={save} className="btn-primary">
             {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Save rule
           </button>
         </div>
@@ -609,13 +867,14 @@ function RuleModal({ type, catalog, field, rule, onClose, onSaved }) {
   );
 }
 
-// One ticket type's own field manager — only ever shows fields that exist on
-// that type's form, so configuring Incident never dangles Change-only fields
-// like Risk or Rollback plan in front of the admin.
-function TypeFieldManager({ type, onBack }) {
+// One ticket type's own Business Rules manager — only ever shows fields that
+// actually exist for that type (built-in + Field Manager's custom ones).
+function TypeRuleManager({ type, onBack }) {
   const [rules, setRules] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modalField, setModalField] = useState(undefined); // undefined = closed, null = create (pick field), string = edit that field
+  const catalog = useTypeCatalog(type);
+  const meta = TYPE_META[type];
 
   const load = async () => {
     setLoading(true);
@@ -626,40 +885,36 @@ function TypeFieldManager({ type, onBack }) {
 
   useEffect(() => { load(); }, [type]);
 
-  const ruleFor = (field) => rules.find((r) => r.field_name === field);
-  const meta = TYPE_META[type];
-  const catalog = TYPE_FIELD_CATALOG[type];
+  const ruleFor = (key) => rules.find((r) => r.field_name === key);
 
   return (
     <div className="space-y-4">
-      <button
-        onClick={onBack}
-        className="text-xs text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 flex items-center gap-1"
-      >
-        <ArrowLeft size={13} /> All field managers
+      <button onClick={onBack} className="text-xs text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 flex items-center gap-1">
+        <ArrowLeft size={13} /> All business rule managers
       </button>
 
       <PageHeader
-        title={`${meta.label} field manager`}
-        description={`Only fields that exist on ${meta.label.toLowerCase()} tickets. What you configure here is exactly what appears when someone creates a ${meta.label.toLowerCase()} ticket.`}
+        title={`${meta.label} business rules`}
+        description={`Only fields that exist on ${meta.label.toLowerCase()} tickets — built-in and custom. What you configure here is exactly what happens when someone creates a ${meta.label.toLowerCase()} ticket.`}
         actions={<button onClick={() => setModalField(null)} className="btn-primary"><Plus size={14} /> Create rule</button>}
       />
 
-      {loading ? (
+      {loading || !catalog.length ? (
         <div className="text-slate-400 text-sm py-10 text-center">Loading…</div>
       ) : (
         <div className="card divide-y divide-slate-100 dark:divide-slate-800">
-          {catalog.map((field) => {
-            const rule = ruleFor(field);
+          {catalog.map((f) => {
+            const rule = ruleFor(f.key);
             const visible = rule ? !!rule.visible : true;
             const required = rule ? !!rule.required : false;
             const conditional = !!rule?.condition_field;
             const validated = !!(rule?.validation_type && rule.validation_type !== 'none');
             return (
-              <div key={field} className="flex items-center gap-3 px-4 py-3">
+              <div key={f.key} className="flex items-center gap-3 px-4 py-3">
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium text-slate-700 dark:text-slate-200 flex items-center gap-1.5 flex-wrap">
-                    {FIELD_META[field].label}
+                    {f.label}
+                    {f.custom && <span className="badge bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">custom</span>}
                     {conditional && <span className="badge bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-300">conditional</span>}
                     {validated && <span className="badge bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">validated</span>}
                   </div>
@@ -671,7 +926,7 @@ function TypeFieldManager({ type, onBack }) {
                 {required && <span className="badge bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400">Required</span>}
                 <button
                   type="button"
-                  onClick={() => setModalField(field)}
+                  onClick={() => setModalField(f.key)}
                   className="text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
                   title="Edit rule"
                 >
@@ -685,8 +940,7 @@ function TypeFieldManager({ type, onBack }) {
 
       {modalField !== undefined && (
         <RuleModal
-          type={type}
-          catalog={catalog}
+          initialType={type}
           field={modalField}
           rule={modalField ? ruleFor(modalField) : null}
           onClose={() => setModalField(undefined)}
@@ -697,28 +951,34 @@ function TypeFieldManager({ type, onBack }) {
   );
 }
 
-// Hub of separate, per-type field managers — no shared dropdown that mixes
-// every type's fields together, each type gets its own dedicated space.
-function FieldManagerHub() {
+// Hub of separate, per-type Business Rules managers, plus a top-level
+// "Create rule" that asks which ticket type first before revealing fields.
+function BusinessRulesHub() {
   const [activeType, setActiveType] = useState(null);
   const [allRules, setAllRules] = useState([]);
   const [loadingCounts, setLoadingCounts] = useState(true);
+  const [creating, setCreating] = useState(false);
+
+  const loadCounts = () => {
+    setLoadingCounts(true);
+    api.get('/field-rules').then(({ rules }) => setAllRules(rules)).finally(() => setLoadingCounts(false));
+  };
 
   useEffect(() => {
     if (activeType) return;
-    setLoadingCounts(true);
-    api.get('/field-rules').then(({ rules }) => setAllRules(rules)).finally(() => setLoadingCounts(false));
+    loadCounts();
   }, [activeType]);
 
   if (activeType) {
-    return <TypeFieldManager type={activeType} onBack={() => setActiveType(null)} />;
+    return <TypeRuleManager type={activeType} onBack={() => setActiveType(null)} />;
   }
 
   return (
     <div className="space-y-4">
       <PageHeader
-        title="Field Manager"
-        description="A separate field manager for each ticket type — pick one to design exactly what shows on that type's form, what's required, and how it behaves."
+        title="Business Rules"
+        description="Conditional visibility, required, and format-validation logic — e.g. only require Subcategory when Category = Hardware."
+        actions={<button onClick={() => setCreating(true)} className="btn-primary"><Plus size={14} /> Create rule</button>}
       />
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         {TICKET_TYPES.map((type) => {
@@ -726,32 +986,28 @@ function FieldManagerHub() {
           const Icon = meta.icon;
           const count = allRules.filter((r) => r.ticket_type === type).length;
           return (
-            <button
-              key={type}
-              onClick={() => setActiveType(type)}
-              className="card p-4 flex items-start gap-3 text-left hover:shadow-card-hover dark:hover:shadow-card-hover-dark transition-shadow group"
-            >
+            <button key={type} onClick={() => setActiveType(type)} className="card p-4 flex items-start gap-3 text-left hover:shadow-card-hover dark:hover:shadow-card-hover-dark transition-shadow group">
               <div className={`icon-tile w-11 h-11 rounded-xl bg-gradient-to-b ${meta.tile} text-white shrink-0`}>
                 <Icon size={18} />
               </div>
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
-                  <div className="font-medium text-slate-800 dark:text-slate-100">{meta.label} field manager</div>
+                  <div className="font-medium text-slate-800 dark:text-slate-100">{meta.label} business rules</div>
                   {!loadingCounts && (
-                    <span className="badge bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
-                      {count} rule{count === 1 ? '' : 's'}
-                    </span>
+                    <span className="badge bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">{count} rule{count === 1 ? '' : 's'}</span>
                   )}
                 </div>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                  {TYPE_FIELD_CATALOG[type].map((f) => FIELD_META[f].label).join(', ')}
-                </p>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{builtinCatalog(type).map((f) => f.label).join(', ')}</p>
               </div>
               <ChevronRight size={16} className="text-slate-300 dark:text-slate-600 shrink-0 mt-1 group-hover:translate-x-0.5 transition-transform" />
             </button>
           );
         })}
       </div>
+
+      {creating && (
+        <RuleModal onClose={() => setCreating(false)} onSaved={() => { setCreating(false); loadCounts(); }} />
+      )}
     </div>
   );
 }
@@ -823,7 +1079,7 @@ export default function AdminSettings() {
             >
               <ArrowLeft size={18} />
             </button>
-            {section !== 'workflows' && section !== 'fields' && (
+            {section !== 'workflows' && section !== 'fieldManager' && section !== 'businessRules' && (
               <div>
                 <div className="text-xs text-slate-400">Admin Settings</div>
                 <h1 className="text-lg font-display font-semibold text-slate-800 dark:text-slate-100">{active?.label}</h1>
@@ -835,7 +1091,8 @@ export default function AdminSettings() {
           {section === 'groups' && <GroupsTab />}
           {section === 'workspaces' && <WorkspacesTab />}
           {section === 'workflows' && <Automations />}
-          {section === 'fields' && <FieldManagerHub />}
+          {section === 'fieldManager' && <FieldManagerHub />}
+          {section === 'businessRules' && <BusinessRulesHub />}
         </>
       )}
     </div>

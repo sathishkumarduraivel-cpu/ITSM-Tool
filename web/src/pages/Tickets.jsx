@@ -19,18 +19,28 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
     title: '', description: '', type: availableTypes[0], priority: 'medium',
     category: '', subcategory: '', team: '', impact: 'medium',
     risk: 'medium', planned_start: '', planned_end: '', rollback_plan: '',
+    custom: {},
   });
   const [groups, setGroups] = useState([]);
+  const [customFields, setCustomFields] = useState([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const isChange = form.type === 'change';
-  const fieldRules = useFieldRules(form.type, form.category || null, form);
+  // Business Rules can also target/react to custom fields, so give it a flat
+  // view (built-in fields + form.custom's keys) to evaluate against.
+  const fieldRules = useFieldRules(form.type, form.category || null, { ...form, ...form.custom });
 
   useEffect(() => { api.get('/groups').then(({ groups }) => setGroups(groups)).catch(() => setGroups([])); }, []);
+  useEffect(() => {
+    api.get(`/custom-fields?ticket_type=${form.type}`).then(({ fields }) => setCustomFields(fields)).catch(() => setCustomFields([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.type]);
+
+  const setCustom = (key, value) => setForm({ ...form, custom: { ...form.custom, [key]: value } });
 
   // Every field below falls back to its current hardcoded default when no
-  // admin rule exists for it (in Field Manager), and is otherwise fully
-  // governed by that rule — visibility, requiredness, conditions, format.
+  // Business Rule exists for it, and is otherwise fully governed by that
+  // rule — visibility, requiredness, conditions, format.
   const showCategory = fieldRules.isVisible('category', true);
   const showSubcategory = fieldRules.isVisible('subcategory', true);
   const showTeam = fieldRules.isVisible('team', true);
@@ -46,7 +56,9 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
   const submit = async (e) => {
     e.preventDefault();
     setError('');
-    const firstError = ALL_RULED_FIELDS.map((f) => fieldRules.getError(f, form[f])).find(Boolean);
+    const firstError = ALL_RULED_FIELDS.map((f) => fieldRules.getError(f, form[f]))
+      .concat(customFields.map((f) => fieldRules.getError(f.field_key, form.custom[f.field_key])))
+      .find(Boolean);
     if (firstError) { setError(firstError); return; }
     setSaving(true);
     try {
@@ -121,6 +133,49 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
             )}
           </div>
         )}
+
+        {customFields.map((f) => {
+          const visible = fieldRules.isVisible(f.field_key, true);
+          if (!visible) return null;
+          const required = fieldRules.isRequired(f.field_key, !!f.required);
+          const value = form.custom[f.field_key];
+          const err = fieldRules.getError(f.field_key, value);
+          return (
+            <div key={f.id}>
+              <label className="label">{f.label}{required && ' *'}</label>
+              {f.field_type === 'text' && (
+                <input className="input" required={required} value={value || ''} onChange={(e) => setCustom(f.field_key, e.target.value)} />
+              )}
+              {f.field_type === 'textarea' && (
+                <textarea className="input" rows={3} required={required} value={value || ''} onChange={(e) => setCustom(f.field_key, e.target.value)} />
+              )}
+              {f.field_type === 'select' && (
+                <select className="input" required={required} value={value || ''} onChange={(e) => setCustom(f.field_key, e.target.value)}>
+                  <option value="">Choose…</option>
+                  {f.options.map((o) => <option key={o} value={o}>{o}</option>)}
+                </select>
+              )}
+              {f.field_type === 'multiselect' && (
+                <div className="input h-auto flex flex-wrap gap-x-4 gap-y-1.5 py-2.5">
+                  {f.options.map((o) => {
+                    const arr = Array.isArray(value) ? value : [];
+                    return (
+                      <label key={o} className="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-300">
+                        <input
+                          type="checkbox"
+                          checked={arr.includes(o)}
+                          onChange={(e) => setCustom(f.field_key, e.target.checked ? [...arr, o] : arr.filter((v) => v !== o))}
+                        />
+                        {o}
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+              {err && <p className="text-xs text-red-600 mt-1">{err}</p>}
+            </div>
+          );
+        })}
 
         {showChangeSection && (
           <div className="space-y-3 border-t border-slate-100 dark:border-slate-800 pt-3">

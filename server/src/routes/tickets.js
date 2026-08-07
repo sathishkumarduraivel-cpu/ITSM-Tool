@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import fs from 'node:fs';
 import { db, uid } from '../db.js';
-import { requireAuth, requireWorkspace } from '../middleware/auth.js';
+import { requireAuth, requireWorkspace, requireRole } from '../middleware/auth.js';
 import { evaluateAutomations } from '../services/automationEngine.js';
 import { getProvider, summarizeTicket, suggestResolution, categorizeTicket } from '../services/aiClient.js';
 import { notifyUser, renderTemplate } from '../services/notifications.js';
@@ -21,6 +21,12 @@ router.get('/', (req, res) => {
   const { status, priority, type, assignee_id, team, q } = req.query;
   let sql = 'SELECT * FROM tickets WHERE workspace_id = ?';
   const params = [req.workspaceId];
+  // Requesters only ever see their own tickets — forced server-side so the
+  // list can't be widened by query params, not just hidden in the UI.
+  if (req.user.role === 'requester') {
+    sql += ' AND requester_id = ?';
+    params.push(req.user.id);
+  }
   if (status) { sql += ' AND status = ?'; params.push(status); }
   if (priority) { sql += ' AND priority = ?'; params.push(priority); }
   if (type) { sql += ' AND type = ?'; params.push(type); }
@@ -46,6 +52,7 @@ router.get('/:id', (req, res) => {
      WHERE t.id = ? AND t.workspace_id = ?`
   ).get(req.params.id, req.workspaceId);
   if (!ticket) return res.status(404).json({ error: 'Not found' });
+  if (req.user.role === 'requester' && ticket.requester_id !== req.user.id) return res.status(404).json({ error: 'Not found' });
   const comments = db.prepare('SELECT * FROM ticket_comments WHERE ticket_id = ? ORDER BY created_at').all(ticket.id);
   const history = db.prepare('SELECT * FROM ticket_history WHERE ticket_id = ? ORDER BY created_at').all(ticket.id);
   const approvals = db.prepare('SELECT * FROM approvals WHERE ticket_id = ? ORDER BY step_order').all(ticket.id);
@@ -236,9 +243,11 @@ router.post('/:id/csat', (req, res) => {
   res.status(201).json({ ok: true });
 });
 
-// ---- AI actions on a specific ticket ----
+// ---- AI actions on a specific ticket — these are agent/admin tools for
+// working a ticket, not something a requester submitting one needs (or
+// should be able to trigger on tickets they don't own). ----
 
-router.post('/:id/ai/summarize', async (req, res) => {
+router.post('/:id/ai/summarize', requireRole('agent', 'admin'), async (req, res) => {
   try {
     const ticket = getTicket(req.params.id, req.workspaceId);
     if (!ticket) return res.status(404).json({ error: 'Not found' });
@@ -252,7 +261,7 @@ router.post('/:id/ai/summarize', async (req, res) => {
   }
 });
 
-router.post('/:id/ai/suggest-resolution', async (req, res) => {
+router.post('/:id/ai/suggest-resolution', requireRole('agent', 'admin'), async (req, res) => {
   try {
     const ticket = getTicket(req.params.id, req.workspaceId);
     if (!ticket) return res.status(404).json({ error: 'Not found' });
@@ -267,7 +276,7 @@ router.post('/:id/ai/suggest-resolution', async (req, res) => {
   }
 });
 
-router.post('/:id/ai/categorize', async (req, res) => {
+router.post('/:id/ai/categorize', requireRole('agent', 'admin'), async (req, res) => {
   try {
     const ticket = getTicket(req.params.id, req.workspaceId);
     if (!ticket) return res.status(404).json({ error: 'Not found' });

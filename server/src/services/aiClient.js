@@ -210,3 +210,26 @@ export async function askAssistant(provider, question, context) {
     { role: 'user', content: prompt },
   ]);
 }
+
+// Light, requester-facing helper: turns a rough, informal description into a
+// clear one suitable for a ticket, without touching or seeing any ticket
+// data — just rewords what the person typed.
+export async function describeProblem(provider, text) {
+  const prompt = `A person is about to submit an IT support ticket. Here's what they typed, in their own words:\n"${text}"\n\nRewrite this as a clear, well-organized problem description (2-4 sentences) suitable for a support ticket: what's happening, what they were trying to do, and any error/detail they mentioned. Don't invent details they didn't give you. Plain prose, no headers or bullet points.`;
+  return chatComplete(provider, [
+    { role: 'system', content: 'You help end users write clear IT support ticket descriptions from a rough description of their problem.' },
+    { role: 'user', content: prompt },
+  ], { max_tokens: 300 });
+}
+
+// Light, requester-facing helper: answers a question using ONLY that one
+// requester's own tickets (the caller must pre-filter `tickets` to their
+// own before calling this — this function has no access control of its
+// own, it just answers from whatever context it's given).
+export async function askAboutMyTickets(provider, question, tickets) {
+  const prompt = `Here are this person's own support tickets (JSON):\n${JSON.stringify(tickets, null, 2)}\n\nTheir question: "${question}"\n\nAnswer using only these tickets. If none of them answer the question, say so plainly and suggest they check "My Tickets" or open a new one. Be concise and conversational, not technical.`;
+  return chatComplete(provider, [
+    { role: 'system', content: 'You are a friendly IT help desk assistant, answering an employee\'s question about their own support tickets.' },
+    { role: 'user', content: prompt },
+  ], { max_tokens: 300 });
+}

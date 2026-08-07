@@ -2,7 +2,7 @@ import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { db, uid } from '../db.js';
 import { requireAuth, requireWorkspace, requireRole } from '../middleware/auth.js';
-import { getProvider, testProvider, dashboardInsights, askAssistant } from '../services/aiClient.js';
+import { getProvider, testProvider, dashboardInsights, askAssistant, describeProblem, askAboutMyTickets } from '../services/aiClient.js';
 import { encrypt } from '../services/crypto.js';
 
 const router = Router();
@@ -103,6 +103,39 @@ router.post('/ask', async (req, res) => {
     res.json({ answer });
   } catch (e) {
     res.status(400).json({ error: e.message });
+  }
+});
+
+// ---- Sona, light actions available to every role (requester/agent/admin) ----
+
+router.post('/describe-problem', async (req, res) => {
+  try {
+    const { text } = req.body;
+    if (!text || !text.trim()) return res.status(400).json({ error: 'text required' });
+    const provider = getProvider(req.workspaceId, req.body.provider_id);
+    const description = await describeProblem(provider, text.trim());
+    res.json({ description });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.post('/my-tickets-ask', (req, res, next) => {
+  // Deliberately re-derives the ticket set from the DB scoped to the caller
+  // rather than trusting anything the client sends, so this can never be
+  // used to ask about someone else's tickets.
+  try {
+    const { question } = req.body;
+    if (!question || !question.trim()) return res.status(400).json({ error: 'question required' });
+    const tickets = db.prepare(
+      'SELECT number, title, type, status, priority, category, created_at, updated_at FROM tickets WHERE workspace_id = ? AND requester_id = ? ORDER BY created_at DESC LIMIT 50'
+    ).all(req.workspaceId, req.user.id);
+    const provider = getProvider(req.workspaceId, req.body.provider_id);
+    askAboutMyTickets(provider, question.trim(), tickets)
+      .then((answer) => res.json({ answer }))
+      .catch((e) => res.status(400).json({ error: e.message }));
+  } catch (e) {
+    next(e);
   }
 });
 

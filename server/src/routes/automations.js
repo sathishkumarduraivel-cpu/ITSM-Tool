@@ -1,10 +1,13 @@
 import { Router } from 'express';
 import { db, uid } from '../db.js';
-import { requireAuth, requireWorkspace } from '../middleware/auth.js';
+import { requireAuth, requireWorkspace, requireRole } from '../middleware/auth.js';
 import { ticketMatchesConditions, describeAction } from '../services/automationEngine.js';
 
 const router = Router();
-router.use(requireAuth, requireWorkspace);
+// Workflow automation is configuration, not day-to-day ITSM work — only
+// admins build/view/edit/test it. Agents and requesters never reach this at
+// all, not even read-only (there's nothing here they need).
+router.use(requireAuth, requireWorkspace, requireRole('admin'));
 
 router.get('/', (req, res) => {
   const rows = db.prepare('SELECT * FROM automations WHERE workspace_id = ? ORDER BY created_at DESC').all(req.workspaceId);

@@ -44,7 +44,17 @@ app.use(cors({
 app.use(express.json({ limit: '2mb' }));
 app.use(morgan('dev'));
 
-const apiLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 300, standardHeaders: true, legacyHeaders: false });
+// Strict in production; generous outside it. This limiter covers every
+// /api/* call combined (not just login), so normal interactive use — several
+// requests per page navigation plus the notification bell polling every
+// 20s — was tripping the old flat 300/15min limit during ordinary usage,
+// not just abuse. Same reasoning as the login limiter fix.
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: process.env.NODE_ENV === 'production' ? 300 : 2000,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 app.use('/api', apiLimiter);
 
 app.get('/api/health', (req, res) => res.json({ ok: true, service: 'itsm-ai-server', time: new Date().toISOString() }));

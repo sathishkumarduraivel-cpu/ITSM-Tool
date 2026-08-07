@@ -457,6 +457,15 @@ const ticketColumnMigrations = [
   "ALTER TABLE notification_templates ADD COLUMN workspace_id TEXT",
   "ALTER TABLE notifications ADD COLUMN workspace_id TEXT",
   "ALTER TABLE groups ADD COLUMN workspace_id TEXT",
+  // Business Rules engine: a rule can be gated by a condition on another
+  // field's live value ("only apply when X = Y") and can carry a format
+  // validation, on top of the original static visible/required flags.
+  "ALTER TABLE ticket_field_rules ADD COLUMN condition_field TEXT",
+  "ALTER TABLE ticket_field_rules ADD COLUMN condition_op TEXT", // equals | not_equals | contains | in
+  "ALTER TABLE ticket_field_rules ADD COLUMN condition_value TEXT",
+  "ALTER TABLE ticket_field_rules ADD COLUMN validation_type TEXT", // regex | min_length | max_length | number_range
+  "ALTER TABLE ticket_field_rules ADD COLUMN validation_value TEXT",
+  "ALTER TABLE ticket_field_rules ADD COLUMN validation_message TEXT",
 ];
 for (const sql of ticketColumnMigrations) {
   try {

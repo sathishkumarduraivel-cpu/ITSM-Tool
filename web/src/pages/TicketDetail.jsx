@@ -199,7 +199,7 @@ export default function TicketDetail() {
     load();
   };
 
-  const fieldRules = useFieldRules(ticket?.type, ticket?.category || null);
+  const fieldRules = useFieldRules(ticket?.type, ticket?.category || null, ticket);
 
   if (!ticket) return <div className="text-slate-400 text-sm py-20 text-center">Loading ticket…</div>;
 

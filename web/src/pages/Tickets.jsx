@@ -19,7 +19,7 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const isChange = form.type === 'change';
-  const fieldRules = useFieldRules(form.type, form.category || null);
+  const fieldRules = useFieldRules(form.type, form.category || null, form);
   // Each change-only field falls back to the current type === 'change' behavior
   // when no admin rule exists for it, and is otherwise governed by the rule.
   const showRisk = fieldRules.isVisible('risk', isChange);
@@ -30,8 +30,12 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
 
   const submit = async (e) => {
     e.preventDefault();
-    setSaving(true);
     setError('');
+    const firstError = ['risk', 'planned_start', 'planned_end', 'rollback_plan']
+      .map((f) => fieldRules.getError(f, form[f]))
+      .find(Boolean);
+    if (firstError) { setError(firstError); return; }
+    setSaving(true);
     try {
       const { ticket } = await api.post('/tickets', form);
       onCreated(ticket);
@@ -83,18 +87,21 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
                   <select className="input" required={fieldRules.isRequired('risk')} value={form.risk} onChange={(e) => setForm({ ...form, risk: e.target.value })}>
                     {RISKS.map((r) => <option key={r} value={r}>{r}</option>)}
                   </select>
+                  {fieldRules.getError('risk', form.risk) && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('risk', form.risk)}</p>}
                 </div>
               )}
               {showPlannedStart && (
                 <div>
                   <label className="label">Planned start{fieldRules.isRequired('planned_start') && ' *'}</label>
                   <input type="datetime-local" className="input" required={fieldRules.isRequired('planned_start')} value={form.planned_start} onChange={(e) => setForm({ ...form, planned_start: e.target.value })} />
+                  {fieldRules.getError('planned_start', form.planned_start) && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('planned_start', form.planned_start)}</p>}
                 </div>
               )}
               {showPlannedEnd && (
                 <div>
                   <label className="label">Planned end{fieldRules.isRequired('planned_end') && ' *'}</label>
                   <input type="datetime-local" className="input" required={fieldRules.isRequired('planned_end')} value={form.planned_end} onChange={(e) => setForm({ ...form, planned_end: e.target.value })} />
+                  {fieldRules.getError('planned_end', form.planned_end) && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('planned_end', form.planned_end)}</p>}
                 </div>
               )}
             </div>
@@ -102,6 +109,7 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
               <div>
                 <label className="label">Rollback plan{fieldRules.isRequired('rollback_plan') && ' *'}</label>
                 <textarea className="input" rows={2} required={fieldRules.isRequired('rollback_plan')} value={form.rollback_plan} onChange={(e) => setForm({ ...form, rollback_plan: e.target.value })} />
+                {fieldRules.getError('rollback_plan', form.rollback_plan) && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('rollback_plan', form.rollback_plan)}</p>}
               </div>
             )}
           </div>

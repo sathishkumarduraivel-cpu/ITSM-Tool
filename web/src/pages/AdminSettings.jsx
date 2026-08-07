@@ -455,11 +455,109 @@ function WorkspacesTab() {
 const TICKET_TYPES = ['incident', 'request', 'problem', 'change'];
 const COMMON_FIELDS = ['category', 'subcategory', 'team', 'impact', 'risk', 'planned_start', 'planned_end', 'rollback_plan'];
 const FIELD_DISPLAY_LABELS = { team: 'Group' };
+// Fields a condition can react to — other live form fields, not necessarily
+// ones that themselves have visibility rules.
+const CONDITION_FIELDS = ['priority', 'status', 'category', 'subcategory', 'team', 'impact', 'risk'];
+const CONDITION_OPS = [
+  { value: 'equals', label: 'equals' },
+  { value: 'not_equals', label: 'does not equal' },
+  { value: 'contains', label: 'contains' },
+  { value: 'in', label: 'is one of (comma-separated)' },
+];
+const VALIDATION_TYPES = [
+  { value: '', label: 'None' },
+  { value: 'regex', label: 'Matches pattern (regex)' },
+  { value: 'min_length', label: 'Minimum length' },
+  { value: 'max_length', label: 'Maximum length' },
+  { value: 'number_range', label: 'Number between (min,max)' },
+];
+
+// Inline "IF <field> <op> <value> THEN visible/required" + format-validation
+// editor for a single field's rule. Collapsed by default — most fields never
+// need this, so the common case (just Visible/Required) stays a one-line row.
+function AdvancedRuleEditor({ field, rule, onSave }) {
+  const [conditionField, setConditionField] = useState(rule?.condition_field || '');
+  const [conditionOp, setConditionOp] = useState(rule?.condition_op || 'equals');
+  const [conditionValue, setConditionValue] = useState(rule?.condition_value || '');
+  const [validationType, setValidationType] = useState(rule?.validation_type || '');
+  const [validationValue, setValidationValue] = useState(rule?.validation_value || '');
+  const [validationMessage, setValidationMessage] = useState(rule?.validation_message || '');
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    setSaving(true);
+    await onSave({
+      condition_field: conditionField || null,
+      condition_op: conditionField ? conditionOp : null,
+      condition_value: conditionField ? conditionValue : null,
+      validation_type: validationType || null,
+      validation_value: validationType ? validationValue : null,
+      validation_message: validationType ? validationMessage : null,
+    });
+    setSaving(false);
+  };
+
+  return (
+    <div className="px-4 pb-4 pt-1 bg-slate-50 dark:bg-slate-900/40 space-y-3 text-xs border-t border-slate-100 dark:border-slate-800">
+      <div>
+        <div className="font-medium text-slate-600 dark:text-slate-300 mb-1.5">Only apply this rule when…</div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <select className="input text-xs py-1.5 w-auto" value={conditionField} onChange={(e) => setConditionField(e.target.value)}>
+            <option value="">Always (no condition)</option>
+            {CONDITION_FIELDS.filter((f) => f !== field).map((f) => (
+              <option key={f} value={f}>{FIELD_DISPLAY_LABELS[f] || f}</option>
+            ))}
+          </select>
+          {conditionField && (
+            <>
+              <select className="input text-xs py-1.5 w-auto" value={conditionOp} onChange={(e) => setConditionOp(e.target.value)}>
+                {CONDITION_OPS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+              <input className="input text-xs py-1.5 w-auto" placeholder="value" value={conditionValue} onChange={(e) => setConditionValue(e.target.value)} />
+            </>
+          )}
+        </div>
+      </div>
+
+      <div>
+        <div className="font-medium text-slate-600 dark:text-slate-300 mb-1.5">Format validation</div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <select className="input text-xs py-1.5 w-auto" value={validationType} onChange={(e) => setValidationType(e.target.value)}>
+            {VALIDATION_TYPES.map((v) => <option key={v.value} value={v.value}>{v.label}</option>)}
+          </select>
+          {validationType && (
+            <input
+              className="input text-xs py-1.5 w-auto"
+              placeholder={validationType === 'regex' ? 'e.g. ^AT-\\d{4}$' : validationType === 'number_range' ? 'e.g. 1,100' : 'e.g. 10'}
+              value={validationValue}
+              onChange={(e) => setValidationValue(e.target.value)}
+            />
+          )}
+        </div>
+        {validationType && (
+          <input
+            className="input text-xs py-1.5 mt-2"
+            placeholder="Custom error message shown to the user (optional)"
+            value={validationMessage}
+            onChange={(e) => setValidationMessage(e.target.value)}
+          />
+        )}
+      </div>
+
+      <div className="flex justify-end">
+        <button type="button" disabled={saving} onClick={save} className="btn-primary text-xs py-1.5 px-3">
+          {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />} Save rule
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function FieldRulesTab() {
   const [ticketType, setTicketType] = useState('change');
   const [rules, setRules] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [expanded, setExpanded] = useState(null);
 
   const load = async () => {
     setLoading(true);
@@ -482,17 +580,19 @@ function FieldRulesTab() {
     load();
   };
 
+  const hasAdvanced = (rule) => !!(rule?.condition_field || (rule?.validation_type && rule.validation_type !== 'none'));
+
   return (
     <div className="space-y-4">
       <div className="max-w-xs">
         <label className="label">Ticket type</label>
-        <select className="input" value={ticketType} onChange={(e) => setTicketType(e.target.value)}>
+        <select className="input" value={ticketType} onChange={(e) => { setTicketType(e.target.value); setExpanded(null); }}>
           {TICKET_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
         </select>
       </div>
 
       <p className="text-sm text-slate-500 dark:text-slate-400">
-        Business rules that control which fields show on the {ticketType} form, and which are mandatory before submission. Fields with no rule configured stay visible (existing default behavior).
+        Business rules control which fields show on the {ticketType} form and which are mandatory — and can now react to other field values ("only require Rollback plan when Risk = high") and enforce a format ("must be at least 20 characters"). Fields with no rule configured stay visible (existing default behavior).
       </p>
 
       {loading ? (
@@ -503,15 +603,31 @@ function FieldRulesTab() {
             const rule = ruleFor(field);
             const visible = rule ? !!rule.visible : true;
             const required = rule ? !!rule.required : false;
+            const isOpen = expanded === field;
             return (
-              <div key={field} className="flex items-center gap-4 px-4 py-3">
-                <div className="flex-1 text-sm font-medium text-slate-700 dark:text-slate-200 capitalize">{FIELD_DISPLAY_LABELS[field] || field.replace('_', ' ')}</div>
-                <label className="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-300">
-                  <input type="checkbox" checked={visible} onChange={(e) => setRule(field, { visible: e.target.checked })} /> Visible
-                </label>
-                <label className="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-300">
-                  <input type="checkbox" checked={required} disabled={!visible} onChange={(e) => setRule(field, { required: e.target.checked })} /> Required
-                </label>
+              <div key={field}>
+                <div className="flex items-center gap-4 px-4 py-3">
+                  <div className="flex-1 text-sm font-medium text-slate-700 dark:text-slate-200 capitalize flex items-center gap-2">
+                    {FIELD_DISPLAY_LABELS[field] || field.replace('_', ' ')}
+                    {hasAdvanced(rule) && (
+                      <span className="badge bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-300">conditional</span>
+                    )}
+                  </div>
+                  <label className="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-300">
+                    <input type="checkbox" checked={visible} onChange={(e) => setRule(field, { visible: e.target.checked })} /> Visible
+                  </label>
+                  <label className="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-300">
+                    <input type="checkbox" checked={required} disabled={!visible} onChange={(e) => setRule(field, { required: e.target.checked })} /> Required
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setExpanded(isOpen ? null : field)}
+                    className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline flex items-center gap-0.5 shrink-0"
+                  >
+                    Advanced {isOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                  </button>
+                </div>
+                {isOpen && <AdvancedRuleEditor field={field} rule={rule} onSave={(patch) => setRule(field, patch)} />}
               </div>
             );
           })}

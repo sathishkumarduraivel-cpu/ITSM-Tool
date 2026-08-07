@@ -16,19 +16,34 @@ router.get('/', (req, res) => {
 });
 
 router.post('/', requireRole('admin'), (req, res) => {
-  const { ticket_type, category, field_name, visible = true, required = false, sort_order = 0 } = req.body;
+  const {
+    ticket_type, category, field_name, visible = true, required = false, sort_order = 0,
+    condition_field = null, condition_op = null, condition_value = null,
+    validation_type = null, validation_value = null, validation_message = null,
+  } = req.body;
   if (!ticket_type || !field_name) return res.status(400).json({ error: 'ticket_type and field_name required' });
   const id = uid('fr');
   db.prepare(
-    'INSERT INTO ticket_field_rules (id, workspace_id, ticket_type, category, field_name, visible, required, sort_order) VALUES (?,?,?,?,?,?,?,?)'
-  ).run(id, req.workspaceId, ticket_type, category || null, field_name, visible ? 1 : 0, required ? 1 : 0, sort_order);
+    `INSERT INTO ticket_field_rules
+     (id, workspace_id, ticket_type, category, field_name, visible, required, sort_order,
+      condition_field, condition_op, condition_value, validation_type, validation_value, validation_message)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).run(
+    id, req.workspaceId, ticket_type, category || null, field_name, visible ? 1 : 0, required ? 1 : 0, sort_order,
+    condition_field || null, condition_op || null, condition_value || null,
+    validation_type || null, validation_value || null, validation_message || null
+  );
   res.status(201).json({ id });
 });
 
 router.patch('/:id', requireRole('admin'), (req, res) => {
   const row = db.prepare('SELECT * FROM ticket_field_rules WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspaceId);
   if (!row) return res.status(404).json({ error: 'Not found' });
-  const allowed = ['category', 'visible', 'required', 'sort_order'];
+  const allowed = [
+    'category', 'visible', 'required', 'sort_order',
+    'condition_field', 'condition_op', 'condition_value',
+    'validation_type', 'validation_value', 'validation_message',
+  ];
   const fields = []; const params = [];
   for (const key of allowed) {
     if (req.body[key] !== undefined) {

@@ -206,6 +206,10 @@ export default function TicketDetail() {
   if (!ticket) return <div className="text-slate-400 text-sm py-20 text-center">Loading ticket…</div>;
 
   const isChange = ticket.type === 'change';
+  const showStatus = fieldRules.isVisible('status', true);
+  const showPriority = fieldRules.isVisible('priority', true);
+  const showCategory = fieldRules.isVisible('category', true);
+  const showTeam = fieldRules.isVisible('team', true);
   const showRisk = fieldRules.isVisible('risk', isChange);
   const showPlannedStart = fieldRules.isVisible('planned_start', isChange);
   const showPlannedEnd = fieldRules.isVisible('planned_end', isChange);
@@ -386,32 +390,46 @@ export default function TicketDetail() {
 
           <div className="card p-4 space-y-3">
             <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Details</h3>
-            <div>
-              <label className="label">Status</label>
-              <select className="input" disabled={!isAgent} value={ticket.status} onChange={(e) => updateField('status', e.target.value)}>
-                {statusOptions.map((s) => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="label">Priority</label>
-              <select className="input" disabled={!isAgent} value={ticket.priority} onChange={(e) => updateField('priority', e.target.value)}>
-                {PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="label">Category</label>
-              <input className="input" disabled={!isAgent} defaultValue={ticket.category || ''} onBlur={(e) => updateField('category', e.target.value)} />
-            </div>
-            <div>
-              <label className="label">Group</label>
-              <select className="input" disabled={!isAgent} value={ticket.team || ''} onChange={(e) => updateField('team', e.target.value)}>
-                <option value="">Unassigned</option>
-                {groups.map((g) => <option key={g.id} value={g.name}>{g.name}</option>)}
-                {ticket.team && !groups.some((g) => g.name === ticket.team) && (
-                  <option value={ticket.team}>{ticket.team}</option>
-                )}
-              </select>
-            </div>
+            {showStatus && (
+              <div>
+                <label className="label">Status</label>
+                <select className="input" disabled={!isAgent} value={ticket.status} onChange={(e) => updateField('status', e.target.value)}>
+                  {statusOptions.map((s) => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
+                </select>
+              </div>
+            )}
+            {showPriority && (
+              <div>
+                <label className="label">Priority</label>
+                <select className="input" disabled={!isAgent} value={ticket.priority} onChange={(e) => updateField('priority', e.target.value)}>
+                  {PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </div>
+            )}
+            {showCategory && (
+              <div>
+                <label className="label">Category</label>
+                <input className="input" disabled={!isAgent} defaultValue={ticket.category || ''} onBlur={(e) => updateField('category', e.target.value)} />
+              </div>
+            )}
+            {showTeam && (
+              <div>
+                <label className="label">Group</label>
+                <select className="input" disabled={!isAgent} value={ticket.team || ''} onChange={(e) => updateField('team', e.target.value)}>
+                  <option value="">Unassigned</option>
+                  {groups.map((g) => <option key={g.id} value={g.name}>{g.name}</option>)}
+                  {ticket.team && !groups.some((g) => g.name === ticket.team) && (
+                    <option value={ticket.team}>{ticket.team}</option>
+                  )}
+                </select>
+              </div>
+            )}
+            {ticket.catalog_item_name && (
+              <div>
+                <label className="label">Service Item</label>
+                <div className="text-sm text-slate-700 dark:text-slate-200">{ticket.catalog_item_name}</div>
+              </div>
+            )}
             <div className="flex items-center gap-2 pt-1">
               <StatusBadge status={ticket.status} />
               <PriorityBadge priority={ticket.priority} />

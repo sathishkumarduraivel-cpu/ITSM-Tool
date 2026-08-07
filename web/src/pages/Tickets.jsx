@@ -19,20 +19,29 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
     title: '', description: '', type: availableTypes[0], priority: 'medium',
     category: '', subcategory: '', team: '', impact: 'medium',
     risk: 'medium', planned_start: '', planned_end: '', rollback_plan: '',
-    custom: {},
+    catalog_item_id: '', custom: {},
   });
   const [groups, setGroups] = useState([]);
   const [customFields, setCustomFields] = useState([]);
+  const [catalogItems, setCatalogItems] = useState([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const isChange = form.type === 'change';
-  // Business Rules can also target/react to custom fields, so give it a flat
-  // view (built-in fields + form.custom's keys) to evaluate against.
-  const fieldRules = useFieldRules(form.type, form.category || null, { ...form, ...form.custom });
+  const isRequest = form.type === 'request';
+  const catalogItemName = catalogItems.find((i) => i.id === form.catalog_item_id)?.name || '';
+  // Business Rules can also target/react to custom fields and the synthetic
+  // "Service Item" field, so give it a flat view (built-ins + form.custom's
+  // keys + the resolved service item name) to evaluate against.
+  const fieldRules = useFieldRules(form.type, form.category || null, { ...form, ...form.custom, catalog_item_name: catalogItemName });
 
   useEffect(() => { api.get('/groups').then(({ groups }) => setGroups(groups)).catch(() => setGroups([])); }, []);
   useEffect(() => {
     api.get(`/custom-fields?ticket_type=${form.type}`).then(({ fields }) => setCustomFields(fields)).catch(() => setCustomFields([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.type]);
+  useEffect(() => {
+    if (form.type !== 'request') { setCatalogItems([]); return; }
+    api.get('/catalog/items').then(({ items }) => setCatalogItems(items)).catch(() => setCatalogItems([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.type]);
 
@@ -41,23 +50,26 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
   // Every field below falls back to its current hardcoded default when no
   // Business Rule exists for it, and is otherwise fully governed by that
   // rule — visibility, requiredness, conditions, format.
+  const showPriority = fieldRules.isVisible('priority', true);
   const showCategory = fieldRules.isVisible('category', true);
   const showSubcategory = fieldRules.isVisible('subcategory', true);
   const showTeam = fieldRules.isVisible('team', true);
   const showImpact = fieldRules.isVisible('impact', true);
+  const showServiceItem = isRequest && fieldRules.isVisible('catalog_item_name', true);
   const showRisk = fieldRules.isVisible('risk', isChange);
   const showPlannedStart = fieldRules.isVisible('planned_start', isChange);
   const showPlannedEnd = fieldRules.isVisible('planned_end', isChange);
   const showRollbackPlan = fieldRules.isVisible('rollback_plan', isChange);
   const showChangeSection = showRisk || showPlannedStart || showPlannedEnd || showRollbackPlan;
 
-  const ALL_RULED_FIELDS = ['category', 'subcategory', 'team', 'impact', 'risk', 'planned_start', 'planned_end', 'rollback_plan'];
+  const ALL_RULED_FIELDS = ['priority', 'category', 'subcategory', 'team', 'impact', 'risk', 'planned_start', 'planned_end', 'rollback_plan'];
 
   const submit = async (e) => {
     e.preventDefault();
     setError('');
     const firstError = ALL_RULED_FIELDS.map((f) => fieldRules.getError(f, form[f]))
       .concat(customFields.map((f) => fieldRules.getError(f.field_key, form.custom[f.field_key])))
+      .concat(showServiceItem && fieldRules.isRequired('catalog_item_name') && !form.catalog_item_id ? 'Service Item is required.' : null)
       .find(Boolean);
     if (firstError) { setError(firstError); return; }
     setSaving(true);
@@ -90,12 +102,14 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
               {availableTypes.map((t) => <option key={t} value={t}>{t}</option>)}
             </select>
           </div>
-          <div>
-            <label className="label">Priority</label>
-            <select className="input" value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })}>
-              {PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
-            </select>
-          </div>
+          {showPriority && (
+            <div>
+              <label className="label">Priority{fieldRules.isRequired('priority') && ' *'}</label>
+              <select className="input" required={fieldRules.isRequired('priority')} value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })}>
+                {PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </div>
+          )}
           {showCategory && (
             <div>
               <label className="label">Category{fieldRules.isRequired('category') && ' *'}</label>
@@ -104,6 +118,24 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
             </div>
           )}
         </div>
+
+        {showServiceItem && (
+          <div>
+            <label className="label">Service Item{fieldRules.isRequired('catalog_item_name') && ' *'}</label>
+            <select
+              className="input"
+              required={fieldRules.isRequired('catalog_item_name')}
+              value={form.catalog_item_id}
+              onChange={(e) => setForm({ ...form, catalog_item_id: e.target.value })}
+            >
+              <option value="">Choose a service item…</option>
+              {catalogItems.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+            </select>
+            {fieldRules.getError('catalog_item_name', catalogItemName) && (
+              <p className="text-xs text-red-600 mt-1">{fieldRules.getError('catalog_item_name', catalogItemName)}</p>
+            )}
+          </div>
+        )}
 
         {(showSubcategory || showTeam || showImpact) && (
           <div className="grid grid-cols-3 gap-3">

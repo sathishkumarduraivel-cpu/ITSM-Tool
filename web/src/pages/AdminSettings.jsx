@@ -455,10 +455,12 @@ function WorkspacesTab() {
 }
 
 const TICKET_TYPES = ['incident', 'request', 'problem', 'change'];
-// The built-in fields that already exist on each ticket type's form (Change
-// has Risk/Planned dates/Rollback plan on top of the common four; nothing
-// else does). Field Manager's custom fields are layered on top of this list
-// per type, not a replacement for it.
+// Priority and Status exist on every ticket regardless of type, so they're
+// targetable on all four types. The rest are the extra fields that exist on
+// each type's own form (Change has Risk/Planned dates/Rollback plan on top
+// of the common four; nothing else does). Field Manager's custom fields are
+// layered on top of this list per type, not a replacement for it.
+const UNIVERSAL_FIELDS = ['priority', 'status'];
 const TYPE_FIELD_CATALOG = {
   incident: ['category', 'subcategory', 'team', 'impact'],
   request: ['category', 'subcategory', 'team', 'impact'],
@@ -476,6 +478,7 @@ const FIELD_META = {
   rollback_plan: { label: 'Rollback plan' },
   priority: { label: 'Priority' },
   status: { label: 'Status' },
+  catalog_item_name: { label: 'Service Item' },
 };
 const TYPE_META = {
   incident: { label: 'Incident', icon: AlertTriangle, tile: 'from-red-400 to-red-600' },
@@ -483,7 +486,7 @@ const TYPE_META = {
   problem: { label: 'Problem', icon: Search, tile: 'from-purple-400 to-purple-600' },
   change: { label: 'Change', icon: GitBranch, tile: 'from-teal-400 to-teal-600' },
 };
-const builtinCatalog = (type) => TYPE_FIELD_CATALOG[type].map((key) => ({ key, label: FIELD_META[key].label }));
+const builtinCatalog = (type) => [...UNIVERSAL_FIELDS, ...TYPE_FIELD_CATALOG[type]].map((key) => ({ key, label: FIELD_META[key].label }));
 
 // ============================== Field Manager ==============================
 // Creates the fields themselves (text / paragraph / dropdown / multi-select),
@@ -721,6 +724,8 @@ const VALIDATION_TYPES = [
 
 // Built-in fields for a type plus whatever custom fields Field Manager has
 // created for it — the full set Business Rules can target or react to.
+// Request additionally gets a synthetic "Service Item" field backed live by
+// the real Service Catalog (not something Field Manager creates).
 function useTypeCatalog(type) {
   const [customFields, setCustomFields] = useState([]);
   useEffect(() => {
@@ -728,7 +733,19 @@ function useTypeCatalog(type) {
     api.get(`/custom-fields?ticket_type=${type}`).then(({ fields }) => setCustomFields(fields)).catch(() => setCustomFields([]));
   }, [type]);
   if (!type) return [];
-  return [...builtinCatalog(type), ...customFields.map((f) => ({ key: f.field_key, label: f.label, custom: true }))];
+  const catalogItemField = type === 'request' ? [{ key: 'catalog_item_name', label: 'Service Item', catalogItem: true }] : [];
+  return [...builtinCatalog(type), ...catalogItemField, ...customFields.map((f) => ({ key: f.field_key, label: f.label, custom: true }))];
+}
+
+// Live list of real Service Catalog item names, for the "Service Item"
+// field's value picker — never a free-text guess at a name that might not exist.
+function useCatalogItemNames(type) {
+  const [items, setItems] = useState([]);
+  useEffect(() => {
+    if (type !== 'request') { setItems([]); return; }
+    api.get('/catalog/items').then(({ items }) => setItems(items)).catch(() => setItems([]));
+  }, [type]);
+  return items;
 }
 
 // Rule builder in a modal. When opened from the Business Rules hub's own
@@ -738,6 +755,7 @@ function useTypeCatalog(type) {
 function RuleModal({ initialType, field, rule, onClose, onSaved }) {
   const [type, setType] = useState(initialType || '');
   const catalog = useTypeCatalog(type);
+  const catalogItems = useCatalogItemNames(type);
   const [selectedField, setSelectedField] = useState(field || '');
   const [visible, setVisible] = useState(rule ? !!rule.visible : true);
   const [required, setRequired] = useState(rule ? !!rule.required : false);
@@ -754,9 +772,10 @@ function RuleModal({ initialType, field, rule, onClose, onSaved }) {
   }, [catalog, field, selectedField]);
 
   const labelFor = (key) => catalog.find((f) => f.key === key)?.label || FIELD_META[key]?.label || key;
-  // A condition can react to this type's own fields (minus the one being
-  // configured) plus the two universal fields every ticket has.
-  const conditionCandidates = ['priority', 'status', ...catalog.map((f) => f.key)].filter((k) => k !== selectedField);
+  // A condition can react to any of this type's own fields, minus the one
+  // being configured right now (Priority/Status are already universal
+  // members of `catalog` via UNIVERSAL_FIELDS, so no need to add them again).
+  const conditionCandidates = catalog.map((f) => f.key).filter((k) => k !== selectedField);
 
   const save = async () => {
     setSaving(true);
@@ -823,10 +842,23 @@ function RuleModal({ initialType, field, rule, onClose, onSaved }) {
                     <select className="input w-auto" value={conditionOp} onChange={(e) => setConditionOp(e.target.value)}>
                       {CONDITION_OPS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                     </select>
-                    <input className="input w-auto" placeholder="value" value={conditionValue} onChange={(e) => setConditionValue(e.target.value)} />
+                    {conditionField === 'catalog_item_name' ? (
+                      <select className="input w-auto" value={conditionValue} onChange={(e) => setConditionValue(e.target.value)}>
+                        <option value="">Choose a service item…</option>
+                        {catalogItems.map((item) => <option key={item.id} value={item.name}>{item.name}</option>)}
+                      </select>
+                    ) : (
+                      <input className="input w-auto" placeholder="value" value={conditionValue} onChange={(e) => setConditionValue(e.target.value)} />
+                    )}
                   </>
                 )}
               </div>
+              {conditionField && (
+                <p className="text-xs text-slate-400 mt-1.5">
+                  When {labelFor(conditionField)} {CONDITION_OPS.find((o) => o.value === conditionOp)?.label} "{conditionValue || '…'}", this field will be {visible ? 'visible' : 'hidden'}{required && visible ? ' and required' : ''}.
+                  In every other case it uses the default instead (visible, not required) — e.g. to make a field hidden normally and only shown in this one case, set the condition to the opposite (e.g. "does not equal") and uncheck Visible above.
+                </p>
+              )}
             </div>
 
             <div>

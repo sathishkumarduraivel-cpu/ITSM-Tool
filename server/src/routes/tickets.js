@@ -47,10 +47,11 @@ router.get('/teams', (req, res) => {
 
 router.get('/:id', (req, res) => {
   const ticket = db.prepare(
-    `SELECT t.*, ru.name AS requester_name, ru.email AS requester_email, au.name AS assignee_name, au.email AS assignee_email
+    `SELECT t.*, ru.name AS requester_name, ru.email AS requester_email, au.name AS assignee_name, au.email AS assignee_email, ci.name AS catalog_item_name
      FROM tickets t
      LEFT JOIN users ru ON ru.id = t.requester_id
      LEFT JOIN users au ON au.id = t.assignee_id
+     LEFT JOIN catalog_items ci ON ci.id = t.catalog_item_id
      WHERE t.id = ? AND t.workspace_id = ?`
   ).get(req.params.id, req.workspaceId);
   if (!ticket) return res.status(404).json({ error: 'Not found' });
@@ -71,23 +72,36 @@ router.get('/:id', (req, res) => {
 });
 
 router.post('/', async (req, res) => {
-  const { title, type = 'incident', custom } = req.body;
+  const { title, type = 'incident', custom, catalog_item_id } = req.body;
   if (!title) return res.status(400).json({ error: 'title required' });
 
   const customDefs = listCustomFields(req.workspaceId, type);
   const { values: customValues, error: customError } = normalizeCustomValues(customDefs, custom);
   if (customError) return res.status(400).json({ error: customError });
 
+  // Service Item is a synthetic, live-backed Business Rules field for
+  // Request tickets -- resolve the real catalog item's name up front so a
+  // rule can condition on "Service Item = X" the same way it would on any
+  // other field.
+  let catalogItem = null;
+  if (catalog_item_id) {
+    catalogItem = db.prepare('SELECT id, name FROM catalog_items WHERE id = ? AND workspace_id = ?').get(catalog_item_id, req.workspaceId);
+    if (!catalogItem) return res.status(400).json({ error: 'Invalid service item' });
+  }
+
   // Business Rules can target/condition on built-in AND custom fields, so
   // give it one flat, mutable view -- hiding a field here deletes its key,
   // and we read the persisted values back out of this same object below, so
   // a hidden field's value is actually dropped, not just hidden in the UI.
-  const evalBody = { ...req.body, ...customValues };
+  const evalBody = { ...req.body, ...customValues, catalog_item_name: catalogItem?.name || null };
   const ruleError = applyFieldRules(req.workspaceId, type, evalBody.category, evalBody);
   if (ruleError) return res.status(400).json({ error: ruleError });
   for (const key of Object.keys(customValues)) {
     if (!(key in evalBody)) delete customValues[key];
   }
+  // A rule hiding "Service Item" deletes catalog_item_name from evalBody --
+  // drop the real FK too so a hidden field's value never persists either.
+  const finalCatalogItemId = ('catalog_item_name' in evalBody) ? (catalogItem?.id || null) : null;
 
   const {
     description, priority = 'medium', category, subcategory, team, impact, requester_id, source = 'portal',
@@ -105,12 +119,12 @@ router.post('/', async (req, res) => {
   const cab_status = isChange ? 'pending' : 'not_required';
 
   db.prepare(
-    `INSERT INTO tickets (id, workspace_id, number, type, title, description, priority, impact, category, subcategory, team, requester_id, sla_due_at, response_due_at, sla_policy_id, source, risk, planned_start, planned_end, rollback_plan, cab_status)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    `INSERT INTO tickets (id, workspace_id, number, type, title, description, priority, impact, category, subcategory, team, requester_id, sla_due_at, response_due_at, sla_policy_id, source, risk, planned_start, planned_end, rollback_plan, cab_status, catalog_item_id)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).run(
     id, req.workspaceId, number, type, title, description || '', priority, impact || 'medium', category || null, subcategory || null, team || null,
     requester_id || req.user.id, sla_due_at, response_due_at, policy?.id || null, source,
-    risk || null, planned_start || null, planned_end || null, rollback_plan || null, cab_status
+    risk || null, planned_start || null, planned_end || null, rollback_plan || null, cab_status, finalCatalogItemId
   );
   db.prepare('INSERT INTO ticket_history (id, ticket_id, event, detail) VALUES (?,?,?,?)').run(uid('h'), id, 'created', `Ticket created via ${source}`);
   if (Object.keys(customValues).length) saveCustomValues(id, customDefs, customValues);

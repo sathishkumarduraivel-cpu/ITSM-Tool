@@ -69,7 +69,7 @@ router.get('/:id', (req, res) => {
 
 router.post('/', async (req, res) => {
   const {
-    title, description, type = 'incident', priority = 'medium', category, subcategory, team, requester_id, source = 'portal',
+    title, description, type = 'incident', priority = 'medium', category, subcategory, team, impact, requester_id, source = 'portal',
     risk, planned_start, planned_end, rollback_plan,
   } = req.body;
   if (!title) return res.status(400).json({ error: 'title required' });
@@ -88,10 +88,10 @@ router.post('/', async (req, res) => {
   const cab_status = isChange ? 'pending' : 'not_required';
 
   db.prepare(
-    `INSERT INTO tickets (id, workspace_id, number, type, title, description, priority, category, subcategory, team, requester_id, sla_due_at, response_due_at, sla_policy_id, source, risk, planned_start, planned_end, rollback_plan, cab_status)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    `INSERT INTO tickets (id, workspace_id, number, type, title, description, priority, impact, category, subcategory, team, requester_id, sla_due_at, response_due_at, sla_policy_id, source, risk, planned_start, planned_end, rollback_plan, cab_status)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).run(
-    id, req.workspaceId, number, type, title, description || '', priority, category || null, subcategory || null, team || null,
+    id, req.workspaceId, number, type, title, description || '', priority, impact || 'medium', category || null, subcategory || null, team || null,
     requester_id || req.user.id, sla_due_at, response_due_at, policy?.id || null, source,
     risk || null, planned_start || null, planned_end || null, rollback_plan || null, cab_status
   );

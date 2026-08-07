@@ -15,25 +15,38 @@ const PRIORITIES = ['low', 'medium', 'high', 'critical'];
 const RISKS = ['low', 'medium', 'high'];
 
 function NewTicketModal({ onClose, onCreated, availableTypes }) {
-  const [form, setForm] = useState({ title: '', description: '', type: availableTypes[0], priority: 'medium', category: '', risk: 'medium', planned_start: '', planned_end: '', rollback_plan: '' });
+  const [form, setForm] = useState({
+    title: '', description: '', type: availableTypes[0], priority: 'medium',
+    category: '', subcategory: '', team: '', impact: 'medium',
+    risk: 'medium', planned_start: '', planned_end: '', rollback_plan: '',
+  });
+  const [groups, setGroups] = useState([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const isChange = form.type === 'change';
   const fieldRules = useFieldRules(form.type, form.category || null, form);
-  // Each change-only field falls back to the current type === 'change' behavior
-  // when no admin rule exists for it, and is otherwise governed by the rule.
+
+  useEffect(() => { api.get('/groups').then(({ groups }) => setGroups(groups)).catch(() => setGroups([])); }, []);
+
+  // Every field below falls back to its current hardcoded default when no
+  // admin rule exists for it (in Field Manager), and is otherwise fully
+  // governed by that rule — visibility, requiredness, conditions, format.
+  const showCategory = fieldRules.isVisible('category', true);
+  const showSubcategory = fieldRules.isVisible('subcategory', true);
+  const showTeam = fieldRules.isVisible('team', true);
+  const showImpact = fieldRules.isVisible('impact', true);
   const showRisk = fieldRules.isVisible('risk', isChange);
   const showPlannedStart = fieldRules.isVisible('planned_start', isChange);
   const showPlannedEnd = fieldRules.isVisible('planned_end', isChange);
   const showRollbackPlan = fieldRules.isVisible('rollback_plan', isChange);
   const showChangeSection = showRisk || showPlannedStart || showPlannedEnd || showRollbackPlan;
 
+  const ALL_RULED_FIELDS = ['category', 'subcategory', 'team', 'impact', 'risk', 'planned_start', 'planned_end', 'rollback_plan'];
+
   const submit = async (e) => {
     e.preventDefault();
     setError('');
-    const firstError = ['risk', 'planned_start', 'planned_end', 'rollback_plan']
-      .map((f) => fieldRules.getError(f, form[f]))
-      .find(Boolean);
+    const firstError = ALL_RULED_FIELDS.map((f) => fieldRules.getError(f, form[f])).find(Boolean);
     if (firstError) { setError(firstError); return; }
     setSaving(true);
     try {
@@ -71,11 +84,43 @@ function NewTicketModal({ onClose, onCreated, availableTypes }) {
               {PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
             </select>
           </div>
-          <div>
-            <label className="label">Category</label>
-            <input className="input" value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} placeholder="Optional" />
-          </div>
+          {showCategory && (
+            <div>
+              <label className="label">Category{fieldRules.isRequired('category') && ' *'}</label>
+              <input className="input" required={fieldRules.isRequired('category')} value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} placeholder="Optional" />
+              {fieldRules.getError('category', form.category) && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('category', form.category)}</p>}
+            </div>
+          )}
         </div>
+
+        {(showSubcategory || showTeam || showImpact) && (
+          <div className="grid grid-cols-3 gap-3">
+            {showSubcategory && (
+              <div>
+                <label className="label">Subcategory{fieldRules.isRequired('subcategory') && ' *'}</label>
+                <input className="input" required={fieldRules.isRequired('subcategory')} value={form.subcategory} onChange={(e) => setForm({ ...form, subcategory: e.target.value })} placeholder="Optional" />
+                {fieldRules.getError('subcategory', form.subcategory) && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('subcategory', form.subcategory)}</p>}
+              </div>
+            )}
+            {showTeam && (
+              <div>
+                <label className="label">Group{fieldRules.isRequired('team') && ' *'}</label>
+                <select className="input" required={fieldRules.isRequired('team')} value={form.team} onChange={(e) => setForm({ ...form, team: e.target.value })}>
+                  <option value="">Unassigned</option>
+                  {groups.map((g) => <option key={g.id} value={g.name}>{g.name}</option>)}
+                </select>
+              </div>
+            )}
+            {showImpact && (
+              <div>
+                <label className="label">Impact{fieldRules.isRequired('impact') && ' *'}</label>
+                <select className="input" required={fieldRules.isRequired('impact')} value={form.impact} onChange={(e) => setForm({ ...form, impact: e.target.value })}>
+                  {RISKS.map((r) => <option key={r} value={r}>{r}</option>)}
+                </select>
+              </div>
+            )}
+          </div>
+        )}
 
         {showChangeSection && (
           <div className="space-y-3 border-t border-slate-100 dark:border-slate-800 pt-3">

@@ -51,19 +51,47 @@ import { startDirectorySyncScheduler } from './services/directorySyncScheduler.j
 const app = express();
 const PORT = process.env.PORT || 4000;
 
+// Render (like Heroku/Railway/any platform behind a reverse proxy) terminates
+// TLS in front of this process and forwards plain HTTP, setting
+// X-Forwarded-Proto/X-Forwarded-For -- without this, Express ignores those
+// headers entirely, so req.protocol always reads 'http' (breaking the
+// self-origin CORS check right below, and every req.protocol-based link this
+// app builds for emails -- see routes/tickets.js's ticketLink() and similar
+// helpers, which would silently generate http:// links behind a real https
+// deployment) and req.ip resolves to the proxy's own address instead of the
+// real client's (undermining the rate limiter below, which keys on IP).
+app.set('trust proxy', 1);
+
 const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
 
-app.use(cors({
-  origin(origin, callback) {
-    // allow same-origin/non-browser requests (no Origin header) and configured origins
-    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
-    return callback(new Error('Not allowed by CORS'));
-  },
-  credentials: true,
-}));
+// A per-request delegate (not a static options object) so the origin check
+// can compare against THIS request's own host -- the frontend and API share
+// one origin in every deployment this app actually ships (see the static-
+// file serving block near the bottom of this file), so that self-origin
+// should always be allowed without anyone having to remember to also set
+// CORS_ORIGIN to match wherever this happens to be deployed. CORS_ORIGIN
+// stays for the one case self-origin can't cover: local dev, where the Vite
+// dev server (a different port) is a genuinely different origin from this
+// API.
+app.use((req, res, next) => {
+  // req.protocol honors X-Forwarded-Proto once 'trust proxy' is set above,
+  // but req.get('host') reads the raw Host header directly and does NOT --
+  // Express only applies X-Forwarded-Host to req.hostname (which drops the
+  // port), so it's read here by hand instead, preferring it over the raw
+  // Host header when a proxy set it.
+  const forwardedHost = req.headers['x-forwarded-host']?.split(',')[0].trim();
+  const selfOrigin = `${req.protocol}://${forwardedHost || req.get('host')}`;
+  cors({
+    origin(origin, callback) {
+      if (!origin || origin === selfOrigin || allowedOrigins.includes(origin)) return callback(null, true);
+      return callback(new Error('Not allowed by CORS'));
+    },
+    credentials: true,
+  })(req, res, next);
+});
 app.use(express.json({ limit: '2mb' }));
 // The real-time stream carries its auth token as a query param (EventSource
 // can't set headers) -- excluded here so that token is never written to the

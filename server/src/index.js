@@ -6,7 +6,23 @@ import rateLimit from 'express-rate-limit';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import './db.js';
+import { db } from './db.js';
+
+// A platform with no persistent disk (Render's free tier, among others) can
+// hand this process a brand-new, completely empty server/data/itsm.db on
+// any boot -- not just a real redeploy, but also just waking back up from
+// the free tier's idle-timeout sleep. Without this, that means every login
+// fails with "invalid credentials" -- not because anything is broken, but
+// because the seeded demo account genuinely was never created on that disk.
+// seed.js is fully idempotent (every section is its own `if (count === 0)`
+// guard), so running it here is safe against an already-seeded database too
+// -- but it's still gated on the admin account specifically being missing,
+// so a normal restart of an instance that already has real data doesn't
+// reprint the whole seed summary to the log every time.
+if (!db.prepare('SELECT id FROM users WHERE email = ?').get('admin@itsm.ai')) {
+  console.log('No seed data found on this disk -- running first-boot seed...');
+  await import('./seed.js');
+}
 
 import authRoutes from './routes/auth.js';
 import workspaceRoutes from './routes/workspaces.js';

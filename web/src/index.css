@@ -26,7 +26,7 @@ body {
   inset: 0;
   z-index: 1;
   pointer-events: none;
-  opacity: 0.035;
+  opacity: 0.012;
   mix-blend-mode: multiply;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
@@ -57,7 +57,7 @@ body {
   z-index: -1;
   border-radius: inherit;
   padding: 1px;
-  background: conic-gradient(from var(--angle), transparent 0%, #33E3FF 12%, transparent 26%, transparent 74%, #7166FF 88%, transparent 100%);
+  background: conic-gradient(from var(--angle), transparent 0%, #5EB3FF 12%, transparent 26%, transparent 74%, #06B6D4 88%, transparent 100%);
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
   mask-composite: exclude;
@@ -112,27 +112,61 @@ h1, h2, h3 {
    cards that shouldn't compete with their parent's elevation, and
    .card-interactive for clickable cards that should lift + tilt on hover. */
 .card {
-  @apply bg-white/90 backdrop-blur-xl rounded-2xl shadow-card dark:shadow-card-dark border border-white/60 dark:bg-slate-900/80 dark:border-white/[0.06] transition-shadow duration-200;
+  @apply bg-white/90 backdrop-blur-xl rounded-2xl shadow-card dark:shadow-card-dark border border-slate-200/70 dark:bg-slate-900/80 dark:border-white/[0.06] transition-shadow duration-200;
 }
 .card-flat {
   @apply bg-slate-50/80 rounded-xl border border-slate-200/80 dark:bg-slate-800/50 dark:border-white/[0.06];
 }
 .card-interactive {
-  @apply card hover:shadow-card-hover dark:hover:shadow-card-hover-dark hover:-translate-y-1 hover:rotate-[0.15deg] dark:hover:border-white/10 transition-all duration-300 ease-out cursor-pointer;
+  @apply card hover:shadow-card-hover dark:hover:shadow-card-hover-dark hover:-translate-y-1 hover:rotate-[0.15deg] hover:border-brand-300/70 dark:hover:border-neon-400/30 transition-all duration-300 ease-out cursor-pointer;
+}
+
+/* Shared "live console" hover for clickable list/table rows across the app
+   (Tickets, Changes, Problems, Assets, HR cases, ...) -- an inset accent bar
+   plus a directional brand->neon glow sweep, instead of a flat bg swap. Works
+   on <tr> (box-shadow, unlike an absolutely-positioned ::before, is reliable
+   on table rows) as well as plain <div> rows. */
+.row-interactive {
+  @apply relative cursor-pointer transition-[background,box-shadow] duration-200 ease-out;
+  box-shadow: inset 3px 0 0 0 transparent;
+}
+.row-interactive:hover {
+  background: linear-gradient(90deg, rgb(6 182 212 / 0.07), rgb(47 151 255 / 0.03) 55%, transparent);
+  box-shadow: inset 3px 0 0 0 theme('colors.brand.400');
+}
+.dark .row-interactive:hover {
+  background: linear-gradient(90deg, rgb(6 182 212 / 0.12), rgb(47 151 255 / 0.06) 55%, transparent);
+  box-shadow: inset 3px 0 0 0 theme('colors.neon.400');
 }
 
 .btn {
   @apply relative inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-1.5 text-sm font-medium transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.97] active:shadow-pressed;
 }
+/* Diagonal light-sweep on hover -- a cheap, very "high-tech" tell that reads
+   as a live surface rather than flat paint. `::after` needs the button's own
+   overflow clipped to its rounded corners, and the sweep must never block
+   clicks/text, hence pointer-events-none. */
 .btn-primary {
-  @apply btn text-white shadow-glow-brand hover:brightness-110 hover:-translate-y-px;
+  @apply btn text-white shadow-glow-brand hover:brightness-110 hover:-translate-y-px overflow-hidden;
   background-image: linear-gradient(180deg, theme('colors.brand.500') 0%, theme('colors.brand.700') 100%), theme('backgroundImage.gloss-brand');
 }
+.btn-primary::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(115deg, transparent 30%, rgb(255 255 255 / 0.35) 48%, rgb(255 255 255 / 0.35) 52%, transparent 70%);
+  transform: translateX(-120%);
+  transition: transform 0.55s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.btn-primary:hover::after {
+  transform: translateX(120%);
+}
 .btn-secondary {
-  @apply btn bg-white/80 backdrop-blur border border-slate-200 text-slate-700 shadow-sm hover:bg-white hover:-translate-y-px hover:shadow-card dark:bg-slate-800/70 dark:border-white/10 dark:text-slate-200 dark:hover:bg-slate-800;
+  @apply btn bg-white/80 backdrop-blur border border-slate-200 text-slate-700 shadow-sm hover:bg-white hover:-translate-y-px hover:shadow-card hover:border-brand-300 dark:bg-slate-800/70 dark:border-white/10 dark:text-slate-200 dark:hover:bg-slate-800 dark:hover:border-brand-400/40;
 }
 .btn-ghost {
-  @apply btn text-slate-600 hover:bg-slate-900/5 dark:text-slate-300 dark:hover:bg-white/5;
+  @apply btn text-slate-600 hover:bg-brand-500/[0.07] hover:text-brand-700 dark:text-slate-300 dark:hover:bg-brand-400/10 dark:hover:text-brand-300;
 }
 .btn-danger {
   @apply btn bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-500/10 dark:text-red-400 dark:hover:bg-red-500/20;
@@ -159,7 +193,7 @@ h1, h2, h3 {
    blur + a hairline highlight border so it reads as glass sitting above the
    mesh-gradient backdrop. */
 .glass-panel {
-  @apply bg-white/70 dark:bg-slate-900/60 backdrop-blur-2xl border border-white/60 dark:border-white/[0.07] shadow-float dark:shadow-float-dark;
+  @apply bg-white/85 dark:bg-slate-900/60 backdrop-blur-2xl border border-slate-200/60 dark:border-white/[0.07] shadow-float dark:shadow-float-dark;
 }
 
 /* Raised, coin-like icon tile — inner top highlight + outer shadow to fake a

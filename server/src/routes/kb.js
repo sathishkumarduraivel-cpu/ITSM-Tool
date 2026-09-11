@@ -5,6 +5,18 @@ import { requireAuth, requireWorkspace } from '../middleware/auth.js';
 const router = Router();
 router.use(requireAuth, requireWorkspace);
 
+// Previously ungated -- any authenticated user, including a requester, could
+// create/edit/delete a KB article via a direct API call; only the frontend
+// hid the buttons. This closes that gap the same way every other agent-only
+// action in this app is enforced server-side, while keeping every existing
+// agent/admin's ability to author articles exactly as it already works
+// (kb.manage, the "knowledge"/"knowledge_admin" persona, is an ADDITIONAL
+// way in for someone who isn't a base agent/admin, not a narrower gate).
+function canManageKb(req, res, next) {
+  if (['agent', 'admin'].includes(req.user.role) || req.user.permissions?.includes('kb.manage')) return next();
+  return res.status(403).json({ error: 'Insufficient permissions' });
+}
+
 router.get('/', (req, res) => {
   const { q, category } = req.query;
   let sql = 'SELECT * FROM kb_articles WHERE workspace_id = ?';
@@ -22,7 +34,7 @@ router.get('/:id', (req, res) => {
   res.json({ article });
 });
 
-router.post('/', (req, res) => {
+router.post('/', canManageKb, (req, res) => {
   const { title, category, body, tags } = req.body;
   if (!title || !body) return res.status(400).json({ error: 'title and body required' });
   const id = uid('kb');
@@ -32,7 +44,7 @@ router.post('/', (req, res) => {
   res.status(201).json({ article: db.prepare('SELECT * FROM kb_articles WHERE id = ?').get(id) });
 });
 
-router.patch('/:id', (req, res) => {
+router.patch('/:id', canManageKb, (req, res) => {
   const article = db.prepare('SELECT * FROM kb_articles WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspaceId);
   if (!article) return res.status(404).json({ error: 'Not found' });
   const allowed = ['title', 'category', 'body', 'tags'];
@@ -44,7 +56,7 @@ router.patch('/:id', (req, res) => {
   res.json({ article: db.prepare('SELECT * FROM kb_articles WHERE id = ?').get(req.params.id) });
 });
 
-router.delete('/:id', (req, res) => {
+router.delete('/:id', canManageKb, (req, res) => {
   const article = db.prepare('SELECT * FROM kb_articles WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspaceId);
   if (!article) return res.status(404).json({ error: 'Not found' });
   db.prepare('DELETE FROM kb_articles WHERE id = ?').run(req.params.id);

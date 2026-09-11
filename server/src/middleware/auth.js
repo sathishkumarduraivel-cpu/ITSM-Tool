@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken';
 import { db } from '../db.js';
+import { lookupApiKey } from '../services/apiKeys.js';
 
 if (!process.env.JWT_SECRET && process.env.NODE_ENV === 'production') {
   throw new Error('JWT_SECRET must be set in production — refusing to start with an insecure default.');
@@ -11,7 +12,14 @@ export const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me-in-pro
 
 export function requireAuth(req, res, next) {
   const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  // The browser's native EventSource API can't set custom headers, so the
+  // one real-time stream route (GET /api/realtime/stream) is reached with
+  // the token as a query param instead -- deliberately scoped to exactly
+  // that route (never a general fallback) since a query string ends up in
+  // server logs; that one route is excluded from morgan's access log (see
+  // index.js) specifically so this token never gets written to a log file.
+  const isStreamRoute = req.originalUrl.startsWith('/api/realtime/stream');
+  const token = header.startsWith('Bearer ') ? header.slice(7) : (isStreamRoute ? req.query.token || null : null);
   if (!token) return res.status(401).json({ error: 'Missing auth token' });
   try {
     req.user = jwt.verify(token, JWT_SECRET);
@@ -44,6 +52,42 @@ export function requireRole(...roles) {
     if (!req.user || !roles.includes(req.user.role)) {
       return res.status(403).json({ error: 'Insufficient permissions' });
     }
+    next();
+  };
+}
+
+// Admins always pass. Agents (or requesters, though none exist today) pass
+// only if their custom role -- resolved into the JWT at login, see
+// services/permissions.js -- was granted this specific permission key.
+// Use this instead of requireRole('admin') on configuration areas that are
+// safe to delegate; leave requireRole('admin') in place anywhere delegation
+// itself would be a privilege-escalation risk (user/workspace management,
+// AI provider credentials, procurement).
+export function requirePermission(key) {
+  return (req, res, next) => {
+    if (!req.user) return res.status(401).json({ error: 'Missing auth token' });
+    if (req.user.role === 'admin') return next();
+    if (Array.isArray(req.user.permissions) && req.user.permissions.includes(key)) return next();
+    return res.status(403).json({ error: 'Insufficient permissions' });
+  };
+}
+
+// Auth for the public developer API (/api/v1/*) -- a completely separate
+// credential from the session JWT above, since an external company system
+// integrating with this platform has no user to log in as. Sets
+// req.workspaceId and req.apiKey (never req.user -- there is no user)
+// and 403s if the presented key lacks the scope this route requires.
+export function requireApiKey(...scopes) {
+  return (req, res, next) => {
+    const header = req.headers.authorization || '';
+    const rawKey = header.startsWith('Bearer ') ? header.slice(7) : null;
+    if (!rawKey) return res.status(401).json({ error: 'Missing API key. Send it as: Authorization: Bearer <key>' });
+    const key = lookupApiKey(rawKey);
+    if (!key) return res.status(401).json({ error: 'Invalid, disabled, or expired API key' });
+    const missing = scopes.filter((s) => !key.scopes.includes(s));
+    if (missing.length) return res.status(403).json({ error: `This API key is missing required scope(s): ${missing.join(', ')}` });
+    req.workspaceId = key.workspace_id;
+    req.apiKey = key;
     next();
   };
 }

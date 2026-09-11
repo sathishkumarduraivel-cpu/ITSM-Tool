@@ -1,0 +1,33 @@
+# Render Blueprint for a single-service deployment: this Node process serves
+# both the API and the built React frontend from one origin (see the static
+# file + SPA fallback block added to server/src/index.js), so there's no
+# second service and no cross-origin auth to configure.
+#
+# Free tier caveats (see server/data/, .gitignore'd): the SQLite database has
+# no persistent disk on Render's free plan, so it resets to the seeded demo
+# data on every deploy, restart, or scale-to-zero wake. Fine for testing/
+# demoing this app; not a place to keep real data. The service also spins
+# down after ~15 min idle and takes 30-60s to wake on the next request.
+#
+# Deploy: push this repo to GitHub, then in Render "New +" -> "Blueprint",
+# point it at the repo. JWT_SECRET and ENCRYPTION_KEY are marked `sync: false`
+# below -- Render will prompt for them during setup; generate real values
+# with the commands in server/.env.example rather than typing anything
+# arbitrary (ENCRYPTION_KEY specifically must be a 32-byte base64 value).
+services:
+  - type: web
+    name: itsm-ai
+    runtime: node
+    plan: free
+    buildCommand: cd web && npm install && npm run build && cd ../server && npm install
+    startCommand: cd server && npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        sync: false
+      - key: ENCRYPTION_KEY
+        sync: false

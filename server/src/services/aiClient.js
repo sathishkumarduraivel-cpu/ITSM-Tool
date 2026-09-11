@@ -177,6 +177,15 @@ export async function suggestResolution(provider, ticket, comments = [], kbConte
   ]);
 }
 
+export async function analyzeRootCause(provider, ticket, comments = []) {
+  const convo = comments.map((c) => `- (${c.author_name || 'user'}): ${c.body}`).join('\n');
+  const prompt = `Ticket #${ticket.number} [${ticket.type}]\nTitle: ${ticket.title}\nDescription: ${ticket.description || ''}\nCategory: ${ticket.category || 'uncategorized'}\n\nConversation so far:\n${convo || '(none)'}\n\nAct as a senior SRE performing root-cause analysis. Identify the most likely underlying cause (not just the symptom), note any contributing factors, and flag if this looks like a recurring pattern worth escalating to Problem Management. Keep it under 150 words.`;
+  return chatComplete(provider, [
+    { role: 'system', content: 'You are a senior site reliability engineer performing root-cause analysis on IT incidents. Be specific and avoid generic advice.' },
+    { role: 'user', content: prompt },
+  ]);
+}
+
 export async function categorizeTicket(provider, ticket) {
   const prompt = `Classify this IT service desk ticket.\nTitle: ${ticket.title}\nDescription: ${ticket.description || ''}\n\nRespond with strict JSON only, no markdown, matching this shape:\n{"category": string, "subcategory": string, "priority": "low"|"medium"|"high"|"critical", "sentiment": "positive"|"neutral"|"frustrated"|"angry"}\nCategory should be one of: Hardware, Software, Network, Access & Identity, Email, Facilities, HR, Security, Other.`;
   const text = await chatComplete(
@@ -257,6 +266,48 @@ The admin's request: "${description}"`;
   return JSON.parse(cleaned);
 }
 
+// Admin/agent-facing helper: turns a plain-English description of a new
+// hire or leaver into a draft onboarding/offboarding checklist, grounded in
+// the workspace's real groups (so it never invents one) and this workspace's
+// own existing templates for that case_type (as few-shot vocabulary/tone
+// reference). Always returns a draft for human review before anything is
+// created -- this function never writes to the database.
+export async function draftHrCaseTasks(provider, description, context) {
+  const { caseType, groups = [], templates = [], department, jobTitle, employmentType } = context;
+  const stageList = (caseType === 'offboarding'
+    ? ['initiated', 'access_revocation', 'asset_return', 'exit_interview']
+    : ['pre_boarding', 'day_one', 'week_one', 'thirty_sixty_ninety']
+  ).join(', ');
+  const examples = templates.slice(0, 2).map((t) => `"${t.name}": ${t.tasks}`).join('\n');
+
+  const prompt = `You are drafting a ${caseType} checklist for an ITSM platform's employee onboarding/offboarding module.
+Output ONLY strict JSON (no markdown fences, no commentary) matching exactly this shape:
+{"tasks": [{"title": string, "description": string, "track": "it"|"hr"|"facilities"|"manager"|"approval"|"other", "stage_key": string, "group_name": string|null, "due_offset_days": number, "requires_decision": boolean, "depends_on_index": number|null}], "suggested_risk_level": "standard"|"elevated"|null}
+
+Allowed stage_key values for this case type, in order: ${stageList}.
+"group_name" must exactly match one of these real groups in this workspace, or null: ${groups.map((g) => g.name).join(', ') || '(none configured)'}.
+due_offset_days is relative to the employee's ${caseType === 'offboarding' ? 'last working day' : 'start date'} (0 = that day, negative = before, positive = after).
+requires_decision=true marks a task needing an explicit approve/reject sign-off -- use track "approval" for these (e.g. manager or security sign-off).
+depends_on_index (a 0-based index into this same tasks array) marks a genuine prerequisite -- use sparingly (e.g. an approval that must clear before access is granted).
+${caseType === 'offboarding' ? 'suggested_risk_level should be "elevated" only if the role plausibly has privileged/admin/production access needing urgent revocation, otherwise "standard".' : 'suggested_risk_level must be null for onboarding.'}
+${examples ? `\nThis workspace's existing ${caseType} checklists, for tone/vocabulary reference:\n${examples}\n` : ''}
+Employee context: role="${jobTitle || 'unspecified'}", department="${department || 'unspecified'}", employment_type="${employmentType || 'full_time'}".
+Request: "${description}"
+
+Produce a realistic, thorough checklist (typically 8-15 tasks) spanning IT, HR, Facilities and the hiring manager as appropriate -- this should be genuinely useful, not a token list.`;
+
+  const text = await chatComplete(
+    provider,
+    [
+      { role: 'system', content: 'You configure ITSM employee onboarding/offboarding checklists. Always answer with valid JSON only, matching the requested shape exactly.' },
+      { role: 'user', content: prompt },
+    ],
+    { json: true, max_tokens: 1200, temperature: 0.3 }
+  );
+  const cleaned = text.trim().replace(/^```json/i, '').replace(/^```/, '').replace(/```$/, '');
+  return JSON.parse(cleaned);
+}
+
 // Light, requester-facing helper: turns a rough, informal description into a
 // clear one suitable for a ticket, without touching or seeing any ticket
 // data — just rewords what the person typed.
@@ -266,6 +317,55 @@ export async function describeProblem(provider, text) {
     { role: 'system', content: 'You help end users write clear IT support ticket descriptions from a rough description of their problem.' },
     { role: 'user', content: prompt },
   ], { max_tokens: 300 });
+}
+
+// Self-Service AI Chatbot: given the user's message, the conversation so far,
+// and a keyword-prefiltered shortlist of candidate KB articles (prefiltering
+// happens in the route, not here, so a large KB never gets dumped whole into
+// the prompt), decides in one round-trip whether an existing article already
+// answers this, writes the conversational reply either way, and -- only when
+// it can't be resolved from the KB -- drafts a ticket for the user to review
+// and confirm. Never creates anything itself; POST /self-service/sessions/:id/escalate
+// is the only thing that ever writes a ticket, and only once the user confirms.
+export async function selfServiceTriage(provider, message, { history = [], kbCandidates = [] } = {}) {
+  const kbBlock = kbCandidates.length
+    ? kbCandidates.map((a) => `[${a.id}] "${a.title}" (${a.category || 'uncategorized'}): ${(a.body || '').slice(0, 600)}`).join('\n\n')
+    : '(no candidate articles found for this topic)';
+  const historyBlock = history.map((h) => `${h.role === 'user' ? 'User' : 'Assistant'}: ${h.content}`).join('\n');
+
+  const prompt = `You are the self-service chat assistant on an IT help desk portal, helping an employee resolve their own issue without needing to wait for a human agent.
+
+${historyBlock ? `Conversation so far:\n${historyBlock}\n\n` : ''}Employee's latest message: "${message}"
+
+Candidate knowledge base articles (may or may not be relevant -- judge for yourself, don't force a fit):
+${kbBlock}
+
+Respond with strict JSON only, no markdown fences, matching exactly this shape:
+{"resolved_by_kb": boolean, "response": string, "kb_article_ids": [string], "suggest_ticket": boolean, "ticket_draft": {"title": string, "description": string, "category": "Hardware"|"Software"|"Network"|"Access & Identity"|"Email"|"Facilities"|"Security"|"Other", "priority": "low"|"medium"|"high"|"critical", "type": "incident"|"request"} | null}
+
+Rules:
+- If a candidate article genuinely answers this, set resolved_by_kb=true, write "response" as a helpful, conversational walkthrough grounded in that article (don't just say "see article X"), and list its id(s) in kb_article_ids. suggest_ticket must be false and ticket_draft null in this case.
+- If nothing candidate actually resolves it, or the employee is asking to just log a ticket, or you still need one more clarifying detail, set resolved_by_kb=false. If you have enough detail to draft a ticket, set suggest_ticket=true and fill ticket_draft (title short and specific, description synthesizing everything said so far, type="request" for access/how-to/provisioning asks, "incident" for something broken). If you still need clarifying info first, set suggest_ticket=false, ticket_draft=null, and ask exactly one clarifying question in "response".
+- Never fabricate what a KB article says beyond what's shown above.
+- Keep "response" conversational and under 120 words.`;
+
+  const text = await chatComplete(
+    provider,
+    [
+      { role: 'system', content: 'You are a friendly, efficient IT self-service assistant. Always answer with valid JSON only, matching the requested shape exactly.' },
+      { role: 'user', content: prompt },
+    ],
+    { json: true, max_tokens: 500, temperature: 0.3 }
+  );
+  const cleaned = text.trim().replace(/^```json/i, '').replace(/^```/, '').replace(/```$/, '');
+  const parsed = JSON.parse(cleaned);
+  return {
+    resolved_by_kb: !!parsed.resolved_by_kb,
+    response: parsed.response || '',
+    kb_article_ids: Array.isArray(parsed.kb_article_ids) ? parsed.kb_article_ids : [],
+    suggest_ticket: !!parsed.suggest_ticket,
+    ticket_draft: parsed.ticket_draft || null,
+  };
 }
 
 // Light, requester-facing helper: answers a question using ONLY that one

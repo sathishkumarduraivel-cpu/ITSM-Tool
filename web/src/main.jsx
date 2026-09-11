@@ -5,10 +5,10 @@ import App from './App.jsx';
 import { AuthProvider } from './context/AuthContext.jsx';
 import './index.css';
 
-// Deep-space dark is the deliberate default look of this app — it applies
-// unless the user has explicitly switched to light via the toggle before.
+// Clean light is the deliberate default look of this app — dark mode is
+// opt-in via the toggle, remembered per-browser from then on.
 const storedTheme = localStorage.getItem('itsm_theme');
-if (storedTheme !== 'light') {
+if (storedTheme === 'dark') {
   document.documentElement.classList.add('dark');
 }
 

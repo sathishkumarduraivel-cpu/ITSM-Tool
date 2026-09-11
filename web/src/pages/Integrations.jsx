@@ -1,9 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Plus, Loader2, Plug, Trash2, CheckCircle2, XCircle, Slack, Webhook, Bell, Mail, Pencil } from 'lucide-react';
+import { Plus, Loader2, Plug, Trash2, CheckCircle2, XCircle, Slack, Webhook, Bell, Mail, Pencil, Globe2 } from 'lucide-react';
 import { api } from '../lib/api.js';
+import { useAuth } from '../context/AuthContext.jsx';
+import { hasPermission } from '../lib/permissions.js';
 import Modal from '../components/Modal.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import EmptyState from '../components/EmptyState.jsx';
+import Select from '../components/Select.jsx';
 
 const EVENTS = ['ticket_created', 'ticket_assigned', 'sla_breach', 'approval_requested', 'change_approved', 'change_rejected', 'ticket_resolved'];
 
@@ -15,9 +18,12 @@ function NotificationTemplatesPanel() {
 
   const load = async () => {
     setLoading(true);
-    const { templates } = await api.get('/notifications/templates');
-    setTemplates(templates);
-    setLoading(false);
+    try {
+      const { templates } = await api.get('/notifications/templates');
+      setTemplates(templates);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => { load(); }, []);
@@ -60,12 +66,11 @@ function NotificationTemplatesPanel() {
       )}
 
       <form onSubmit={submit} className="grid grid-cols-2 gap-2">
-        <select className="input" value={form.event} onChange={(e) => setForm({ ...form, event: e.target.value })}>
-          {EVENTS.map((ev) => <option key={ev} value={ev}>{ev.replace('_', ' ')}</option>)}
-        </select>
-        <select className="input" value={form.channel} onChange={(e) => setForm({ ...form, channel: e.target.value })}>
-          {['in_app', 'email', 'slack'].map((c) => <option key={c} value={c}>{c}</option>)}
-        </select>
+        <Select
+          value={form.event} onChange={(v) => setForm({ ...form, event: v })}
+          options={EVENTS.map((ev) => ({ value: ev, label: ev.replace('_', ' ') }))}
+        />
+        <Select value={form.channel} onChange={(v) => setForm({ ...form, channel: v })} options={['in_app', 'email', 'slack']} />
         <input className="input col-span-2" placeholder="Subject (optional)" value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} />
         <textarea className="input col-span-2" rows={2} required placeholder="Message body, e.g. Ticket {{number}} was just created" value={form.body} onChange={(e) => setForm({ ...form, body: e.target.value })} />
         <button type="submit" disabled={saving} className="btn-primary col-span-2 justify-center text-xs">
@@ -82,6 +87,13 @@ const TYPES = [
   { value: 'webhook', label: 'Generic webhook' },
   { value: 'email_smtp', label: 'Email (real SMTP delivery)' },
   { value: 'jira', label: 'Jira (simulated in this build)' },
+  { value: 'http_api', label: 'API credential (for workflow "Call an external API")' },
+];
+
+const API_AUTH_TYPES = [
+  { value: 'bearer', label: 'Bearer token' },
+  { value: 'basic', label: 'Basic auth (username/password)' },
+  { value: 'api_key', label: 'Custom header (API key)' },
 ];
 
 function IntegrationModal({ initial, onClose, onSaved }) {
@@ -92,6 +104,9 @@ function IntegrationModal({ initial, onClose, onSaved }) {
   const [smtp, setSmtp] = useState({
     host: cfg.host || '', port: cfg.port || 587, secure: !!cfg.secure, user: cfg.user || '', pass: '',
     from: cfg.from || '', to_default: cfg.to_default || '',
+  });
+  const [apiAuth, setApiAuth] = useState({
+    auth_type: cfg.auth_type || 'bearer', token: '', username: cfg.username || '', password: '', header_name: cfg.header_name || '',
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -104,6 +119,16 @@ function IntegrationModal({ initial, onClose, onSaved }) {
       let config;
       if (['slack', 'teams', 'webhook', 'jira'].includes(type)) {
         config = { webhook_url: webhookUrl };
+      } else if (type === 'http_api') {
+        config = { auth_type: apiAuth.auth_type };
+        if (apiAuth.auth_type === 'basic') {
+          config.username = apiAuth.username;
+          // Same "only send if changed" pattern as SMTP's password below.
+          if (apiAuth.password) config.password = apiAuth.password;
+        } else {
+          if (apiAuth.auth_type === 'api_key') config.header_name = apiAuth.header_name;
+          if (apiAuth.token) config.token = apiAuth.token;
+        }
       } else {
         config = { host: smtp.host, port: Number(smtp.port) || 587, secure: smtp.secure, user: smtp.user, from: smtp.from, to_default: smtp.to_default };
         // Only send `pass` when the user actually typed a new one — the server
@@ -127,9 +152,7 @@ function IntegrationModal({ initial, onClose, onSaved }) {
         {error && <div className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 rounded-lg px-3 py-2">{error}</div>}
         <div>
           <label className="label">Type</label>
-          <select className="input" value={type} onChange={(e) => setType(e.target.value)} disabled={!!initial?.id}>
-            {TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
-          </select>
+          <Select value={type} onChange={setType} disabled={!!initial?.id} options={TYPES} />
         </div>
         <div>
           <label className="label">Name</label>
@@ -183,6 +206,43 @@ function IntegrationModal({ initial, onClose, onSaved }) {
           </div>
         )}
 
+        {type === 'http_api' && (
+          <div className="space-y-3">
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Stores a credential (encrypted at rest) that a workflow's "Call an external API" action can attach to its request. Not tied to any single URL — the URL is set per action.
+            </p>
+            <div>
+              <label className="label">Auth type</label>
+              <Select value={apiAuth.auth_type} onChange={(v) => setApiAuth({ ...apiAuth, auth_type: v })} options={API_AUTH_TYPES} />
+            </div>
+            {apiAuth.auth_type === 'basic' ? (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="label">Username</label>
+                  <input className="input" value={apiAuth.username} onChange={(e) => setApiAuth({ ...apiAuth, username: e.target.value })} />
+                </div>
+                <div>
+                  <label className="label">Password</label>
+                  <input type="password" className="input" value={apiAuth.password} onChange={(e) => setApiAuth({ ...apiAuth, password: e.target.value })} placeholder={initial?.id ? 'Leave blank to keep current' : ''} />
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {apiAuth.auth_type === 'api_key' && (
+                  <div>
+                    <label className="label">Header name</label>
+                    <input className="input" placeholder="e.g. X-API-Key" value={apiAuth.header_name} onChange={(e) => setApiAuth({ ...apiAuth, header_name: e.target.value })} />
+                  </div>
+                )}
+                <div>
+                  <label className="label">{apiAuth.auth_type === 'api_key' ? 'Header value' : 'Bearer token'}</label>
+                  <input type="password" className="input" value={apiAuth.token} onChange={(e) => setApiAuth({ ...apiAuth, token: e.target.value })} placeholder={initial?.id ? 'Leave blank to keep current' : ''} />
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
           <button type="submit" disabled={saving} className="btn-primary">
@@ -194,9 +254,10 @@ function IntegrationModal({ initial, onClose, onSaved }) {
   );
 }
 
-const TYPE_ICON = { slack: Slack, teams: Webhook, webhook: Webhook, email_smtp: Mail, jira: Webhook };
+const TYPE_ICON = { slack: Slack, teams: Webhook, webhook: Webhook, email_smtp: Mail, jira: Webhook, http_api: Globe2 };
 
 export default function Integrations() {
+  const { user } = useAuth();
   const [integrations, setIntegrations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null); // null | 'new' | integration
@@ -205,9 +266,12 @@ export default function Integrations() {
 
   const load = async () => {
     setLoading(true);
-    const { integrations } = await api.get('/integrations');
-    setIntegrations(integrations);
-    setLoading(false);
+    try {
+      const { integrations } = await api.get('/integrations');
+      setIntegrations(integrations);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => { load(); }, []);
@@ -234,7 +298,7 @@ export default function Integrations() {
     <div className="space-y-4">
       <PageHeader
         title="Integrations"
-        description="Connect Slack, Teams, webhooks, email & ticketing tools"
+        description="Connect Slack, Teams, webhooks, email, ticketing tools & API credentials"
         actions={<button onClick={() => setModal('new')} className="btn-primary"><Plus size={14} /> Connect integration</button>}
       />
 
@@ -265,9 +329,13 @@ export default function Integrations() {
               </div>
               <div className="flex items-center justify-between mt-2">
                 <span className={`badge ${i.enabled ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'}`}>{i.enabled ? 'Enabled' : 'Disabled'}</span>
-                <button onClick={() => test(i.id)} disabled={testing === i.id} className="btn-secondary text-xs">
-                  {testing === i.id ? <Loader2 size={12} className="animate-spin" /> : null} Send test
-                </button>
+                {i.type === 'http_api' ? (
+                  <span className="text-xs text-slate-400">Used by workflow API-call actions</span>
+                ) : (
+                  <button onClick={() => test(i.id)} disabled={testing === i.id} className="btn-secondary text-xs">
+                    {testing === i.id ? <Loader2 size={12} className="animate-spin" /> : null} Send test
+                  </button>
+                )}
               </div>
               {testResult[i.id] && (
                 <div className={`mt-2 text-xs rounded-md px-2 py-1.5 flex items-center gap-1.5 ${testResult[i.id].ok ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400'}`}>
@@ -280,7 +348,7 @@ export default function Integrations() {
         })}
       </div>
 
-      <NotificationTemplatesPanel />
+      {hasPermission(user, 'notifications.manage') && <NotificationTemplatesPanel />}
 
       {modal && (
         <IntegrationModal initial={modal === 'new' ? null : modal} onClose={() => setModal(null)} onSaved={() => { setModal(null); load(); }} />

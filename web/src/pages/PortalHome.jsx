@@ -1,10 +1,92 @@
 import { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, ShoppingBag, BookOpen, Ticket, Bot, Wand2, Send, Loader2, Copy, Check } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { Plus, ShoppingBag, BookOpen, Ticket, Bot, Wand2, Send, Loader2, Copy, Check, Search, CheckCircle2 } from 'lucide-react';
 import { api } from '../lib/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { PriorityBadge, StatusBadge, TypeBadge } from '../components/Badge.jsx';
 import { SkeletonRows } from '../components/Skeleton.jsx';
+import { RevealGroup, RevealItem } from '../components/Reveal.jsx';
+import ReportIssueModal from '../components/portal/ReportIssueModal.jsx';
+
+// One search box spanning both self-service content types -- Knowledge Base
+// articles (answers) and Service Catalog items (things to request) -- so a
+// requester doesn't have to guess which page to search from. Mirrors
+// GlobalSearch's debounce/click-through pattern (components/GlobalSearch.jsx)
+// but scoped to just these two, since a requester has no legitimate use for
+// the cross-workspace ticket/asset results that widget also returns.
+function PortalSearch() {
+  const navigate = useNavigate();
+  const [q, setQ] = useState('');
+  const [results, setResults] = useState(null);
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    function onDocClick(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, []);
+
+  useEffect(() => {
+    const query = q.trim();
+    if (!query) { setResults(null); return; }
+    const handle = setTimeout(async () => {
+      try {
+        const data = await api.get(`/search?q=${encodeURIComponent(query)}`);
+        setResults(data);
+        setOpen(true);
+      } catch {
+        setResults(null);
+      }
+    }, 250);
+    return () => clearTimeout(handle);
+  }, [q]);
+
+  const hasResults = results && (results.kb.length || results.catalog.length);
+
+  return (
+    <div className="relative" ref={ref}>
+      <div className="relative">
+        <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+        <input
+          className="input rounded-full pl-11 pr-4 py-3 text-sm shadow-card dark:shadow-card-dark"
+          placeholder="Search for an answer or something to request…"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onFocus={() => q && setOpen(true)}
+        />
+      </div>
+      {open && q.trim() && (
+        <div className="absolute left-0 right-0 mt-1.5 card p-2 z-40 shadow-popover dark:shadow-popover-dark max-h-80 overflow-y-auto">
+          {!hasResults && <div className="text-sm text-slate-400 px-2 py-3 text-center">No matches for "{q}"</div>}
+          {results?.kb.length > 0 && (
+            <div className="mb-2">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-2 mb-1">Knowledge Base</div>
+              {results.kb.map((k) => (
+                <button key={k.id} onClick={() => { navigate('/knowledge-base'); setOpen(false); setQ(''); }} className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-left">
+                  <BookOpen size={14} className="text-emerald-500 shrink-0" />
+                  <span className="text-sm text-slate-700 dark:text-slate-200 truncate">{k.title}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {results?.catalog.length > 0 && (
+            <div>
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-2 mb-1">Service Catalog</div>
+              {results.catalog.map((c) => (
+                <button key={c.id} onClick={() => { navigate('/catalog'); setOpen(false); setQ(''); }} className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-left">
+                  <ShoppingBag size={14} className="text-brand-500 shrink-0" />
+                  <span className="text-sm text-slate-700 dark:text-slate-200 truncate">{c.name}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function SonaPanel() {
   const [tab, setTab] = useState('describe'); // 'describe' | 'status'
@@ -141,16 +223,18 @@ export default function PortalHome() {
   const navigate = useNavigate();
   const [tickets, setTickets] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [reportOpen, setReportOpen] = useState(false);
+  const [justCreated, setJustCreated] = useState(null);
 
-  useEffect(() => {
-    (async () => {
-      // Server already scopes this to the caller's own tickets for the
-      // requester role — the client-side filter is just defense in depth.
-      const { tickets } = await api.get('/tickets');
-      setTickets(tickets.filter((t) => t.requester_id === user.id));
-      setLoading(false);
-    })();
-  }, [user.id]);
+  const loadTickets = async () => {
+    // Server already scopes this to the caller's own tickets for the
+    // requester role — the client-side filter is just defense in depth.
+    const { tickets } = await api.get('/tickets');
+    setTickets(tickets.filter((t) => t.requester_id === user.id));
+    setLoading(false);
+  };
+
+  useEffect(() => { loadTickets(); }, [user.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const open = tickets.filter((t) => !['resolved', 'closed'].includes(t.status));
   const closed = tickets.filter((t) => ['resolved', 'closed'].includes(t.status));
@@ -162,23 +246,32 @@ export default function PortalHome() {
         <p className="text-sm text-slate-500 dark:text-slate-400">Submit requests, track tickets, and find answers — all in one place.</p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <button onClick={() => navigate('/catalog')} className="card p-5 text-left hover:shadow-md dark:hover:border-slate-700 transition-shadow">
+      <PortalSearch />
+
+      {justCreated && (
+        <div className="card p-4 bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-800 flex items-center justify-between">
+          <span className="text-sm text-emerald-700 dark:text-emerald-400 flex items-center gap-2"><CheckCircle2 size={16} /> {justCreated.number} submitted.</span>
+          <button onClick={() => navigate(`/tickets/${justCreated.id}`)} className="text-sm font-medium text-emerald-700 dark:text-emerald-400 hover:underline">View ticket</button>
+        </div>
+      )}
+
+      <RevealGroup className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <RevealItem as={motion.button} whileHover={{ y: -3 }} whileTap={{ scale: 0.98 }} onClick={() => navigate('/catalog')} className="card p-5 text-left">
           <div className="w-10 h-10 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center mb-3"><ShoppingBag size={18} /></div>
           <div className="font-medium text-slate-800 dark:text-slate-100">Browse Service Catalog</div>
           <div className="text-sm text-slate-500">Request hardware, software &amp; access</div>
-        </button>
-        <button onClick={() => navigate('/tickets')} className="card p-5 text-left hover:shadow-md dark:hover:border-slate-700 transition-shadow">
+        </RevealItem>
+        <RevealItem as={motion.button} whileHover={{ y: -3 }} whileTap={{ scale: 0.98 }} onClick={() => setReportOpen(true)} className="card p-5 text-left">
           <div className="w-10 h-10 rounded-lg bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400 flex items-center justify-center mb-3"><Plus size={18} /></div>
           <div className="font-medium text-slate-800 dark:text-slate-100">Report an issue</div>
           <div className="text-sm text-slate-500">Something broken? Log an incident</div>
-        </button>
-        <button onClick={() => navigate('/knowledge-base')} className="card p-5 text-left hover:shadow-md dark:hover:border-slate-700 transition-shadow">
+        </RevealItem>
+        <RevealItem as={motion.button} whileHover={{ y: -3 }} whileTap={{ scale: 0.98 }} onClick={() => navigate('/knowledge-base')} className="card p-5 text-left">
           <div className="w-10 h-10 rounded-lg bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400 flex items-center justify-center mb-3"><BookOpen size={18} /></div>
           <div className="font-medium text-slate-800 dark:text-slate-100">Search Knowledge Base</div>
           <div className="text-sm text-slate-500">Find a quick answer yourself</div>
-        </button>
-      </div>
+        </RevealItem>
+      </RevealGroup>
 
       <SonaPanel />
 
@@ -186,9 +279,9 @@ export default function PortalHome() {
         <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3 flex items-center gap-1.5"><Ticket size={15} /> My open tickets ({open.length})</h3>
         {loading && <SkeletonRows count={2} />}
         {!loading && open.length === 0 && <div className="text-sm text-slate-400 py-6 text-center">Nothing open right now.</div>}
-        <div className="space-y-2">
+        <RevealGroup className="space-y-2">
           {open.map((t) => (
-            <button key={t.id} onClick={() => navigate(`/tickets/${t.id}`)} className="w-full flex items-center justify-between px-3 py-2 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800/60 text-left">
+            <RevealItem key={t.id} as={motion.button} whileHover={{ x: 2 }} onClick={() => navigate(`/tickets/${t.id}`)} className="w-full flex items-center justify-between px-3 py-2 rounded-lg row-interactive text-left">
               <div className="flex items-center gap-2 min-w-0">
                 <span className="font-mono text-xs text-slate-400">{t.number}</span>
                 <span className="text-sm text-slate-700 dark:text-slate-200 truncate">{t.title}</span>
@@ -198,9 +291,9 @@ export default function PortalHome() {
                 <PriorityBadge priority={t.priority} />
                 <StatusBadge status={t.status} />
               </div>
-            </button>
+            </RevealItem>
           ))}
-        </div>
+        </RevealGroup>
       </div>
 
       {closed.length > 0 && (
@@ -208,7 +301,7 @@ export default function PortalHome() {
           <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3">Recently closed</h3>
           <div className="space-y-2">
             {closed.slice(0, 5).map((t) => (
-              <button key={t.id} onClick={() => navigate(`/tickets/${t.id}`)} className="w-full flex items-center justify-between px-3 py-2 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800/60 text-left">
+              <button key={t.id} onClick={() => navigate(`/tickets/${t.id}`)} className="w-full flex items-center justify-between px-3 py-2 rounded-lg row-interactive text-left">
                 <div className="flex items-center gap-2 min-w-0">
                   <span className="font-mono text-xs text-slate-400">{t.number}</span>
                   <span className="text-sm text-slate-700 dark:text-slate-200 truncate">{t.title}</span>
@@ -218,6 +311,13 @@ export default function PortalHome() {
             ))}
           </div>
         </div>
+      )}
+
+      {reportOpen && (
+        <ReportIssueModal
+          onClose={() => setReportOpen(false)}
+          onCreated={(ticket) => { setReportOpen(false); setJustCreated(ticket); loadTickets(); }}
+        />
       )}
     </div>
   );

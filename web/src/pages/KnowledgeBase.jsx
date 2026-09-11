@@ -70,11 +70,14 @@ export default function KnowledgeBase() {
 
   const load = async (query = '') => {
     setLoading(true);
-    const params = new URLSearchParams();
-    if (query) params.set('q', query);
-    const { articles } = await api.get(`/kb?${params.toString()}`);
-    setArticles(articles);
-    setLoading(false);
+    try {
+      const params = new URLSearchParams();
+      if (query) params.set('q', query);
+      const { articles } = await api.get(`/kb?${params.toString()}`);
+      setArticles(articles);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => { load(); }, []);

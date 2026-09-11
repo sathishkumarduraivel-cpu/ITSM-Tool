@@ -2,6 +2,7 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { db, uid } from '../db.js';
 import { requireAuth, requireWorkspace, requireRole } from '../middleware/auth.js';
+import { logAudit } from '../services/auditLog.js';
 
 const router = Router();
 
@@ -31,6 +32,7 @@ router.post('/', requireAuth, (req, res) => {
   db.prepare('INSERT INTO workspaces (id, name, slug) VALUES (?,?,?)').run(id, name, slug);
   db.prepare('INSERT INTO workspace_members (id, workspace_id, user_id, role) VALUES (?,?,?,?)')
     .run(uid('wm'), id, req.user.id, 'admin');
+  logAudit({ user: req.user, workspaceId: id, ip: req.ip }, { action: 'workspace.created', entityType: 'workspace', entityId: id, entityLabel: name });
   res.status(201).json({ id, name, slug });
 });
 
@@ -47,6 +49,7 @@ router.patch('/:id', requireAuth, requireWorkspace, requireRole('admin'), (req, 
   const { name } = req.body;
   if (!name) return res.status(400).json({ error: 'name required' });
   db.prepare('UPDATE workspaces SET name = ? WHERE id = ?').run(name, req.workspaceId);
+  logAudit(req, { action: 'workspace.updated', entityType: 'workspace', entityId: req.workspaceId, entityLabel: name });
   res.json({ ok: true });
 });
 
@@ -56,7 +59,9 @@ router.delete('/:id', requireAuth, requireWorkspace, requireRole('admin'), (req,
   if (!assertOwnWorkspace(req, res)) return;
   const count = db.prepare('SELECT COUNT(*) AS n FROM workspaces').get().n;
   if (count <= 1) return res.status(400).json({ error: 'At least one workspace must remain' });
+  const ws = db.prepare('SELECT name FROM workspaces WHERE id = ?').get(req.workspaceId);
   db.prepare('DELETE FROM workspaces WHERE id = ?').run(req.workspaceId);
+  logAudit(req, { action: 'workspace.deleted', entityType: 'workspace', entityId: req.workspaceId, entityLabel: ws?.name });
   res.json({ ok: true });
 });
 
@@ -94,6 +99,7 @@ router.post('/:id/members', requireAuth, requireWorkspace, requireRole('admin'),
 
   db.prepare('INSERT INTO workspace_members (id, workspace_id, user_id, role, team) VALUES (?,?,?,?,?)')
     .run(uid('wm'), req.workspaceId, user.id, role, team || null);
+  logAudit(req, { action: 'workspace_member.added', entityType: 'workspace', entityId: req.workspaceId, entityLabel: email, details: { role, team } });
   res.status(201).json({ ok: true });
 });
 
@@ -109,12 +115,16 @@ router.patch('/:id/members/:userId', requireAuth, requireWorkspace, requireRole(
   if (fields.length === 0) return res.status(400).json({ error: 'Nothing to update' });
   params.push(membership.id);
   db.prepare(`UPDATE workspace_members SET ${fields.join(', ')} WHERE id = ?`).run(...params);
+  const targetUser = db.prepare('SELECT email FROM users WHERE id = ?').get(req.params.userId);
+  logAudit(req, { action: 'workspace_member.updated', entityType: 'workspace', entityId: req.workspaceId, entityLabel: targetUser?.email, details: req.body });
   res.json({ ok: true });
 });
 
 router.delete('/:id/members/:userId', requireAuth, requireWorkspace, requireRole('admin'), (req, res) => {
   if (!assertOwnWorkspace(req, res)) return;
+  const targetUser = db.prepare('SELECT email FROM users WHERE id = ?').get(req.params.userId);
   db.prepare('DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?').run(req.workspaceId, req.params.userId);
+  logAudit(req, { action: 'workspace_member.removed', entityType: 'workspace', entityId: req.workspaceId, entityLabel: targetUser?.email });
   res.json({ ok: true });
 });
 

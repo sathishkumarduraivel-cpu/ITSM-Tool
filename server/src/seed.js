@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs';
 import { db, uid, DEFAULT_WORKSPACE_ID } from './db.js';
 import { nextTicketNumber } from './services/ticketNumbering.js';
+import { materializeTasks } from './services/hrCaseEngine.js';
 
 const WS = DEFAULT_WORKSPACE_ID;
 
@@ -153,6 +154,85 @@ if (autoCount === 0) {
   console.log(`Seeded ${workflows.length} automations.`);
 }
 
+// ---- Employee Onboarding / Offboarding ----
+// Guarded independently from the original Service Desk/Network groups block
+// (which only ever runs once, before these existed) so this still seeds
+// cleanly against an already-seeded workspace.
+if (!db.prepare('SELECT id FROM groups WHERE workspace_id = ? AND name = ?').get(WS, 'IT')) {
+  const hrGroupDefs = [
+    { name: 'IT', description: 'Provisioning, access, and equipment for onboarding/offboarding', members: [agent1, agent2] },
+    { name: 'HR', description: 'People operations, onboarding/offboarding paperwork and policy', members: [adminId] },
+    { name: 'Facilities', description: 'Badges, seating, and equipment logistics', members: [agent1] },
+  ];
+  for (const g of hrGroupDefs) {
+    const id = uid('grp');
+    db.prepare('INSERT INTO groups (id, workspace_id, name, description) VALUES (?,?,?,?)').run(id, WS, g.name, g.description);
+    for (const userId of g.members) {
+      db.prepare('INSERT INTO group_members (id, group_id, user_id) VALUES (?,?,?)').run(uid('gm'), id, userId);
+    }
+  }
+  console.log(`Seeded ${hrGroupDefs.length} additional groups (IT/HR/Facilities).`);
+}
+
+function hrGroupId(name) {
+  return db.prepare('SELECT id FROM groups WHERE workspace_id = ? AND name = ?').get(WS, name)?.id || null;
+}
+
+const hrTemplateCount = db.prepare('SELECT COUNT(*) c FROM hr_case_templates WHERE workspace_id = ?').get(WS).c;
+if (hrTemplateCount === 0) {
+  // Blueprint shape matches exactly what materializeTasks()/the AI drafter
+  // produce: due_offset_days relative to start_date/last_working_day,
+  // depends_on_index is a 0-based index into this same array.
+  const onboardingBlueprint = [
+    { title: 'Order laptop and standard peripherals', track: 'it', stage_key: 'pre_boarding', due_offset_days: -5, group_name: 'IT' },
+    { title: 'Create email and SSO account', track: 'it', stage_key: 'pre_boarding', due_offset_days: -2, group_name: 'IT' },
+    { title: 'Send offer paperwork and benefits enrollment', track: 'hr', stage_key: 'pre_boarding', due_offset_days: -7, group_name: 'HR' },
+    { title: 'Prepare desk, badge, and building access', track: 'facilities', stage_key: 'pre_boarding', due_offset_days: -2, group_name: 'Facilities' },
+    { title: 'Welcome meeting and office tour', track: 'manager', stage_key: 'day_one', due_offset_days: 0 },
+    { title: 'IT orientation: tools, VPN, security policy', track: 'it', stage_key: 'day_one', due_offset_days: 0, group_name: 'IT' },
+    { title: 'Assign onboarding buddy check-in', track: 'manager', stage_key: 'week_one', due_offset_days: 3 },
+    { title: 'Complete required compliance training', track: 'hr', stage_key: 'week_one', due_offset_days: 5, group_name: 'HR' },
+    { title: '30-day check-in with manager', track: 'manager', stage_key: 'thirty_sixty_ninety', due_offset_days: 30 },
+    { title: '90-day performance review', track: 'manager', stage_key: 'thirty_sixty_ninety', due_offset_days: 90 },
+  ];
+  const offboardingBlueprint = [
+    { title: 'Manager sign-off on departure', track: 'approval', stage_key: 'initiated', due_offset_days: -3, requires_decision: true },
+    { title: 'Revoke SSO and email access', track: 'it', stage_key: 'access_revocation', due_offset_days: 0, group_name: 'IT', depends_on_index: 0 },
+    { title: 'Revoke VPN and admin credentials', track: 'it', stage_key: 'access_revocation', due_offset_days: 0, group_name: 'IT', depends_on_index: 0 },
+    { title: 'Disable building badge access', track: 'facilities', stage_key: 'access_revocation', due_offset_days: 0, group_name: 'Facilities', depends_on_index: 0 },
+    { title: 'Collect laptop and equipment', track: 'it', stage_key: 'asset_return', due_offset_days: 1, group_name: 'IT' },
+    { title: 'Process final pay and benefits paperwork', track: 'hr', stage_key: 'exit_interview', due_offset_days: 1, group_name: 'HR' },
+    { title: 'Conduct exit interview', track: 'hr', stage_key: 'exit_interview', due_offset_days: 2, group_name: 'HR' },
+  ];
+  const resolveGroups = (blueprint) => blueprint.map(({ group_name, ...t }) => ({ ...t, group_id: group_name ? hrGroupId(group_name) : null }));
+
+  db.prepare('INSERT INTO hr_case_templates (id, workspace_id, name, case_type, role_match, description, tasks) VALUES (?,?,?,?,?,?,?)').run(
+    uid('hrt'), WS, 'Standard Employee Onboarding', 'onboarding', 'General',
+    'Default cross-department checklist for a new full-time hire.', JSON.stringify(resolveGroups(onboardingBlueprint))
+  );
+  db.prepare('INSERT INTO hr_case_templates (id, workspace_id, name, case_type, role_match, description, tasks) VALUES (?,?,?,?,?,?,?)').run(
+    uid('hrt'), WS, 'Standard Employee Offboarding', 'offboarding', 'General',
+    'Default cross-department checklist for a departing employee.', JSON.stringify(resolveGroups(offboardingBlueprint))
+  );
+  console.log('Seeded 2 HR case templates (onboarding, offboarding).');
+}
+
+const hrCaseCount = db.prepare('SELECT COUNT(*) c FROM hr_cases WHERE workspace_id = ?').get(WS).c;
+if (hrCaseCount === 0) {
+  const onboardingTemplate = db.prepare('SELECT * FROM hr_case_templates WHERE workspace_id = ? AND case_type = ?').get(WS, 'onboarding');
+  if (onboardingTemplate) {
+    const caseId = uid('hrc');
+    const startDate = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
+    db.prepare(
+      `INSERT INTO hr_cases (id, workspace_id, case_type, employee_name, employee_email, job_title, department, employment_type, location, manager_id, start_date, template_id, created_by, stage)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    ).run(caseId, WS, 'onboarding', 'Jordan Lee', 'jordan.lee@itsm.ai', 'Software Engineer', 'Platform Engineering', 'full_time', 'HQ - 2F', adminId, startDate, onboardingTemplate.id, adminId, 'pre_boarding');
+    const kase = db.prepare('SELECT * FROM hr_cases WHERE id = ?').get(caseId);
+    materializeTasks(kase, JSON.parse(onboardingTemplate.tasks), 'template');
+    console.log('Seeded 1 example onboarding case (Jordan Lee).');
+  }
+}
+
 // ---- Service Catalog ----
 const catCount = db.prepare('SELECT COUNT(*) c FROM catalog_categories WHERE workspace_id = ?').get(WS).c;
 if (catCount === 0) {
@@ -247,7 +327,81 @@ if (tplCount === 0) {
   console.log(`Seeded ${templates.length} notification templates.`);
 }
 
+// ---- ITIL-style personas (seeded as custom_roles bundles -- see
+// services/permissions.js for why this reuses the existing delegation
+// system instead of a parallel role/containment schema) ----
+function upsertCustomRole(name, description, permissions) {
+  let row = db.prepare('SELECT id FROM custom_roles WHERE workspace_id = ? AND name = ?').get(WS, name);
+  if (!row) {
+    const id = uid('crole');
+    db.prepare('INSERT INTO custom_roles (id, workspace_id, name, description, permissions) VALUES (?,?,?,?,?)').run(
+      id, WS, name, description, JSON.stringify(permissions)
+    );
+    row = { id };
+  }
+  return row.id;
+}
+
+const roleId = {
+  itil: upsertCustomRole('ITIL', 'Equivalent to the base Agent role — full ticket CRUD across incidents, requests, problems and changes, can be assigned work. No extra delegated permissions beyond what every agent already has; exists as a named persona for org-chart clarity.', []),
+  itilAdmin: upsertCustomRole('ITIL Admin', 'ITIL + delete (archive) tickets, manage the Service Catalog, and manage SLA policies.', ['tickets.delete', 'catalog.manage', 'sla.manage']),
+  incidentManager: upsertCustomRole('Incident Manager', 'Process ownership for Incidents — can act on an admin-gated Incident lifecycle transition without needing full admin.', ['incident.manage']),
+  problemManager: upsertCustomRole('Problem Manager', 'Process ownership for Problems.', ['problem.manage']),
+  changeManager: upsertCustomRole('Change Manager', 'Process ownership for Changes — can act as CAB on the admin-gated cab_review → scheduled transition without needing full admin.', ['change.manage']),
+  knowledgeManager: upsertCustomRole('Knowledge Manager', 'Author, publish and retire Knowledge Base articles. (One KB permission tier in this app, covering both "knowledge" and "knowledge_admin" from the original ITIL role list.)', ['kb.manage']),
+  catalogAdmin: upsertCustomRole('Catalog Admin', 'Manage Service Catalog categories, items and their guided request forms.', ['catalog.manage']),
+  impersonator: upsertCustomRole('Impersonator', 'Can log in as another user for support/testing purposes. Every use is audit-logged.', ['users.impersonate']),
+};
+console.log('Seeded 8 ITIL-persona custom roles.');
+
+// One sample agent per persona, matching this file's existing upsertUser
+// pattern — all base role 'agent' (personas layer ON TOP of agent, they
+// don't replace it), each with their custom_role_id set directly.
+const personaUsers = [
+  { name: 'Morgan Itil', email: 'morgan.itil@itsm.ai', role: roleId.itil, team: 'Service Desk' },
+  { name: 'Riley ItilAdmin', email: 'riley.itiladmin@itsm.ai', role: roleId.itilAdmin, team: 'Service Desk' },
+  { name: 'Casey IncidentMgr', email: 'casey.incidentmgr@itsm.ai', role: roleId.incidentManager, team: 'Service Desk' },
+  { name: 'Drew ProblemMgr', email: 'drew.problemmgr@itsm.ai', role: roleId.problemManager, team: 'Service Desk' },
+  { name: 'Taylor ChangeMgr', email: 'taylor.changemgr@itsm.ai', role: roleId.changeManager, team: 'Network' },
+  { name: 'Jordan Knowledge', email: 'jordan.knowledge@itsm.ai', role: roleId.knowledgeManager, team: 'Service Desk' },
+  { name: 'Avery CatalogAdmin', email: 'avery.catalogadmin@itsm.ai', role: roleId.catalogAdmin, team: 'Service Desk' },
+  { name: 'Quinn Impersonator', email: 'quinn.impersonator@itsm.ai', role: roleId.impersonator, team: 'Service Desk' },
+];
+for (const p of personaUsers) {
+  const userId = upsertUser(p.name, p.email, 'Persona@123', 'agent', p.team);
+  db.prepare('UPDATE workspace_members SET custom_role_id = ? WHERE workspace_id = ? AND user_id = ?').run(p.role, WS, userId);
+}
+console.log(`Seeded ${personaUsers.length} persona sample users (password: Persona@123).`);
+
+// One sample approver persona -- no custom role needed (approvals.js already
+// scopes /decide to whoever is actually assigned via approver_id/
+// approver_role, for any base role), demonstrated by making this user the
+// CAB group's manager below so a "group_manager"-type catalog item has a
+// real approver to resolve to.
+const morganApprover = upsertUser('Morgan Approver', 'morgan.approver@itsm.ai', 'Persona@123', 'agent', 'Network');
+
+// CAB group: demonstrates a group granting rights by membership
+// (default_custom_role_id — every member gets Change Manager's bundle just
+// by being in this group, without a personal custom_role_id) and naming a
+// manager (manager_user_id — reused as the 'group_manager' approver option
+// on catalog items, see routes/catalog.js's resolveApprover()).
+let cabGroup = db.prepare('SELECT id FROM groups WHERE workspace_id = ? AND name = ?').get(WS, 'Change Advisory Board');
+if (!cabGroup) {
+  const id = uid('grp');
+  db.prepare('INSERT INTO groups (id, workspace_id, name, description, manager_user_id, default_custom_role_id) VALUES (?,?,?,?,?,?)').run(
+    id, WS, 'Change Advisory Board', 'Reviews and approves changes before they can be scheduled.', morganApprover, roleId.changeManager
+  );
+  db.prepare('INSERT INTO group_members (id, group_id, user_id) VALUES (?,?,?)').run(uid('gm'), id, morganApprover);
+  db.prepare('INSERT INTO group_members (id, group_id, user_id) VALUES (?,?,?)').run(uid('gm'), id, agent2);
+  cabGroup = { id };
+  console.log('Seeded Change Advisory Board group (grants Change Manager to its members; manager = Morgan Approver).');
+}
+
 console.log('\nSeed complete. Login with:');
 console.log('  admin@itsm.ai / Admin@123 (admin)');
 console.log('  priya@itsm.ai / Agent@123 (agent)');
 console.log('  sam@company.com / User@123 (requester)');
+console.log('  ITIL personas (all password Persona@123): morgan.itil@itsm.ai, riley.itiladmin@itsm.ai,');
+console.log('    casey.incidentmgr@itsm.ai, drew.problemmgr@itsm.ai, taylor.changemgr@itsm.ai,');
+console.log('    jordan.knowledge@itsm.ai, avery.catalogadmin@itsm.ai, quinn.impersonator@itsm.ai,');
+console.log('    morgan.approver@itsm.ai (CAB group manager, gets Change Manager via group membership)');

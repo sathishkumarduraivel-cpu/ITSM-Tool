@@ -4,18 +4,29 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import Modal from '../components/Modal.jsx';
 import PageHeader from '../components/PageHeader.jsx';
+import Select from '../components/Select.jsx';
 
 const REL_TYPES = ['depends_on', 'hosted_on', 'connected_to'];
 
 function AssetDetailModal({ asset, allAssets, onClose, onChanged }) {
   const [detail, setDetail] = useState(null);
+  const [loadError, setLoadError] = useState('');
   const [relTarget, setRelTarget] = useState('');
   const [relType, setRelType] = useState('depends_on');
   const navigate = useNavigate();
 
   const load = async () => {
-    const data = await api.get(`/assets/${asset.id}/detail`);
-    setDetail(data);
+    setLoadError('');
+    try {
+      const data = await api.get(`/assets/${asset.id}/detail`);
+      setDetail(data);
+    } catch (e) {
+      // Without this catch, a failed fetch left `detail` null forever and
+      // the `if (!detail) return null` below rendered NOTHING at all --
+      // clicking an asset row silently did nothing, with no error, no
+      // spinner, and no way to dismiss it.
+      setLoadError(e.message);
+    }
   };
 
   useEffect(() => { load(); }, [asset.id]);
@@ -34,7 +45,25 @@ function AssetDetailModal({ asset, allAssets, onClose, onChanged }) {
     onChanged();
   };
 
-  if (!detail) return null;
+  if (!detail) {
+    return (
+      <div className="fixed inset-0 bg-slate-900/40 dark:bg-slate-950/60 flex items-center justify-center z-50 px-4 py-8" onClick={onClose}>
+        <div className="card w-full max-w-sm p-5 text-center space-y-3" onClick={(e) => e.stopPropagation()}>
+          {loadError ? (
+            <>
+              <p className="text-sm text-red-600 dark:text-red-400">{loadError}</p>
+              <div className="flex items-center justify-center gap-2">
+                <button onClick={onClose} className="btn-secondary text-xs">Close</button>
+                <button onClick={load} className="btn-primary text-xs">Retry</button>
+              </div>
+            </>
+          ) : (
+            <p className="text-sm text-slate-400 flex items-center justify-center gap-2"><Loader2 size={14} className="animate-spin" /> Loading…</p>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 bg-slate-900/40 dark:bg-slate-950/60 flex items-center justify-center z-50 px-4 py-8 overflow-y-auto" onClick={onClose}>
@@ -59,13 +88,20 @@ function AssetDetailModal({ asset, allAssets, onClose, onChanged }) {
             ))}
           </div>
           <div className="flex gap-2 mt-2">
-            <select className="input" value={relTarget} onChange={(e) => setRelTarget(e.target.value)}>
-              <option value="">Link to asset…</option>
-              {allAssets.filter((a) => a.id !== asset.id).map((a) => <option key={a.id} value={a.id}>{a.name} ({a.tag})</option>)}
-            </select>
-            <select className="input w-auto" value={relType} onChange={(e) => setRelType(e.target.value)}>
-              {REL_TYPES.map((t) => <option key={t} value={t}>{t.replace('_', ' ')}</option>)}
-            </select>
+            <Select
+              value={relTarget}
+              onChange={setRelTarget}
+              options={[
+                { value: '', label: 'Link to asset…' },
+                ...allAssets.filter((a) => a.id !== asset.id).map((a) => ({ value: a.id, label: `${a.name} (${a.tag})` })),
+              ]}
+            />
+            <Select
+              className="w-auto"
+              value={relType}
+              onChange={setRelType}
+              options={REL_TYPES.map((t) => ({ value: t, label: t.replace('_', ' ') }))}
+            />
             <button onClick={addRelationship} className="btn-secondary shrink-0"><Plus size={14} /></button>
           </div>
         </div>
@@ -147,15 +183,15 @@ function AssetModal({ initial, onClose, onSaved }) {
           </div>
           <div>
             <label className="label">Type</label>
-            <select className="input" value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
-              {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-            </select>
+            <Select value={form.type} onChange={(v) => setForm({ ...form, type: v })} options={TYPES} />
           </div>
           <div>
             <label className="label">Status</label>
-            <select className="input" value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
-              {STATUSES.map((s) => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
-            </select>
+            <Select
+              value={form.status}
+              onChange={(v) => setForm({ ...form, status: v })}
+              options={STATUSES.map((s) => ({ value: s, label: s.replace('_', ' ') }))}
+            />
           </div>
           <div>
             <label className="label">Vendor</label>
@@ -185,9 +221,12 @@ export default function Assets() {
 
   const load = async () => {
     setLoading(true);
-    const { assets } = await api.get('/assets');
-    setAssets(assets);
-    setLoading(false);
+    try {
+      const { assets } = await api.get('/assets');
+      setAssets(assets);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => { load(); }, []);
@@ -221,7 +260,7 @@ export default function Assets() {
               </td></tr>
             )}
             {!loading && assets.map((a) => (
-              <tr key={a.id} onClick={() => setDetailAsset(a)} className="border-t border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/40 cursor-pointer">
+              <tr key={a.id} onClick={() => setDetailAsset(a)} className="border-t border-slate-100 dark:border-slate-800 row-interactive">
                 <td className="px-4 py-2.5 font-mono text-xs text-slate-600 dark:text-slate-300">{a.tag}</td>
                 <td className="px-4 py-2.5 font-medium text-slate-800 dark:text-slate-100">{a.name}</td>
                 <td className="px-4 py-2.5 capitalize text-slate-600 dark:text-slate-300">{a.type}</td>

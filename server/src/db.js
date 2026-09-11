@@ -6,6 +6,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { encrypt, isEncrypted } from './services/crypto.js';
+import { legacyToGraph } from './services/workflowGraph.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = path.join(__dirname, '..', 'data');
@@ -84,12 +85,58 @@ CREATE TABLE IF NOT EXISTS ticket_comments (
   FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE
 );
 
+-- Read-only visibility onto a ticket for someone other than its requester --
+-- currently populated only by merging (the losing ticket's requester
+-- becomes a watcher on the surviving one, so they don't lose all visibility
+-- into their issue just because it got merged), but deliberately generic
+-- enough to reuse for a future "CC someone on this ticket" feature. A
+-- watcher can view/GET the ticket like the requester can, but NOT post
+-- comments/attachments/CSAT on it -- those stay requester-or-agent-only.
+CREATE TABLE IF NOT EXISTS ticket_watchers (
+  id TEXT PRIMARY KEY,
+  ticket_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(ticket_id, user_id),
+  FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS ticket_history (
   id TEXT PRIMARY KEY,
   ticket_id TEXT NOT NULL,
   event TEXT NOT NULL,
   detail TEXT,
   created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE
+);
+
+-- Ticket Tasks: a checklist of assignable, sequenceable sub-items under one
+-- ticket (e.g. an onboarding request's "Provision laptop" / "Create AD
+-- account" / "Order badge"), distinct from the parent ticket itself and from
+-- a Business Rule's per-field logic -- these are work items, not form
+-- fields. The depends_on_task_id column is an optional same-ticket predecessor: the
+-- UI blocks moving a task to in_progress/done until its dependency is done
+-- (see services/tasks.js's cycle check on write). Never hard-deleted from
+-- ticket_history's perspective -- creation/completion are logged there like
+-- every other ticket event -- but the row itself IS a real DELETE when
+-- removed, since a checklist item is disposable in a way a ticket is not.
+CREATE TABLE IF NOT EXISTS ticket_tasks (
+  id TEXT PRIMARY KEY,
+  ticket_id TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT,
+  status TEXT NOT NULL DEFAULT 'open', -- open | in_progress | done
+  priority TEXT NOT NULL DEFAULT 'medium', -- low | medium | high
+  assignee_id TEXT,
+  due_date TEXT,
+  sort_order INTEGER DEFAULT 0,
+  depends_on_task_id TEXT,
+  created_by TEXT,
+  completed_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE
 );
 
@@ -232,6 +279,50 @@ CREATE TABLE IF NOT EXISTS business_hours (
   end_time TEXT NOT NULL
 );
 
+-- ---- Escalation Rules: automatic multi-level escalation as a ticket
+-- approaches or breaches its SLA resolution window. Matched to a ticket the
+-- same way sla_policies is (most-specific-wins on type/priority/team), and
+-- each policy can have several ordered levels (e.g. 50% -> notify the group,
+-- 100% -> bump priority + notify an admin). No scheduler/cron exists
+-- anywhere in this app by design -- see evaluateEscalations() in
+-- escalationEngine.js for how this still fires close to real-time without
+-- one (evaluated whenever a ticket is read or updated, not on a timer). ----
+CREATE TABLE IF NOT EXISTS escalation_policies (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  ticket_type TEXT, -- null = matches any type
+  priority TEXT,    -- null = matches any priority
+  team TEXT,        -- null = matches any group
+  enabled INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS escalation_levels (
+  id TEXT PRIMARY KEY,
+  policy_id TEXT NOT NULL,
+  level_order INTEGER NOT NULL DEFAULT 1,
+  threshold_pct INTEGER NOT NULL, -- % of the resolution SLA window elapsed
+  notify_role TEXT,     -- 'admin' | 'agent' -- null = no role notify
+  notify_user_id TEXT,  -- a specific person (e.g. a manager) -- null = none
+  set_priority TEXT,    -- bump the ticket to this priority -- null = leave as-is
+  post_comment INTEGER DEFAULT 1, -- add a visible note on the ticket when this level fires
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (policy_id) REFERENCES escalation_policies(id) ON DELETE CASCADE
+);
+
+-- Which levels have already fired for which ticket, so re-evaluating never
+-- re-notifies for the same threshold twice.
+CREATE TABLE IF NOT EXISTS ticket_escalations (
+  id TEXT PRIMARY KEY,
+  ticket_id TEXT NOT NULL,
+  level_id TEXT NOT NULL,
+  fired_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(ticket_id, level_id),
+  FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,
+  FOREIGN KEY (level_id) REFERENCES escalation_levels(id) ON DELETE CASCADE
+);
+
 -- ---- CMDB ----
 CREATE TABLE IF NOT EXISTS asset_relationships (
   id TEXT PRIMARY KEY,
@@ -333,6 +424,268 @@ CREATE TABLE IF NOT EXISTS workspace_members (
   UNIQUE(workspace_id, user_id),
   FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS custom_roles (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT,
+  permissions TEXT NOT NULL DEFAULT '[]', -- JSON array of permission keys, see services/permissions.js
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  actor_id TEXT,
+  actor_name TEXT,
+  actor_role TEXT,
+  action TEXT NOT NULL,       -- e.g. 'sla_policy.created', 'user.updated' -- see services/auditLog.js callers for the full vocabulary
+  entity_type TEXT,
+  entity_id TEXT,
+  entity_label TEXT,          -- human-readable snapshot (name/email at the time) so the row still reads clearly after the entity is renamed or deleted
+  details TEXT,                -- JSON, free-form -- never a secret/credential value
+  ip_address TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_audit_log_workspace ON audit_log(workspace_id, created_at DESC);
+
+-- Major Incident Management: a Major Incident is a distinct governance
+-- record anchored to one ordinary incident ticket, not a ticket type of its
+-- own -- the anchor ticket keeps behaving like any other incident (SLA,
+-- lifecycle, comments) while this record adds severity, an Incident
+-- Commander, a communication cadence, related-ticket linking, and a
+-- post-incident review, none of which make sense on a routine ticket.
+CREATE TABLE IF NOT EXISTS major_incidents (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  ticket_id TEXT NOT NULL,
+  number TEXT NOT NULL,                        -- MI-1, MI-2... own sequence, independent of ticket numbers
+  severity TEXT NOT NULL DEFAULT 'sev2',        -- sev1 | sev2 | sev3
+  status TEXT NOT NULL DEFAULT 'active',        -- active | monitoring | resolved | closed
+  summary TEXT NOT NULL,
+  impact_description TEXT,
+  commander_id TEXT,
+  declared_by TEXT,
+  declared_at TEXT DEFAULT (datetime('now')),
+  update_interval_minutes INTEGER DEFAULT 30,   -- how often a status update is expected while active/monitoring
+  next_update_due_at TEXT,                      -- read-time computed "overdue" flag, same no-scheduler pattern as SLA/escalations
+  resolved_at TEXT,
+  pir_due_at TEXT,                              -- set on resolve; post-incident review expected within a few days
+  pir_status TEXT DEFAULT 'not_started',        -- not_started | in_progress | completed
+  pir_document TEXT,
+  closed_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (ticket_id) REFERENCES tickets(id)
+);
+
+CREATE TABLE IF NOT EXISTS major_incident_updates (
+  id TEXT PRIMARY KEY,
+  major_incident_id TEXT NOT NULL,
+  author_id TEXT,
+  author_name TEXT,
+  message TEXT NOT NULL,
+  status_at_time TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (major_incident_id) REFERENCES major_incidents(id) ON DELETE CASCADE
+);
+
+-- Tickets that appear to be the same underlying outage (duplicate reports,
+-- downstream symptoms) get linked here rather than merged -- unlike Ticket
+-- Merging, a related ticket keeps its own life, ownership and history; it's
+-- just visibly grouped under the Major Incident for coordination.
+CREATE TABLE IF NOT EXISTS major_incident_related_tickets (
+  id TEXT PRIMARY KEY,
+  major_incident_id TEXT NOT NULL,
+  ticket_id TEXT NOT NULL,
+  linked_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(major_incident_id, ticket_id),
+  FOREIGN KEY (major_incident_id) REFERENCES major_incidents(id) ON DELETE CASCADE,
+  FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE
+);
+
+-- Self-Service AI Chatbot: a session per "describe a new problem" conversation
+-- (separate from the general-purpose Sona command hub / ask-about-my-tickets
+-- flow already backed by /ai/ask and /ai/my-tickets-ask). Tracked as its own
+-- entity specifically so deflection can be measured -- did the Knowledge Base
+-- actually resolve this, or did it end in a real ticket -- the standard KPI
+-- for a self-service deflection chatbot that a plain Q&A assistant has no
+-- equivalent of.
+CREATE TABLE IF NOT EXISTS chatbot_sessions (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  status TEXT DEFAULT 'open', -- open | deflected | escalated
+  ticket_id TEXT,             -- set once escalated to a real ticket
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS chatbot_messages (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  role TEXT NOT NULL, -- user | assistant
+  content TEXT NOT NULL,
+  kb_article_ids TEXT, -- JSON array -- articles cited by this assistant reply, if any
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (session_id) REFERENCES chatbot_sessions(id) ON DELETE CASCADE
+);
+
+-- Single Sign-On: an admin-configured OAuth app per workspace per provider
+-- (their own Google Cloud / Microsoft Entra app registration -- this is a
+-- BYO-credentials integration, same philosophy as ai_providers/integrations/
+-- external_connections, never a hardcoded vendor). allowed_domain, if set,
+-- is the only real access control on auto-provisioning -- without it,
+-- anyone with a Google/Microsoft account could sign themselves into this
+-- workspace, so the admin UI strongly steers toward setting it.
+CREATE TABLE IF NOT EXISTS sso_providers (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  provider TEXT NOT NULL,              -- google | microsoft
+  client_id TEXT NOT NULL,
+  client_secret TEXT NOT NULL,         -- encrypted, see services/crypto.js
+  tenant_id TEXT,                      -- microsoft only; null = 'common' (any Microsoft account/org)
+  allowed_domain TEXT,                 -- optional -- restrict sign-in/auto-provision to this email domain
+  auto_provision_role TEXT NOT NULL DEFAULT 'requester',
+  enabled INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(workspace_id, provider)
+);
+
+-- Directory Sync: unlike sso_providers above (a redirect-based OAuth login
+-- that only ever hears from someone who successfully signs in), this
+-- actively queries an external directory's full user list on a schedule --
+-- see services/directorySync.js -- to provision new accounts, refresh
+-- details, and deactivate (never hard-delete) anyone removed/disabled
+-- there. Genuinely new capability, not an extension of SSO.
+CREATE TABLE IF NOT EXISTS directory_providers (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  type TEXT NOT NULL,                        -- ldap | microsoft_graph
+  name TEXT NOT NULL,
+  config TEXT NOT NULL,                      -- encrypted JSON, shape varies by type
+  sync_interval_minutes INTEGER DEFAULT 0,   -- 0 = periodic sync off, manual "Sync now" only
+  auto_provision_role TEXT NOT NULL DEFAULT 'requester',
+  default_custom_role_id TEXT,
+  default_team TEXT,
+  enabled INTEGER DEFAULT 1,
+  last_synced_at TEXT,
+  last_sync_status TEXT,                     -- success | error
+  last_sync_summary TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS directory_sync_logs (
+  id TEXT PRIMARY KEY,
+  provider_id TEXT NOT NULL,
+  status TEXT NOT NULL,                      -- success | error
+  summary TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (provider_id) REFERENCES directory_providers(id) ON DELETE CASCADE
+);
+
+-- Email Configuration: one SMTP profile per workspace (a config singleton,
+-- not a list -- unlike integrations.email_smtp, which models arbitrary
+-- outbound webhooks/notifiers, this is THE transactional email system every
+-- lifecycle event below sends real mail through). Password is encrypted at
+-- rest the same way as every other stored secret in this app (crypto.js).
+CREATE TABLE IF NOT EXISTS email_settings (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL UNIQUE,
+  enabled INTEGER DEFAULT 0,
+  host TEXT, port INTEGER DEFAULT 587, secure INTEGER DEFAULT 0,
+  username TEXT, password TEXT,
+  from_name TEXT, from_email TEXT, reply_to TEXT,
+  footer_html TEXT,
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Email Templates: one row per lifecycle event ("key"), scoped to an
+-- audience (requester/agent/admin/approver) purely for grouping in the UI --
+-- who actually receives it is decided by the call site, not this column.
+-- Seeded lazily (services/emailService.js's ensureDefaultTemplates, called
+-- at the top of GET /email-templates and sendTemplatedEmail) rather than
+-- only in seed.js, so any workspace -- including ones created after this
+-- feature shipped -- always has the full set without a migration script.
+CREATE TABLE IF NOT EXISTS email_templates (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  key TEXT NOT NULL,
+  name TEXT NOT NULL,
+  audience TEXT NOT NULL,      -- requester | agent | admin | approver
+  category TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  body_html TEXT NOT NULL,
+  enabled INTEGER DEFAULT 1,
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(workspace_id, key)
+);
+
+-- A delivery log for every attempted send (sent/failed/simulated) -- the
+-- same "give the admin a recent-runs table" pattern already used for
+-- directory_sync_logs, so a misconfigured SMTP profile or a disabled
+-- template shows up as visible history instead of a silent no-op.
+CREATE TABLE IF NOT EXISTS email_log (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  template_key TEXT,
+  to_email TEXT NOT NULL,
+  subject TEXT,
+  status TEXT NOT NULL,        -- sent | failed | simulated
+  error TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Canned Responses: agent-authored reply snippets surfaced in the ticket
+-- Reply composer (routes/cannedResponses.js, TicketDetail.jsx). The team
+-- column scopes one to a specific team's queue (e.g. only Network agents see a
+-- network-outage snippet); NULL means visible to every team. Deliberately
+-- agent-manageable, not admin-locked -- these are the same kind of everyday
+-- personal/team productivity content as a saved KB draft, not a
+-- security-sensitive configuration surface.
+CREATE TABLE IF NOT EXISTS canned_responses (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  shortcut TEXT,
+  category TEXT,
+  team TEXT,
+  body_html TEXT NOT NULL,
+  created_by TEXT,
+  usage_count INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Public Developer API: lets an external company system authenticate
+-- directly against /api/v1/* without a user session, scoped to exactly the
+-- resources it's granted. The raw key is shown to the admin exactly once at
+-- creation time (like a Stripe/GitHub token) and never stored -- key_hash is
+-- a SHA-256 of it, key_prefix is just enough of the key to recognize it in
+-- a list later.
+CREATE TABLE IF NOT EXISTS api_keys (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  key_prefix TEXT NOT NULL,
+  key_hash TEXT NOT NULL UNIQUE,
+  scopes TEXT NOT NULL DEFAULT '[]',
+  created_by TEXT,
+  last_used_at TEXT,
+  expires_at TEXT,
+  enabled INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS saved_reports (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  config TEXT NOT NULL, -- JSON: {group_by, filters}
+  created_by TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS workspace_settings (
@@ -467,6 +820,188 @@ CREATE TABLE IF NOT EXISTS automation_pending_actions (
   FOREIGN KEY (automation_id) REFERENCES automations(id) ON DELETE CASCADE,
   FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE
 );
+
+-- ---- Ticket Lifecycles: an admin-defined state machine per ticket_type,
+-- opt-in and additive. A type with no row here (or enabled = 0) keeps the
+-- original free-form status field exactly as before -- nothing here is
+-- required for the app to function. Once enabled, tickets.status is always
+-- derived from the current stage's bucket (open/in_progress/on_hold/
+-- resolved/closed) so every existing SLA/dashboard/report query that filters
+-- on status keeps working unmodified. ----
+CREATE TABLE IF NOT EXISTS ticket_lifecycles (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  ticket_type TEXT NOT NULL, -- incident | request | problem | change
+  enabled INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(workspace_id, ticket_type),
+  FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS lifecycle_stages (
+  id TEXT PRIMARY KEY,
+  lifecycle_id TEXT NOT NULL,
+  key TEXT NOT NULL, -- stable slug set at creation, never changes after -- referenced by tickets.lifecycle_stage
+  label TEXT NOT NULL,
+  bucket TEXT NOT NULL DEFAULT 'open', -- open | in_progress | on_hold | resolved | closed
+  is_terminal INTEGER DEFAULT 0,
+  sort_order INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(lifecycle_id, key),
+  FOREIGN KEY (lifecycle_id) REFERENCES ticket_lifecycles(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS lifecycle_transitions (
+  id TEXT PRIMARY KEY,
+  lifecycle_id TEXT NOT NULL,
+  from_stage_id TEXT NOT NULL,
+  to_stage_id TEXT NOT NULL,
+  requires_role TEXT, -- null | agent | admin -- minimum role permitted to perform this transition
+  condition_field TEXT, -- optional gate against a live ticket field, e.g. cab_status
+  condition_operator TEXT, -- equals | not_equals | is_empty | is_not_empty
+  condition_value TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (lifecycle_id) REFERENCES ticket_lifecycles(id) ON DELETE CASCADE,
+  FOREIGN KEY (from_stage_id) REFERENCES lifecycle_stages(id) ON DELETE CASCADE,
+  FOREIGN KEY (to_stage_id) REFERENCES lifecycle_stages(id) ON DELETE CASCADE
+);
+
+-- ---- Employee Onboarding / Offboarding ----
+-- A dedicated module rather than a 5th ticket type: tickets.type is
+-- hardcoded to incident|request|problem|change in several places (lifecycle
+-- engine, ticket numbering), so bolting HR cases on as a ticket type would
+-- ripple invasively. hr_cases.stage is write-time derived by
+-- hrCaseEngine.recomputeCaseStage() from its tasks -- never written directly
+-- by a route -- so the progress stepper advances automatically as tasks
+-- complete, instead of requiring a manual "move to next stage" action.
+CREATE TABLE IF NOT EXISTS hr_cases (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  case_type TEXT NOT NULL, -- onboarding | offboarding
+  status TEXT NOT NULL DEFAULT 'in_progress', -- in_progress | completed | cancelled
+  employee_name TEXT NOT NULL,
+  employee_email TEXT,
+  job_title TEXT,
+  department TEXT,
+  employment_type TEXT DEFAULT 'full_time', -- full_time | contractor | intern
+  location TEXT,
+  manager_id TEXT,
+  buddy_id TEXT, -- onboarding only
+  start_date TEXT, -- onboarding
+  last_working_day TEXT, -- offboarding
+  stage TEXT, -- derived -- see hrCaseEngine.js; not written directly by routes
+  risk_level TEXT NOT NULL DEFAULT 'standard', -- standard | elevated -- offboarding only
+  template_id TEXT,
+  notes TEXT,
+  created_by TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  completed_at TEXT,
+  FOREIGN KEY (manager_id) REFERENCES users(id),
+  FOREIGN KEY (buddy_id) REFERENCES users(id),
+  FOREIGN KEY (template_id) REFERENCES hr_case_templates(id)
+);
+
+-- The checklist. depends_on_task_id is advisory-only (read-time "blocked"
+-- display via hrCaseEngine.isTaskBlocked) -- never hard-enforced server-side,
+-- so an agent can always mark a blocked task done. Approval/sign-off steps
+-- are just tasks with track='approval' + requires_decision=1, chained via
+-- depends_on_task_id for multi-step sign-off -- deliberately NOT reusing the
+-- ticket 'approvals' table, which is ticket-coupled (approvalEngine.js
+-- force-closes tickets on rejection). Rejecting an approval task here has no
+-- automatic downstream effect -- this module coordinates humans, it does not
+-- enforce IAM/access revocation.
+CREATE TABLE IF NOT EXISTS hr_case_tasks (
+  id TEXT PRIMARY KEY,
+  case_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT,
+  track TEXT NOT NULL DEFAULT 'other', -- it | hr | facilities | manager | approval | other
+  stage_key TEXT, -- which case_type stage this belongs to (see hrCaseEngine.js)
+  group_id TEXT,
+  assignee_id TEXT,
+  status TEXT NOT NULL DEFAULT 'pending', -- pending | in_progress | done | skipped
+  requires_decision INTEGER DEFAULT 0,
+  decision TEXT, -- approved | rejected -- only meaningful when requires_decision=1
+  due_at TEXT,
+  completed_at TEXT,
+  completed_by TEXT,
+  depends_on_task_id TEXT,
+  sort_order INTEGER DEFAULT 0,
+  source TEXT DEFAULT 'manual', -- template | ai | manual
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (case_id) REFERENCES hr_cases(id) ON DELETE CASCADE,
+  FOREIGN KEY (group_id) REFERENCES groups(id),
+  FOREIGN KEY (assignee_id) REFERENCES users(id),
+  FOREIGN KEY (depends_on_task_id) REFERENCES hr_case_tasks(id)
+);
+
+-- Reusable department checklists. 'tasks' mirrors automations.actions'
+-- JSON-blob convention -- templates are blueprints with no per-instance
+-- state, which only exists once applyTemplate() materializes them into real
+-- hr_case_tasks rows.
+CREATE TABLE IF NOT EXISTS hr_case_templates (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  case_type TEXT NOT NULL, -- onboarding | offboarding
+  role_match TEXT, -- optional free-text hint (e.g. "Engineer") for template suggestions
+  description TEXT,
+  tasks TEXT NOT NULL DEFAULT '[]', -- JSON [{title,description,track,due_offset_days,requires_decision,depends_on_index}]
+  enabled INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- ---- Bilateral External Ticket Sync (ServiceNow / Jira / Freshservice) ----
+-- Distinct from the 'integrations' table above, which is one-way fire-and-
+-- forget notifications (Slack/Teams/email/webhook). This is real bidirectional
+-- CRUD against a remote platform's own REST API: a ticket here can be linked
+-- to a record there, edits here push out automatically (see
+-- services/externalSync.js, hooked from routes/tickets.js's PATCH handler),
+-- and edits there flow back in via a webhook receiver (routes/externalSyncWebhooks.js)
+-- or a manual pull. auth_config is encrypted the same way integrations.config is.
+CREATE TABLE IF NOT EXISTS external_connections (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  platform TEXT NOT NULL, -- servicenow | jira | freshservice
+  name TEXT NOT NULL,
+  base_url TEXT NOT NULL,
+  auth_config TEXT NOT NULL, -- encrypted JSON, shape varies by platform (see services/externalPlatforms/*)
+  field_mapping TEXT DEFAULT '{}', -- JSON: platform-specific defaults (jira project_key/issue_type, servicenow assignment_group, freshservice group_id)
+  webhook_secret TEXT NOT NULL, -- random token the external platform must present on inbound calls
+  enabled INTEGER DEFAULT 1,
+  last_tested_at TEXT,
+  last_test_ok INTEGER,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS ticket_external_links (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  ticket_id TEXT NOT NULL,
+  connection_id TEXT NOT NULL,
+  external_id TEXT NOT NULL, -- their sys_id / issue key / ticket id
+  external_number TEXT, -- human-readable (INC0012345, PROJ-123, #456)
+  external_url TEXT, -- deep link to view it on their platform
+  sync_status TEXT DEFAULT 'synced', -- synced | pending | error
+  last_synced_at TEXT,
+  last_error TEXT,
+  last_direction TEXT, -- outbound | inbound -- which direction the last successful sync went
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,
+  FOREIGN KEY (connection_id) REFERENCES external_connections(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS ticket_sync_logs (
+  id TEXT PRIMARY KEY,
+  link_id TEXT NOT NULL,
+  direction TEXT NOT NULL, -- outbound | inbound
+  status TEXT NOT NULL, -- success | error
+  detail TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (link_id) REFERENCES ticket_external_links(id) ON DELETE CASCADE
+);
 `);
 
 // Additive migrations for columns introduced after the initial tickets table
@@ -517,6 +1052,123 @@ const ticketColumnMigrations = [
   "ALTER TABLE ticket_field_rules ADD COLUMN validation_type TEXT", // regex | min_length | max_length | number_range
   "ALTER TABLE ticket_field_rules ADD COLUMN validation_value TEXT",
   "ALTER TABLE ticket_field_rules ADD COLUMN validation_message TEXT",
+  // Lifecycle engine: which named stage (lifecycle_stages.key) a ticket is
+  // currently in, when its type has an enabled lifecycle configured. Null
+  // for types with no lifecycle, and for legacy tickets created before one
+  // was turned on -- those resolve their effective stage at read/transition
+  // time by matching their current status to a stage bucket instead.
+  "ALTER TABLE tickets ADD COLUMN lifecycle_stage TEXT",
+  // Workflow graph editor: a branching node/edge graph (React Flow shape)
+  // that supersedes the legacy flat trigger/conditions/actions columns as
+  // the source of truth for execution. Those legacy columns are kept and
+  // still written (derived from the graph) only because `actions` is
+  // NOT NULL and relaxing that needs a full table rebuild -- see
+  // deriveLegacyFromGraph() in automationEngine.js.
+  "ALTER TABLE automations ADD COLUMN nodes TEXT",
+  "ALTER TABLE automations ADD COLUMN edges TEXT",
+  // Which graph node a gated (Tier C) pending action came from, so approving
+  // it can resume the branch from that point instead of dead-ending.
+  "ALTER TABLE automation_pending_actions ADD COLUMN node_id TEXT",
+  // Lets an admin turn file attachments on/off (and optionally mandate one)
+  // per catalog item, from the Service Catalog's own item editor -- rather
+  // than a single blanket toggle for every request ticket.
+  "ALTER TABLE catalog_items ADD COLUMN allow_attachments INTEGER DEFAULT 1",
+  "ALTER TABLE catalog_items ADD COLUMN require_attachment INTEGER DEFAULT 0",
+  // Spam moderation: flagged tickets stop showing in the default queue (see
+  // GET /tickets) without being deleted -- reversible via unmark, and still
+  // directly reachable by id for whoever flagged it.
+  "ALTER TABLE tickets ADD COLUMN is_spam INTEGER DEFAULT 0",
+  "ALTER TABLE tickets ADD COLUMN spam_marked_at TEXT",
+  // Employee id and reporting manager -- like role/team, these describe a
+  // person's standing *within this workspace* (the same physical user could
+  // be a different employee id / report to a different manager in another
+  // workspace), so they live on the membership row, not the global user.
+  // manager_id points at another user's id, resolved to a name at read time.
+  "ALTER TABLE workspace_members ADD COLUMN employee_id TEXT",
+  "ALTER TABLE workspace_members ADD COLUMN manager_id TEXT",
+  // Self-service profile preferences -- global on the user (not per-
+  // workspace, unlike role/team/employee_id/manager above), since a
+  // language/timezone/location preference describes the person, not their
+  // standing in any particular workspace.
+  "ALTER TABLE users ADD COLUMN language TEXT",
+  "ALTER TABLE users ADD COLUMN location TEXT",
+  "ALTER TABLE users ADD COLUMN timezone TEXT",
+  // Tracks a comment pulled in from an external platform (ServiceNow journal
+  // entry id, Jira comment id, etc.) so re-pulling the same ticket never
+  // imports the same remote comment twice. Null for every comment written
+  // natively in this app.
+  "ALTER TABLE ticket_comments ADD COLUMN external_comment_id TEXT",
+  // Ticket Merging: when a duplicate is merged into a primary ticket, it's
+  // closed and stamped with which ticket absorbed it -- never hard-deleted,
+  // so its own history/number stay intact and auditable.
+  "ALTER TABLE tickets ADD COLUMN merged_into_id TEXT",
+  // Custom Roles & Permissions: an agent's membership can optionally carry a
+  // delegated permission set (e.g. "SLA Administrator") on top of their base
+  // agent role, without promoting them to full admin. Null = base role only.
+  "ALTER TABLE workspace_members ADD COLUMN custom_role_id TEXT",
+  // Advanced Reporting: a saved report can be kept private to its author or
+  // shared with the whole workspace, filed under a freeform folder label
+  // (e.g. "SLA", "Agent Performance" -- ServiceNow-style report categories,
+  // deliberately just a text column rather than a whole folders table since
+  // nothing else needs to reference a folder besides grouping the list), and
+  // remembers which chart type it was last viewed as.
+  "ALTER TABLE saved_reports ADD COLUMN visibility TEXT DEFAULT 'shared'",
+  "ALTER TABLE saved_reports ADD COLUMN folder TEXT",
+  "ALTER TABLE saved_reports ADD COLUMN chart_type TEXT DEFAULT 'bar'",
+  // Approval node type in the workflow graph editor: reuses the same
+  // pending/resume table the Tier C action gate already relies on (see
+  // automationEngine.js), distinguished by `kind` so decidePendingAction
+  // knows whether to run a gated action (kind='action') or just record a
+  // human decision and resume down the matching approved/rejected branch
+  // (kind='approval'). `note` is the optional comment an approver can leave
+  // when deciding, surfaced in the run log.
+  "ALTER TABLE automation_pending_actions ADD COLUMN kind TEXT DEFAULT 'action'",
+  "ALTER TABLE automation_pending_actions ADD COLUMN note TEXT",
+  // ITIL-style RBAC: a group can grant its members a custom role's permission
+  // bundle just by membership (see resolveEffectivePermissions in
+  // services/permissions.js), and optionally names an informational manager
+  // -- also reused as a new 'group_manager' approver option on catalog items
+  // (see catalog_items.approver_type below).
+  "ALTER TABLE groups ADD COLUMN default_custom_role_id TEXT",
+  "ALTER TABLE groups ADD COLUMN manager_user_id TEXT",
+  // Catalog items previously only supported approver_role (a base role).
+  // approver_type widens that to also target a specific user or the item's
+  // assignment group's manager, without dropping the existing column --
+  // approver_role/approver_id are only read when relevant to the chosen type.
+  "ALTER TABLE catalog_items ADD COLUMN approver_type TEXT DEFAULT 'role'", // role | user | group_manager
+  "ALTER TABLE catalog_items ADD COLUMN approver_id TEXT",
+  "ALTER TABLE catalog_items ADD COLUMN approver_group_id TEXT",
+  // Reversible soft-delete for tickets (tickets.delete permission, itil_admin
+  // persona) -- consistent with this app's existing "never hard-delete a
+  // ticket" pattern (merge closes and stamps merged_into_id rather than
+  // deleting). Deleted tickets are excluded from every normal list/report the
+  // same way merged/spam tickets already are, and can be restored.
+  "ALTER TABLE tickets ADD COLUMN deleted_at TEXT",
+  // Lets a requester reopen their own resolved/closed incident, or cancel
+  // their own still-open request, through dedicated endpoints rather than
+  // the general PATCH (which stays locked to title/description for them).
+  "ALTER TABLE tickets ADD COLUMN reopened_count INTEGER DEFAULT 0",
+  // Directory Sync: which provider last synced this membership, and the
+  // stable external key used to match it across syncs -- the DN for LDAP,
+  // the object id for Graph. Email is NOT used as the reconciliation key
+  // (it can change); a membership with no directory_provider_id is never
+  // touched by a sync run, so manually-created and OAuth-SSO users are
+  // completely unaffected. See services/directorySync.js.
+  "ALTER TABLE workspace_members ADD COLUMN directory_provider_id TEXT",
+  "ALTER TABLE workspace_members ADD COLUMN directory_external_id TEXT",
+  "ALTER TABLE workspace_members ADD COLUMN directory_synced_at TEXT",
+  // SLA policies upgrade: from 3 fixed fields (priority/category/team, each
+  // an implicit AND, "most fields matched" wins) to a full condition builder
+  // -- same {logic, rules:[{field,operator,value}]} shape and operator set
+  // Business Rules already uses, so it's one condition language app-wide.
+  // `sort_order` replaces "most specific wins" with an explicit, admin-
+  // controlled evaluation order (first matching policy wins, like an ordered
+  // rule list) -- the old priority/category/team columns are left in place,
+  // untouched, purely as a fallback so a pre-existing policy that never got
+  // real `conditions` saved still evaluates identically (see
+  // resolveConditions() in services/sla.js) without a migration script.
+  "ALTER TABLE sla_policies ADD COLUMN conditions TEXT",
+  "ALTER TABLE sla_policies ADD COLUMN sort_order INTEGER DEFAULT 0",
 ];
 for (const sql of ticketColumnMigrations) {
   try {
@@ -605,6 +1257,27 @@ if (!legacyMigratedFlag) {
     );
   }
   db.prepare('INSERT OR REPLACE INTO workspace_settings (workspace_id, key, value) VALUES (?,?,?)').run(SYSTEM_WS, 'business_rules_migrated_v1', '1');
+}
+
+// ---- Workflow graph backfill (idempotent, runs every boot -- not a
+// once-only flag, because seed.js can insert legacy-shape automation rows
+// at any point relative to a one-time flag) — any automation row still
+// missing a graph gets one synthesized from its legacy trigger/conditions/
+// actions columns. ----
+{
+  const legacyRows = db.prepare('SELECT * FROM automations WHERE nodes IS NULL').all();
+  for (const row of legacyRows) {
+    let trigger, conditions, actions;
+    try {
+      trigger = JSON.parse(row.trigger);
+      conditions = JSON.parse(row.conditions || '[]');
+      actions = JSON.parse(row.actions);
+    } catch {
+      continue;
+    }
+    const { nodes, edges } = legacyToGraph(trigger, conditions, actions);
+    db.prepare('UPDATE automations SET nodes = ?, edges = ? WHERE id = ?').run(JSON.stringify(nodes), JSON.stringify(edges), row.id);
+  }
 }
 
 // seed ticket_counters from existing ticket numbers so numbering continues rather than resetting

@@ -1,21 +1,112 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line, CartesianGrid,
 } from 'recharts';
 import {
-  Sparkles, Send, AlertTriangle, Clock, Inbox, Layers, Loader2, RefreshCw, LayoutGrid, Check, ArrowUp, ArrowDown, Eye, EyeOff,
-  Bot, X, ExternalLink, Wand2, Tags, FileText, ChevronRight,
+  Sparkles, AlertTriangle, Clock, Inbox, Layers, Loader2, RefreshCw, LayoutGrid, Check, ArrowUp, ArrowDown, Eye, EyeOff,
+  Bot, ExternalLink, Wand2, ChevronRight, ShieldCheck, Workflow, Heart, ChevronDown, Users, SlidersHorizontal,
 } from 'lucide-react';
 import { api } from '../lib/api.js';
+import { useAuth } from '../context/AuthContext.jsx';
+import { useTranslation } from '../i18n/I18nContext.jsx';
 import StatCard from '../components/StatCard.jsx';
-import PageHeader from '../components/PageHeader.jsx';
 import { PriorityBadge } from '../components/Badge.jsx';
+import Select from '../components/Select.jsx';
+
+function greetingKeyForHour(h) {
+  if (h < 5) return 'dashboard.greetingLateNight';
+  if (h < 12) return 'dashboard.greetingMorning';
+  if (h < 17) return 'dashboard.greetingAfternoon';
+  if (h < 21) return 'dashboard.greetingEvening';
+  return 'dashboard.greetingWorkingLate';
+}
 
 const PRIORITY_COLORS = { critical: '#ef4444', high: '#f59e0b', medium: '#6366f1', low: '#94a3b8' };
 const STATUS_COLORS = { open: '#6366f1', in_progress: '#f59e0b', on_hold: '#94a3b8', resolved: '#10b981', closed: '#64748b' };
 const STAT_ICONS = { openCount: Inbox, slaBreached: AlertTriangle, totalCount: Clock, categoryCount: Layers };
 const PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
+
+const HEALTH_STYLES = {
+  Healthy: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400',
+  Stable: 'bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-400',
+  'At Risk': 'bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400',
+};
+const CHIP_TONE = {
+  green: { border: 'border-emerald-400 dark:border-emerald-500/40', bg: 'bg-emerald-50/70 dark:bg-emerald-500/10', text: 'text-emerald-700 dark:text-emerald-400' },
+  amber: { border: 'border-amber-400 dark:border-amber-500/40', bg: 'bg-amber-50/70 dark:bg-amber-500/10', text: 'text-amber-700 dark:text-amber-400' },
+  blue: { border: 'border-brand-400 dark:border-brand-500/40', bg: 'bg-brand-50/70 dark:bg-brand-500/10', text: 'text-brand-700 dark:text-brand-400' },
+  red: { border: 'border-red-400 dark:border-red-500/40', bg: 'bg-red-50/70 dark:bg-red-500/10', text: 'text-red-600 dark:text-red-400' },
+};
+const EXEC_TONE = { green: 'text-emerald-600 dark:text-emerald-400', red: 'text-red-600 dark:text-red-400', blue: 'text-brand-600 dark:text-brand-400', amber: 'text-amber-600 dark:text-amber-400', purple: 'text-purple-600 dark:text-purple-400' };
+
+const TIME_RANGES = [
+  { value: '7', label: 'Last 7 days' },
+  { value: '30', label: 'Last 30 days' },
+  { value: '90', label: 'Last 90 days' },
+];
+const PRIORITIES = ['critical', 'high', 'medium', 'low'];
+const TYPES = ['incident', 'request', 'problem', 'change'];
+const STATUSES = ['open', 'in_progress', 'on_hold', 'resolved', 'closed'];
+
+function ExecStat({ icon: Icon, value, label, tone }) {
+  return (
+    <div className="flex flex-col items-center text-center gap-1">
+      <Icon size={17} className={EXEC_TONE[tone] || 'text-slate-500 dark:text-slate-400'} />
+      <div className="text-lg font-bold text-slate-800 dark:text-slate-100 leading-none">{value}</div>
+      <div className="text-[10px] text-slate-400 dark:text-slate-500 leading-tight">{label}</div>
+    </div>
+  );
+}
+
+function FilterSelect({ label, value, onChange, options, allLabel = 'All' }) {
+  const normalized = options.map((o) => (
+    typeof o === 'string' ? { value: o, label: `${label}: ${o.replace('_', ' ')}` } : o
+  ));
+  return (
+    <Select
+      size="xs"
+      value={value}
+      onChange={onChange}
+      className="bg-slate-50 dark:bg-slate-800/60 border-slate-200 dark:border-white/10 rounded-lg text-slate-600 dark:text-slate-300 font-medium shadow-none hover:border-slate-300 dark:hover:border-white/20"
+      options={allLabel !== null ? [{ value: '', label: `${label}: ${allLabel}` }, ...normalized] : normalized}
+    />
+  );
+}
+
+function TeamAvatar({ member, selected, onClick }) {
+  const initials = member.name.split(' ').map((p) => p[0]).slice(0, 2).join('').toUpperCase();
+  return (
+    <button onClick={onClick} className="flex flex-col items-center gap-1 shrink-0 group">
+      <div className="relative">
+        <div
+          className={`w-11 h-11 rounded-full flex items-center justify-center text-white text-sm font-semibold ring-2 shadow-sm transition-all ${selected ? 'ring-brand-500' : 'ring-white dark:ring-slate-900 group-hover:ring-brand-200 dark:group-hover:ring-brand-500/40'}`}
+          style={{ backgroundColor: member.avatar_color }}
+        >
+          {initials}
+        </div>
+        <span className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full ring-2 ring-white dark:ring-slate-900 ${member.active ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'}`} />
+      </div>
+      <div className="text-center leading-tight">
+        <div className="text-xs font-medium text-slate-700 dark:text-slate-200 whitespace-nowrap">{member.name.split(' ')[0]}</div>
+        <div className="text-[10px] text-slate-400 dark:text-slate-500 whitespace-nowrap">{member.team || member.role}</div>
+      </div>
+    </button>
+  );
+}
+
+function ChipCard({ chip }) {
+  const tone = CHIP_TONE[chip.tone] || CHIP_TONE.blue;
+  return (
+    <div className={`rounded-xl border-l-4 ${tone.border} ${tone.bg} px-3 py-2.5 min-w-0`}>
+      <div className="flex items-start justify-between gap-1.5 mb-1">
+        <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide leading-tight">{chip.label}</span>
+        <span className={`text-[10px] font-medium ${tone.text} whitespace-nowrap shrink-0`}>{chip.status}</span>
+      </div>
+      <div className="text-xl font-bold text-slate-800 dark:text-slate-100">{chip.value}</div>
+    </div>
+  );
+}
 
 function statValue(metric, stats) {
   if (metric === 'categoryCount') return stats.byCategory.filter((c) => c.category).length;
@@ -199,7 +290,11 @@ function TriageQueue({ tickets, loading, selectedId, onSelect }) {
           <span className="text-xs font-normal text-slate-400 font-mono">{tickets.length} open</span>
         </h3>
       </div>
-      <div className="overflow-x-auto max-h-[420px] overflow-y-auto">
+      {/* Desktop/tablet: the full table, its own scroll region. Hidden below
+          sm: -- a horizontally-scrolling table nested inside a vertically-
+          scrolling panel fights a touch swipe in the wrong axis, so mobile
+          gets the stacked card list below instead of this. */}
+      <div className="hidden sm:block overflow-x-auto max-h-[420px] overflow-y-auto">
         <table className="w-full text-sm">
           <thead className="sticky top-0 bg-white/95 dark:bg-slate-900/95 backdrop-blur text-[10px] uppercase tracking-wide text-slate-400">
             <tr>
@@ -223,8 +318,8 @@ function TriageQueue({ tickets, loading, selectedId, onSelect }) {
                 <tr
                   key={t.id}
                   onClick={() => onSelect(t.id)}
-                  className={`cursor-pointer border-t border-slate-100 dark:border-slate-800 transition-colors ${
-                    t.id === selectedId ? 'bg-brand-50 dark:bg-brand-500/10' : 'hover:bg-slate-50 dark:hover:bg-slate-800/60'
+                  className={`border-t border-slate-100 dark:border-slate-800 ${
+                    t.id === selectedId ? 'cursor-pointer bg-brand-50 dark:bg-brand-500/10' : 'row-interactive'
                   }`}
                 >
                   <td className="px-4 py-2.5"><PriorityBadge priority={t.priority} /></td>
@@ -247,18 +342,52 @@ function TriageQueue({ tickets, loading, selectedId, onSelect }) {
           </tbody>
         </table>
       </div>
+
+      {/* Mobile: a plain vertically-scrolling card list, same data, no
+          horizontal scroll axis to fight with the page's own scroll. */}
+      <div className="sm:hidden divide-y divide-slate-100 dark:divide-slate-800 max-h-[420px] overflow-y-auto">
+        {loading && <div className="text-center py-8 text-slate-400 text-sm">Loading…</div>}
+        {!loading && tickets.length === 0 && <div className="text-center py-8 text-slate-400 text-sm">No open tickets — queue is clear.</div>}
+        {tickets.map((t) => {
+          const pct = slaRiskPct(t);
+          return (
+            <button
+              key={t.id}
+              onClick={() => onSelect(t.id)}
+              className={`w-full text-left px-4 py-3 ${t.id === selectedId ? 'bg-brand-50 dark:bg-brand-500/10' : 'active:bg-slate-50 dark:active:bg-slate-800/60'}`}
+            >
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <PriorityBadge priority={t.priority} />
+                <span className="text-xs text-slate-400 font-mono whitespace-nowrap">{timeAgo(t.created_at)}</span>
+              </div>
+              <div className="font-mono text-[11px] text-slate-400">{t.number}</div>
+              <div className="font-medium text-slate-700 dark:text-slate-200 truncate">{t.title}</div>
+              {t.ai_summary && <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-2 mt-1">{t.ai_summary}</p>}
+              <div className="mt-1.5"><RiskGauge pct={pct} /></div>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
 
-function TicketDetailPanel({ ticketId, onOpenCopilot }) {
+function TicketDetailPanel({ ticketId }) {
   const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [analyzing, setAnalyzing] = useState(false);
+  // Tracks whichever ticket is currently selected so a slow response for a
+  // ticket the user has already clicked away from can't land after a faster
+  // response for the new one and silently overwrite the panel -- the row
+  // stays highlighted on the new ticket while showing the old one's detail.
+  const currentIdRef = useRef(ticketId);
+  currentIdRef.current = ticketId;
 
   const load = async () => {
     if (!ticketId) return;
-    const res = await api.get(`/tickets/${ticketId}`);
+    const requestedId = ticketId;
+    const res = await api.get(`/tickets/${requestedId}`);
+    if (currentIdRef.current !== requestedId) return;
     setData(res);
   };
 
@@ -353,99 +482,17 @@ function TicketDetailPanel({ ticketId, onOpenCopilot }) {
         </div>
       </div>
 
-      <button onClick={onOpenCopilot} className="btn-primary text-xs w-full justify-center">
-        <Bot size={13} /> Open in Sona
+      <button onClick={() => navigate(`/tickets/${ticket.id}?copilot=1`)} className="btn-primary w-full justify-center !py-2.5">
+        <Bot size={15} /> Open in Sona
       </button>
     </div>
   );
 }
 
-function CopilotDrawer({ ticketId, open, onClose }) {
-  const [ticket, setTicket] = useState(null);
-  const [transcript, setTranscript] = useState([]);
-  const [busy, setBusy] = useState('');
-  const endRef = useRef(null);
-
-  useEffect(() => {
-    setTranscript([]);
-    if (ticketId && open) {
-      api.get(`/tickets/${ticketId}`).then((d) => setTicket(d.ticket));
-    }
-  }, [ticketId, open]);
-
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [transcript]);
-
-  const run = async (action, label, endpoint, extract) => {
-    setBusy(action);
-    setTranscript((t) => [...t, { role: 'action', text: label }]);
-    try {
-      const res = await api.post(`/tickets/${ticketId}/ai/${endpoint}`, {});
-      setTranscript((t) => [...t, { role: 'ai', text: extract(res) }]);
-    } catch (e) {
-      setTranscript((t) => [...t, { role: 'error', text: e.message }]);
-    } finally {
-      setBusy('');
-    }
-  };
-
-  return (
-    <div className={`fixed inset-y-0 right-0 w-full sm:w-96 z-40 transition-transform duration-300 ${open ? 'translate-x-0' : 'translate-x-full'}`}>
-      <div className="h-full glass-panel border-l border-white/60 dark:border-white/[0.07] flex flex-col">
-        <div className="flex items-center justify-between px-4 py-3.5 border-b border-slate-100 dark:border-slate-800">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-full bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center">
-              <Bot size={14} className="text-white" />
-            </div>
-            <div>
-              <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">Sona</div>
-              <div className="text-[11px] text-slate-400">{ticket ? <>Working on <span className="font-mono">{ticket.number}</span></> : 'Ticket assistant'}</div>
-            </div>
-          </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"><X size={16} /></button>
-        </div>
-
-        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2.5">
-          {!ticket && <p className="text-sm text-slate-400 text-center mt-6">Select a ticket to bring it into Sona.</p>}
-          {ticket && (
-            <div className="text-xs text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800/60 rounded-lg px-3 py-2">
-              {ticket.title}
-            </div>
-          )}
-          {transcript.map((m, i) => (
-            <div
-              key={i}
-              className={`text-sm rounded-lg px-3 py-2 whitespace-pre-line ${
-                m.role === 'action' ? 'text-xs text-slate-400 italic' :
-                m.role === 'error' ? 'bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400' :
-                'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200'
-              }`}
-            >
-              {m.text}
-            </div>
-          ))}
-          <div ref={endRef} />
-        </div>
-
-        {ticket && (
-          <div className="p-3 border-t border-slate-100 dark:border-slate-800 grid grid-cols-3 gap-1.5">
-            <button disabled={!!busy} onClick={() => run('summarize', 'Summarizing ticket…', 'summarize', (r) => r.summary)} className="btn-secondary text-[11px] flex-col h-14 gap-1">
-              {busy === 'summarize' ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />} Summarize
-            </button>
-            <button disabled={!!busy} onClick={() => run('suggest', 'Drafting a suggested resolution…', 'suggest-resolution', (r) => r.suggestion)} className="btn-secondary text-[11px] flex-col h-14 gap-1">
-              {busy === 'suggest' ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />} Suggest fix
-            </button>
-            <button disabled={!!busy} onClick={() => run('categorize', 'Auto-categorizing…', 'categorize', (r) => `Category: ${r.result.category}${r.result.subcategory ? ' / ' + r.result.subcategory : ''}\nSentiment: ${r.result.sentiment || '—'}`)} className="btn-secondary text-[11px] flex-col h-14 gap-1">
-              {busy === 'categorize' ? <Loader2 size={14} className="animate-spin" /> : <Tags size={14} />} Categorize
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 export default function Dashboard() {
-  const navigate = useNavigate();
+  const { user } = useAuth();
+  const { t } = useTranslation();
+  const [showFilters, setShowFilters] = useState(false);
   const [stats, setStats] = useState(null);
   const [layout, setLayout] = useState(null);
   const [catalog, setCatalog] = useState([]);
@@ -454,26 +501,48 @@ export default function Dashboard() {
   const [insights, setInsights] = useState('');
   const [insightsLoading, setInsightsLoading] = useState(false);
   const [insightsError, setInsightsError] = useState('');
-  const [question, setQuestion] = useState('');
-  const [chat, setChat] = useState([]);
-  const [asking, setAsking] = useState(false);
-  const [showChat, setShowChat] = useState(false);
-  const chatEndRef = useRef(null);
 
   const [queue, setQueue] = useState([]);
   const [queueLoading, setQueueLoading] = useState(true);
   const [selectedId, setSelectedId] = useState(null);
-  const [copilotOpen, setCopilotOpen] = useState(false);
 
+  const [cc, setCc] = useState(null);
+  const [filters, setFilters] = useState({ days: '30', team: '', priority: '', type: '', status: '', owner: '' });
+  const [loadError, setLoadError] = useState('');
+
+  // Each of these three feeds a piece of state the initial render is gated
+  // on (see the "Loading dashboard..." check below) -- without a catch here,
+  // any single failed request (a spent rate limit, a dropped connection)
+  // left that state permanently null and the page stuck loading forever with
+  // no visible error.
   const loadStats = async () => {
-    const { stats } = await api.get('/ai/dashboard-stats');
-    setStats(stats);
+    try {
+      const { stats } = await api.get('/ai/dashboard-stats');
+      setStats(stats);
+    } catch (e) {
+      setLoadError(e.message);
+    }
+  };
+
+  const loadCc = async (f) => {
+    const active = f || filters;
+    const query = new URLSearchParams(Object.entries(active).filter(([, v]) => v)).toString();
+    try {
+      const { stats: command } = await api.get(`/ai/command-center-stats${query ? `?${query}` : ''}`);
+      setCc(command);
+    } catch (e) {
+      setLoadError(e.message);
+    }
   };
 
   const loadLayout = async () => {
-    const [{ layout }, { available }] = await Promise.all([api.get('/dashboard/layout'), api.get('/dashboard/catalog')]);
-    setLayout(layout);
-    setCatalog(available);
+    try {
+      const [{ layout }, { available }] = await Promise.all([api.get('/dashboard/layout'), api.get('/dashboard/catalog')]);
+      setLayout(layout);
+      setCatalog(available);
+    } catch (e) {
+      setLoadError(e.message);
+    }
   };
 
   const loadQueue = async () => {
@@ -498,12 +567,31 @@ export default function Dashboard() {
     loadStats();
     loadLayout();
     loadQueue();
+    loadCc();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chat]);
+  const applyFilter = (key, value) => {
+    const next = { ...filters, [key]: value };
+    setFilters(next);
+    loadCc(next);
+  };
+
+  const resetFilters = () => {
+    const next = { days: '30', team: '', priority: '', type: '', status: '', owner: '' };
+    setFilters(next);
+    loadCc(next);
+  };
+
+  const teamOptions = useMemo(() => {
+    if (!cc) return [];
+    return [...new Set(cc.team.map((m) => m.team).filter(Boolean))];
+  }, [cc]);
+
+  const ownerOptions = useMemo(() => {
+    if (!cc) return [];
+    return cc.team.map((m) => ({ value: m.id, label: m.name }));
+  }, [cc]);
 
   const saveLayout = async (next) => {
     setLayout(next);
@@ -528,94 +616,55 @@ export default function Dashboard() {
     }
   };
 
-  const askAI = async (e) => {
-    e.preventDefault();
-    if (!question.trim()) return;
-    const q = question.trim();
-    setShowChat(true);
-    setChat((c) => [...c, { role: 'user', text: q }]);
-    setQuestion('');
-    setAsking(true);
-    try {
-      const { answer } = await api.post('/ai/ask', { question: q });
-      setChat((c) => [...c, { role: 'ai', text: answer }]);
-    } catch (e) {
-      setChat((c) => [...c, { role: 'ai', text: `Error: ${e.message}` }]);
-    } finally {
-      setAsking(false);
+  if (!stats || !layout || !cc) {
+    if (loadError) {
+      return (
+        <div className="max-w-sm mx-auto py-20 text-center space-y-3">
+          <p className="text-sm text-red-600 dark:text-red-400">{loadError}</p>
+          <button
+            onClick={() => { setLoadError(''); loadStats(); loadLayout(); loadCc(); }}
+            className="btn-secondary text-xs mx-auto"
+          >
+            <RefreshCw size={12} /> Retry
+          </button>
+        </div>
+      );
     }
-  };
-
-  if (!stats || !layout) {
     return <div className="text-slate-400 text-sm py-20 text-center">Loading dashboard…</div>;
   }
 
   const statWidgets = layout.filter((w) => w.type === 'stat');
   const chartWidgets = layout.filter((w) => w.type !== 'stat');
+  const lastUpdated = new Date(cc.generatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const firstName = user?.name?.split(' ')[0] || 'there';
+  const urgent = stats.slaBreached || 0;
 
   return (
     <div className="space-y-6">
-      <PageHeader
-        title="Command Center"
-        description="Live overview of your service desk"
-        actions={
-          <>
-            <button onClick={() => setEditing((e) => !e)} className="btn-secondary">
-              <LayoutGrid size={14} /> {editing ? 'Close' : 'Edit layout'}
-            </button>
-            <button onClick={() => { loadStats(); loadQueue(); }} className="btn-secondary">
-              <RefreshCw size={14} /> Refresh
-            </button>
-          </>
-        }
-      />
-
-      {/* Sona — workspace-wide mode (the robot in the bottom-right corner is
-          also Sona, but scoped to whichever one ticket is selected below) */}
-      <div>
-        <div className="flex items-center gap-1.5 mb-1.5 px-1">
-          <Bot size={13} className="text-brand-600 dark:text-brand-400" />
-          <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Sona</span>
-          <span className="text-xs text-slate-400">— ask about your whole service desk</span>
+      {/* Personalized greeting instead of a generic page title -- the first
+          thing read on the page says who it's for and what needs attention
+          today, not an abstract "Command Center" label. Layout/Refresh
+          controls live here too so there's one header, not a header plus a
+          second exec-status block competing for the same visual weight. */}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-display font-bold text-slate-800 dark:text-slate-100 tracking-tight">
+            {t(greetingKeyForHour(new Date().getHours()))} {firstName}
+          </h1>
+          <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
+            {urgent > 0
+              ? `${stats.openCount} open ticket${stats.openCount === 1 ? '' : 's'}, ${urgent} at SLA risk — here's where to start.`
+              : `${stats.openCount} open ticket${stats.openCount === 1 ? '' : 's'} and nothing breaching SLA right now.`}
+          </p>
         </div>
-        <form onSubmit={askAI} className="command-glow rounded-full">
-          <div className="flex items-center gap-3 card !rounded-full px-4 py-1">
-            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center shrink-0">
-              <Bot size={14} className="text-white" />
-            </div>
-            <input
-              className="flex-1 bg-transparent border-none outline-none text-sm py-2.5 text-slate-800 dark:text-slate-100 placeholder:text-slate-400"
-              placeholder="Ask Sona which tickets need attention, or anything about your service desk…"
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              onFocus={() => chat.length > 0 && setShowChat(true)}
-            />
-            <button type="submit" disabled={asking} className="btn-primary !rounded-full !px-3 !py-1.5 shrink-0">
-              {asking ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-            </button>
-          </div>
-        </form>
-        {showChat && (
-          <div className="card p-3 mt-2 animate-fade-in">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">Sona</span>
-              <button onClick={() => setShowChat(false)} className="text-slate-400 hover:text-slate-600"><X size={14} /></button>
-            </div>
-            <div className="max-h-56 overflow-y-auto space-y-2 pr-1">
-              {chat.map((m, i) => (
-                <div key={i} className={`text-sm rounded-lg px-3 py-2 max-w-[85%] whitespace-pre-line ${m.role === 'user' ? 'bg-brand-600 text-white ml-auto' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200'}`}>
-                  {m.text}
-                </div>
-              ))}
-              {asking && (
-                <div className="text-sm rounded-lg px-3 py-2 bg-slate-100 dark:bg-slate-800 text-slate-400 w-fit flex items-center gap-1.5">
-                  <Loader2 size={12} className="animate-spin" /> thinking…
-                </div>
-              )}
-              <div ref={chatEndRef} />
-            </div>
-          </div>
-        )}
+        <div className="flex items-center gap-2 shrink-0">
+          <button onClick={() => setEditing((e) => !e)} className="btn-secondary">
+            <LayoutGrid size={14} /> {editing ? 'Close' : 'Edit layout'}
+          </button>
+          <button onClick={() => { loadStats(); loadQueue(); loadCc(); }} className="btn-secondary">
+            <RefreshCw size={14} /> Refresh
+          </button>
+        </div>
       </div>
 
       {editing && (
@@ -623,12 +672,21 @@ export default function Dashboard() {
       )}
       {savingLayout && <div className="text-xs text-slate-400">Saving layout…</div>}
 
+      {/* Row 1 — the numbers a person opens this page to check first. */}
       {statWidgets.length > 0 && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {statWidgets.map((w) => <Widget key={w.id} widget={w} stats={stats} />)}
         </div>
       )}
 
+      {/* Row 2 — the actual work: what needs picking up right now. */}
+      <div className="grid grid-cols-1 lg:grid-cols-[1.6fr_1fr] gap-4 items-start">
+        <TriageQueue tickets={queue} loading={queueLoading} selectedId={selectedId} onSelect={setSelectedId} />
+        <TicketDetailPanel ticketId={selectedId} />
+      </div>
+
+      {/* Row 3 — trend charts + AI insights: a quick visual pulse, useful
+          but secondary to the queue above. */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {chartWidgets.map((w) => (
           <div key={w.id} className={w.type === 'line' || w.type === 'bar' ? 'lg:col-span-2' : ''}>
@@ -660,22 +718,93 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Predictive Triage Queue — master/detail */}
-      <div className="grid grid-cols-1 lg:grid-cols-[1.6fr_1fr] gap-4 items-start">
-        <TriageQueue tickets={queue} loading={queueLoading} selectedId={selectedId} onSelect={setSelectedId} />
-        <TicketDetailPanel ticketId={selectedId} onOpenCopilot={() => setCopilotOpen(true)} />
+      {/* Row 4 — executive rollup: the bigger-picture health/maturity view,
+          real and live, just not what you need to start your day. */}
+      <div className="flex flex-col xl:flex-row gap-4">
+        <div className="card p-4 flex-1">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wide">Executive Status</span>
+            <span className="text-[11px] text-slate-400 dark:text-slate-500">Updated {lastUpdated}</span>
+          </div>
+          <div className="grid grid-cols-3 sm:grid-cols-5 gap-3">
+            <ExecStat icon={ShieldCheck} value={`${cc.execStatus.reliabilityHealth}%`} label="Reliability" tone="green" />
+            <ExecStat icon={AlertTriangle} value={cc.execStatus.openRisks} label="Open Risks" tone="red" />
+            <ExecStat icon={Workflow} value={`${cc.execStatus.automationCoverage}%`} label="Automation" tone="blue" />
+            <ExecStat icon={Heart} value={cc.execStatus.csatScore != null ? `${cc.execStatus.csatScore}%` : '—'} label="CSAT" tone="purple" />
+            <ExecStat icon={ShieldCheck} value={`${cc.execStatus.cabApprovalRate}%`} label="CAB Approved" tone="amber" />
+          </div>
+        </div>
+        <div className="flex flex-row xl:flex-col flex-wrap items-start gap-2 xl:justify-center xl:w-56 shrink-0">
+          <span className="badge bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> LIVE
+          </span>
+          <span className={`badge ${HEALTH_STYLES[cc.operatingHealth] || 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'}`}>
+            Operating Health: {cc.operatingHealth}
+          </span>
+          <span className="badge bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-400">
+            Maturity: {cc.maturityStage.from} → {cc.maturityStage.to}
+          </span>
+        </div>
       </div>
 
-      {!copilotOpen && (
+      {/* Row 5 — filters, team roster, orchestration detail: advanced /
+          deep-dive tools tucked behind a toggle so they don't compete with
+          the actionable rows above for first-glance attention. */}
+      <div>
         <button
-          onClick={() => setCopilotOpen(true)}
-          className="fixed bottom-6 right-6 z-30 w-14 h-14 rounded-full bg-gradient-to-br from-brand-500 to-brand-700 shadow-glow-brand flex items-center justify-center text-white hover:scale-105 transition-transform"
-          title="Open Sona"
+          onClick={() => setShowFilters((s) => !s)}
+          className="text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 flex items-center gap-1.5 mb-2"
         >
-          <Bot size={22} />
+          <SlidersHorizontal size={13} /> Filters, team & orchestration detail
+          <ChevronDown size={13} className={`transition-transform ${showFilters ? 'rotate-180' : ''}`} />
         </button>
-      )}
-      <CopilotDrawer ticketId={selectedId} open={copilotOpen} onClose={() => setCopilotOpen(false)} />
+
+        {showFilters && (
+          <div className="space-y-4 animate-fade-in">
+            <div className="card p-3 flex flex-wrap items-center gap-2">
+              <FilterSelect label="Team" value={filters.team} onChange={(v) => applyFilter('team', v)} options={teamOptions} />
+              <FilterSelect label="Priority" value={filters.priority} onChange={(v) => applyFilter('priority', v)} options={PRIORITIES} />
+              <FilterSelect label="Type" value={filters.type} onChange={(v) => applyFilter('type', v)} options={TYPES} />
+              <FilterSelect label="Status" value={filters.status} onChange={(v) => applyFilter('status', v)} options={STATUSES} />
+              <FilterSelect label="Owner" value={filters.owner} onChange={(v) => applyFilter('owner', v)} options={ownerOptions} />
+              <FilterSelect label="Time Range" value={filters.days} onChange={(v) => applyFilter('days', v)} options={TIME_RANGES} allLabel={null} />
+              <button onClick={resetFilters} className="text-xs text-brand-600 dark:text-brand-400 hover:underline ml-auto">Reset filters</button>
+            </div>
+
+            <div className="card p-3 flex items-center gap-4 overflow-x-auto">
+              <button onClick={() => applyFilter('owner', '')} className="flex flex-col items-center gap-1 shrink-0">
+                <div className={`w-11 h-11 rounded-full flex items-center justify-center ring-2 ${!filters.owner ? 'ring-brand-500 bg-brand-50 dark:bg-brand-500/10' : 'ring-slate-200 dark:ring-white/10 bg-slate-100 dark:bg-slate-800'}`}>
+                  <Users size={17} className={!filters.owner ? 'text-brand-600 dark:text-brand-400' : 'text-slate-400 dark:text-slate-500'} />
+                </div>
+                <div className="text-center leading-tight">
+                  <div className="text-xs font-medium text-slate-700 dark:text-slate-200 whitespace-nowrap">Full Team</div>
+                  <div className="text-[10px] text-slate-400 dark:text-slate-500 whitespace-nowrap">{cc.team.length} agents</div>
+                </div>
+              </button>
+              <div className="w-px h-10 bg-slate-100 dark:bg-white/10 shrink-0" />
+              {cc.team.map((member) => (
+                <TeamAvatar
+                  key={member.id}
+                  member={member}
+                  selected={filters.owner === member.id}
+                  onClick={() => applyFilter('owner', filters.owner === member.id ? '' : member.id)}
+                />
+              ))}
+            </div>
+
+            {cc.orchestration.map((section) => (
+              <div key={section.title}>
+                <div className="text-xs font-semibold text-brand-600 dark:text-brand-400 uppercase tracking-wide mb-2">{section.title} →</div>
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                  {section.chips.map((chip) => (
+                    <ChipCard key={chip.label} chip={chip} />
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

@@ -6,6 +6,7 @@ import { TypeBadge } from '../components/Badge.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import EmptyState from '../components/EmptyState.jsx';
 import { SkeletonRows } from '../components/Skeleton.jsx';
+import Select from '../components/Select.jsx';
 
 const TYPES = ['incident', 'request', 'problem', 'change'];
 
@@ -16,18 +17,28 @@ export default function Approvals() {
   const [users, setUsers] = useState([]);
   const [approvals, setApprovals] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [busy, setBusy] = useState('');
   const [comments, setComments] = useState({});
   const navigate = useNavigate();
 
   const load = async () => {
     setLoading(true);
-    const params = new URLSearchParams({ status: tab });
-    if (type) params.set('type', type);
-    if (requesterId) params.set('requester_id', requesterId);
-    const { approvals } = await api.get(`/approvals?${params.toString()}`);
-    setApprovals(approvals);
-    setLoading(false);
+    setLoadError('');
+    try {
+      const params = new URLSearchParams({ status: tab });
+      if (type) params.set('type', type);
+      if (requesterId) params.set('requester_id', requesterId);
+      const { approvals } = await api.get(`/approvals?${params.toString()}`);
+      setApprovals(approvals);
+    } catch (e) {
+      // Without this catch, a failed request left `loading` stuck true
+      // forever -- agents/admins couldn't see or act on any pending
+      // approval, with nothing telling them why.
+      setLoadError(e.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => { load(); }, [tab, type, requesterId]);
@@ -54,18 +65,24 @@ export default function Approvals() {
           </button>
         ))}
         <div className="w-px h-5 bg-slate-200 dark:bg-slate-700 mx-1" />
-        <select className="input w-auto text-xs py-1.5" value={type} onChange={(e) => setType(e.target.value)}>
-          <option value="">All types</option>
-          {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-        </select>
-        <select className="input w-auto text-xs py-1.5" value={requesterId} onChange={(e) => setRequesterId(e.target.value)}>
-          <option value="">All requesters</option>
-          {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
-        </select>
+        <Select
+          size="sm" className="w-auto" value={type} onChange={setType}
+          options={[{ value: '', label: 'All types' }, ...TYPES.map((t) => ({ value: t, label: t }))]}
+        />
+        <Select
+          size="sm" className="w-auto" value={requesterId} onChange={setRequesterId}
+          options={[{ value: '', label: 'All requesters' }, ...users.map((u) => ({ value: u.id, label: u.name }))]}
+        />
       </div>
 
+      {loadError && !loading && (
+        <div className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 rounded-lg px-3 py-2 flex items-center justify-between gap-3">
+          <span>{loadError}</span>
+          <button onClick={load} className="btn-secondary text-xs shrink-0">Retry</button>
+        </div>
+      )}
       {loading && <SkeletonRows count={3} />}
-      {!loading && approvals.length === 0 && (
+      {!loading && !loadError && approvals.length === 0 && (
         <EmptyState icon={CheckSquare} description={`Nothing ${tab} right now.`} />
       )}
 

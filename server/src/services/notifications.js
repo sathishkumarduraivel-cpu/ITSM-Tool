@@ -1,10 +1,19 @@
 import { db, uid } from '../db.js';
+import { sendToUser } from './realtime.js';
 
+// This is the single choke point almost every notification-worthy event in
+// the app already flows through (approvals, escalations, major incidents,
+// groups, workspaces, catalog requests, HR cases...) -- pushing the
+// real-time event from here, rather than at each of those dozens of call
+// sites, makes all of them instant for free instead of waiting out
+// NotificationBell's 20s poll (kept as a fallback, not removed).
 export function notifyUser(userId, title, body, link, workspaceId) {
   if (!userId) return;
+  const id = uid('ntf');
   db.prepare('INSERT INTO notifications (id, user_id, title, body, link, workspace_id) VALUES (?,?,?,?,?,?)').run(
-    uid('ntf'), userId, title, body || '', link || null, workspaceId || null
+    id, userId, title, body || '', link || null, workspaceId || null
   );
+  if (workspaceId) sendToUser(workspaceId, userId, 'notification.new', { id, title, body, link });
 }
 
 export function notifyRole(role, title, body, link, workspaceId) {

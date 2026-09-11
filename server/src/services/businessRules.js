@@ -18,6 +18,13 @@
 //   validate_field              -- format check (regex/min_length/max_length/number_range) -- an addition
 //                                   beyond the 6 requested actions, carried forward from the
 //                                   previous engine rather than dropped
+//   block                       -- refuses the whole save with a custom message when this rule's
+//                                   conditions match, regardless of which field(s) they check --
+//                                   e.g. "IF status=resolved AND all_tasks_completed=false THEN
+//                                   block: Complete all tasks before resolving." Unlike every other
+//                                   action, it doesn't target a field (fieldStates has no natural
+//                                   home for "stop the whole record"), so it's tracked as a
+//                                   record-level flag instead of a per-field one.
 import { db, uid } from '../db.js';
 
 const ENUM_OPTIONS = {
@@ -142,9 +149,31 @@ export function evaluateBusinessRules(workspaceId, ticketType, values, fieldOpti
     options: fieldOptionsMap[field] ? [...fieldOptionsMap[field]] : null,
   });
 
+  // A field that any active rule conditionally shows is "governed" -- an
+  // admin writing "IF category is not empty -> show subcategory" means
+  // subcategory is hidden until that's true, not visible-by-default with an
+  // optional extra show on top. So any field targeted by a show_field action
+  // starts hidden here, *before* rules run, regardless of whether that
+  // rule's condition currently matches -- only a rule that actually matches
+  // can flip it back to visible. A field only ever hidden conditionally
+  // (hide_field, no show_field) is unaffected and keeps defaulting visible,
+  // same as a field with no rules at all.
+  for (const rule of rules) {
+    for (const action of rule.actions) {
+      if (action.type === 'show_field') stateFor(action.field).visible = false;
+    }
+  }
+
   for (const rule of rules) {
     if (!conditionsMet(rule.conditions, values)) continue;
     for (const action of rule.actions) {
+      if (action.type === 'block') {
+        // First match wins, same as every other validation error this
+        // function's caller surfaces -- record-level, not field-level, so it
+        // lives on fieldStates itself rather than inside stateFor(field).
+        if (!fieldStates.__blocked) fieldStates.__blocked = action.message || 'This change is not allowed right now.';
+        continue;
+      }
       const state = stateFor(action.field);
       switch (action.type) {
         case 'show_field':
@@ -185,6 +214,7 @@ export function evaluateBusinessRules(workspaceId, ticketType, values, fieldOpti
 // checks since not every field is resubmitted.
 export function applyBusinessRules(workspaceId, ticketType, values, fieldOptionsMap = {}, { partial = false } = {}) {
   const fieldStates = evaluateBusinessRules(workspaceId, ticketType, values, fieldOptionsMap);
+  if (fieldStates.__blocked) return fieldStates.__blocked;
   for (const [field, state] of Object.entries(fieldStates)) {
     if (state.autoValue !== undefined) {
       values[field] = state.autoValue;

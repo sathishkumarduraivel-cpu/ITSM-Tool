@@ -1,290 +1,149 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Plus, Search, Loader2 } from 'lucide-react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { motion } from 'framer-motion';
+import { Plus, Search, Loader2, Check, GitMerge, X } from 'lucide-react';
 import { api } from '../lib/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { PriorityBadge, StatusBadge, TypeBadge } from '../components/Badge.jsx';
-import Modal from '../components/Modal.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import { SkeletonRows } from '../components/Skeleton.jsx';
-import { useBusinessRules } from '../hooks/useBusinessRules.js';
+import NewTicketModal from '../components/NewTicketModal.jsx';
+import Modal from '../components/Modal.jsx';
+import { RevealGroup, RevealItem } from '../components/Reveal.jsx';
+import { useRealtimeEvent } from '../context/RealtimeContext.jsx';
+import Select from '../components/Select.jsx';
 
 const ALL_TYPES = ['incident', 'request', 'problem', 'change'];
 const STATUSES = ['open', 'pending_approval', 'in_progress', 'on_hold', 'resolved', 'closed'];
 const PRIORITIES = ['low', 'medium', 'high', 'critical'];
-const RISKS = ['low', 'medium', 'high'];
 
-function NewTicketModal({ onClose, onCreated, availableTypes }) {
-  const [form, setForm] = useState({
-    title: '', description: '', type: availableTypes[0], priority: 'medium',
-    category: '', subcategory: '', team: '', impact: 'medium',
-    risk: 'medium', planned_start: '', planned_end: '', rollback_plan: '',
-    catalog_item_id: '', custom: {},
-  });
-  const [groups, setGroups] = useState([]);
-  const [customFields, setCustomFields] = useState([]);
-  const [catalogItems, setCatalogItems] = useState([]);
-  const [saving, setSaving] = useState(false);
+// Picks which of the selected tickets survives a merge -- the rest are
+// closed, their comments/attachments move onto the survivor, and their
+// requesters become read-only watchers on it instead of losing visibility.
+function MergeModal({ tickets, onClose, onMerged }) {
+  const [primaryId, setPrimaryId] = useState(tickets[0]?.id || '');
+  const [merging, setMerging] = useState(false);
   const [error, setError] = useState('');
-  const isChange = form.type === 'change';
-  const isRequest = form.type === 'request';
-  const catalogItemName = catalogItems.find((i) => i.id === form.catalog_item_id)?.name || '';
-  // Business Rules can also target/react to custom fields and the synthetic
-  // "Service Item" field, so give it a flat view (built-ins + form.custom's
-  // keys + the resolved service item name) to evaluate against.
-  const liveValues = { ...form, ...form.custom, catalog_item_name: catalogItemName };
-  const fieldRules = useBusinessRules(form.type, liveValues);
 
-  useEffect(() => { api.get('/groups').then(({ groups }) => setGroups(groups)).catch(() => setGroups([])); }, []);
-  useEffect(() => {
-    api.get(`/custom-fields?ticket_type=${form.type}`).then(({ fields }) => setCustomFields(fields)).catch(() => setCustomFields([]));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form.type]);
-  useEffect(() => {
-    if (form.type !== 'request') { setCatalogItems([]); return; }
-    api.get('/catalog/items').then(({ items }) => setCatalogItems(items)).catch(() => setCatalogItems([]));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form.type]);
-
-  const setCustom = (key, value) => setForm((f) => ({ ...f, custom: { ...f.custom, [key]: value } }));
-
-  // A "Set Field Value" action auto-populates a field -- sync it into real
-  // form state as soon as its rule matches. Runs every render (cheap, pure)
-  // but only ever calls setForm when a computed value actually differs, so
-  // it settles after one extra render instead of looping.
-  useEffect(() => {
-    const builtinAuto = ['priority', 'category', 'subcategory', 'team', 'impact', 'risk', 'planned_start', 'planned_end', 'rollback_plan']
-      .reduce((acc, f) => {
-        const v = fieldRules.getAutoValue(f);
-        if (v !== undefined && form[f] !== v) acc[f] = v;
-        return acc;
-      }, {});
-    const customAuto = customFields.reduce((acc, f) => {
-      const v = fieldRules.getAutoValue(f.field_key);
-      if (v !== undefined && form.custom[f.field_key] !== v) acc[f.field_key] = v;
-      return acc;
-    }, {});
-    if (Object.keys(builtinAuto).length || Object.keys(customAuto).length) {
-      setForm((prev) => ({ ...prev, ...builtinAuto, custom: { ...prev.custom, ...customAuto } }));
-    }
-  });
-
-  // Every field below falls back to its current hardcoded default when no
-  // Business Rule exists for it, and is otherwise fully governed by that
-  // rule — visibility, requiredness, conditions, format, options.
-  const showPriority = fieldRules.isVisible('priority', true);
-  const showCategory = fieldRules.isVisible('category', true);
-  const showSubcategory = fieldRules.isVisible('subcategory', true);
-  const showTeam = fieldRules.isVisible('team', true);
-  const showImpact = fieldRules.isVisible('impact', true);
-  const showServiceItem = isRequest && fieldRules.isVisible('catalog_item_name', true);
-  const showRisk = fieldRules.isVisible('risk', isChange);
-  const showPlannedStart = fieldRules.isVisible('planned_start', isChange);
-  const showPlannedEnd = fieldRules.isVisible('planned_end', isChange);
-  const showRollbackPlan = fieldRules.isVisible('rollback_plan', isChange);
-  const showChangeSection = showRisk || showPlannedStart || showPlannedEnd || showRollbackPlan;
-
-  const priorityOptions = fieldRules.getOptions('priority', PRIORITIES);
-  const impactOptions = fieldRules.getOptions('impact', RISKS);
-  const riskOptions = fieldRules.getOptions('risk', RISKS);
-  const teamOptions = fieldRules.getOptions('team', groups.map((g) => g.name));
-
-  const ALL_RULED_FIELDS = ['priority', 'category', 'subcategory', 'team', 'impact', 'risk', 'planned_start', 'planned_end', 'rollback_plan'];
-
-  const submit = async (e) => {
-    e.preventDefault();
+  const submit = async () => {
+    setMerging(true);
     setError('');
-    const firstError = ALL_RULED_FIELDS.map((f) => fieldRules.getError(f))
-      .concat(customFields.map((f) => fieldRules.getError(f.field_key)))
-      .concat(showServiceItem && fieldRules.isRequired('catalog_item_name') && !form.catalog_item_id ? 'Service Item is required.' : null)
-      .find(Boolean);
-    if (firstError) { setError(firstError); return; }
-    setSaving(true);
     try {
-      const { ticket } = await api.post('/tickets', form);
-      onCreated(ticket);
+      const duplicate_ids = tickets.filter((t) => t.id !== primaryId).map((t) => t.id);
+      const result = await api.post('/tickets/merge', { primary_id: primaryId, duplicate_ids });
+      onMerged(result);
     } catch (e) {
       setError(e.message);
     } finally {
-      setSaving(false);
+      setMerging(false);
     }
   };
 
   return (
-    <Modal title="New ticket" onClose={onClose}>
-      <form onSubmit={submit} className="space-y-3">
+    <Modal title="Merge tickets" onClose={onClose} maxWidth="max-w-lg">
+      <div className="space-y-3">
         {error && <div className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 rounded-lg px-3 py-2">{error}</div>}
-        <div>
-          <label className="label">Title</label>
-          <input className="input" required value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
-        </div>
-        <div>
-          <label className="label">Description</label>
-          <textarea className="input" rows={3} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
-        </div>
-        <div className="grid grid-cols-3 gap-3">
-          <div>
-            <label className="label">Type</label>
-            <select className="input" value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
-              {availableTypes.map((t) => <option key={t} value={t}>{t}</option>)}
-            </select>
-          </div>
-          {showPriority && (
-            <div>
-              <label className="label">Priority{fieldRules.isRequired('priority') && ' *'}</label>
-              <select className="input" required={fieldRules.isRequired('priority')} value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })}>
-                {priorityOptions.map((p) => <option key={p} value={p}>{p}</option>)}
-              </select>
-            </div>
-          )}
-          {showCategory && (
-            <div>
-              <label className="label">Category{fieldRules.isRequired('category') && ' *'}</label>
-              <input className="input" required={fieldRules.isRequired('category')} value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} placeholder="Optional" />
-              {fieldRules.getError('category') && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('category')}</p>}
-            </div>
-          )}
-        </div>
-
-        {showServiceItem && (
-          <div>
-            <label className="label">Service Item{fieldRules.isRequired('catalog_item_name') && ' *'}</label>
-            <select
-              className="input"
-              required={fieldRules.isRequired('catalog_item_name')}
-              value={form.catalog_item_id}
-              onChange={(e) => setForm({ ...form, catalog_item_id: e.target.value })}
+        <p className="text-sm text-slate-500 dark:text-slate-400">
+          Pick which ticket survives. The others will be closed, their comments and attachments moved onto it, and their requesters kept as read-only watchers so they don't lose visibility.
+        </p>
+        <div className="space-y-1.5">
+          {tickets.map((t) => (
+            <label
+              key={t.id}
+              className={`flex items-center gap-2.5 rounded-lg px-3 py-2 cursor-pointer border transition-colors ${primaryId === t.id ? 'border-brand-400 bg-brand-50 dark:bg-brand-500/10' : 'border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800/60'}`}
             >
-              <option value="">Choose a service item…</option>
-              {catalogItems
-                .filter((item) => fieldRules.getOptions('catalog_item_name', catalogItems.map((i) => i.name)).includes(item.name))
-                .map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-            </select>
-            {fieldRules.getError('catalog_item_name') && (
-              <p className="text-xs text-red-600 mt-1">{fieldRules.getError('catalog_item_name')}</p>
-            )}
-          </div>
-        )}
-
-        {(showSubcategory || showTeam || showImpact) && (
-          <div className="grid grid-cols-3 gap-3">
-            {showSubcategory && (
-              <div>
-                <label className="label">Subcategory{fieldRules.isRequired('subcategory') && ' *'}</label>
-                <input className="input" required={fieldRules.isRequired('subcategory')} value={form.subcategory} onChange={(e) => setForm({ ...form, subcategory: e.target.value })} placeholder="Optional" />
-                {fieldRules.getError('subcategory') && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('subcategory')}</p>}
+              <input type="radio" name="primary" checked={primaryId === t.id} onChange={() => setPrimaryId(t.id)} />
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium text-slate-800 dark:text-slate-100 truncate">{t.number} — {t.title}</div>
+                <div className="text-xs text-slate-400 capitalize">{t.status.replace('_', ' ')} · {t.priority}</div>
               </div>
-            )}
-            {showTeam && (
-              <div>
-                <label className="label">Group{fieldRules.isRequired('team') && ' *'}</label>
-                <select className="input" required={fieldRules.isRequired('team')} value={form.team} onChange={(e) => setForm({ ...form, team: e.target.value })}>
-                  <option value="">Unassigned</option>
-                  {teamOptions.map((name) => <option key={name} value={name}>{name}</option>)}
-                </select>
-              </div>
-            )}
-            {showImpact && (
-              <div>
-                <label className="label">Impact{fieldRules.isRequired('impact') && ' *'}</label>
-                <select className="input" required={fieldRules.isRequired('impact')} value={form.impact} onChange={(e) => setForm({ ...form, impact: e.target.value })}>
-                  {impactOptions.map((r) => <option key={r} value={r}>{r}</option>)}
-                </select>
-              </div>
-            )}
-          </div>
-        )}
-
-        {customFields.map((f) => {
-          const visible = fieldRules.isVisible(f.field_key, true);
-          if (!visible) return null;
-          const required = fieldRules.isRequired(f.field_key, !!f.required);
-          const value = form.custom[f.field_key];
-          const err = fieldRules.getError(f.field_key);
-          const options = fieldRules.getOptions(f.field_key, f.options);
-          return (
-            <div key={f.id}>
-              <label className="label">{f.label}{required && ' *'}</label>
-              {f.field_type === 'text' && (
-                <input className="input" required={required} value={value || ''} onChange={(e) => setCustom(f.field_key, e.target.value)} />
-              )}
-              {f.field_type === 'textarea' && (
-                <textarea className="input" rows={3} required={required} value={value || ''} onChange={(e) => setCustom(f.field_key, e.target.value)} />
-              )}
-              {f.field_type === 'select' && (
-                <select className="input" required={required} value={value || ''} onChange={(e) => setCustom(f.field_key, e.target.value)}>
-                  <option value="">Choose…</option>
-                  {options.map((o) => <option key={o} value={o}>{o}</option>)}
-                </select>
-              )}
-              {f.field_type === 'multiselect' && (
-                <div className="input h-auto flex flex-wrap gap-x-4 gap-y-1.5 py-2.5">
-                  {options.map((o) => {
-                    const arr = Array.isArray(value) ? value : [];
-                    return (
-                      <label key={o} className="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-300">
-                        <input
-                          type="checkbox"
-                          checked={arr.includes(o)}
-                          onChange={(e) => setCustom(f.field_key, e.target.checked ? [...arr, o] : arr.filter((v) => v !== o))}
-                        />
-                        {o}
-                      </label>
-                    );
-                  })}
-                </div>
-              )}
-              {err && <p className="text-xs text-red-600 mt-1">{err}</p>}
-            </div>
-          );
-        })}
-
-        {showChangeSection && (
-          <div className="space-y-3 border-t border-slate-100 dark:border-slate-800 pt-3">
-            {isChange && <p className="text-xs text-slate-500">Change requests go through Change Advisory Board approval before they can move to in-progress.</p>}
-            <div className="grid grid-cols-3 gap-3">
-              {showRisk && (
-                <div>
-                  <label className="label">Risk{fieldRules.isRequired('risk') && ' *'}</label>
-                  <select className="input" required={fieldRules.isRequired('risk')} value={form.risk} onChange={(e) => setForm({ ...form, risk: e.target.value })}>
-                    {riskOptions.map((r) => <option key={r} value={r}>{r}</option>)}
-                  </select>
-                  {fieldRules.getError('risk') && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('risk')}</p>}
-                </div>
-              )}
-              {showPlannedStart && (
-                <div>
-                  <label className="label">Planned start{fieldRules.isRequired('planned_start') && ' *'}</label>
-                  <input type="datetime-local" className="input" required={fieldRules.isRequired('planned_start')} value={form.planned_start} onChange={(e) => setForm({ ...form, planned_start: e.target.value })} />
-                  {fieldRules.getError('planned_start') && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('planned_start')}</p>}
-                </div>
-              )}
-              {showPlannedEnd && (
-                <div>
-                  <label className="label">Planned end{fieldRules.isRequired('planned_end') && ' *'}</label>
-                  <input type="datetime-local" className="input" required={fieldRules.isRequired('planned_end')} value={form.planned_end} onChange={(e) => setForm({ ...form, planned_end: e.target.value })} />
-                  {fieldRules.getError('planned_end') && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('planned_end')}</p>}
-                </div>
-              )}
-            </div>
-            {showRollbackPlan && (
-              <div>
-                <label className="label">Rollback plan{fieldRules.isRequired('rollback_plan') && ' *'}</label>
-                <textarea className="input" rows={2} required={fieldRules.isRequired('rollback_plan')} value={form.rollback_plan} onChange={(e) => setForm({ ...form, rollback_plan: e.target.value })} />
-                {fieldRules.getError('rollback_plan') && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('rollback_plan')}</p>}
-              </div>
-            )}
-          </div>
-        )}
-
+              {primaryId === t.id && <span className="badge bg-brand-100 text-brand-700 dark:bg-brand-500/20 dark:text-brand-400 shrink-0">Keep this one</span>}
+            </label>
+          ))}
+        </div>
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
-          <button type="submit" disabled={saving} className="btn-primary">
-            {saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Create ticket
+          <button onClick={submit} disabled={merging} className="btn-primary">
+            {merging ? <Loader2 size={14} className="animate-spin" /> : <GitMerge size={14} />} Merge {tickets.length - 1} into this one
           </button>
         </div>
-      </form>
+      </div>
     </Modal>
+  );
+}
+
+function BulkActionBar({ selectedTickets, onClear, onDone, agents, groups }) {
+  const [bulk, setBulk] = useState({ status: '', priority: '', assignee_id: '', team: '' });
+  const [applying, setApplying] = useState(false);
+  const [error, setError] = useState('');
+  const [mergeOpen, setMergeOpen] = useState(false);
+  const hasEdits = Object.values(bulk).some(Boolean);
+
+  const apply = async () => {
+    const updates = Object.fromEntries(Object.entries(bulk).filter(([, v]) => v !== ''));
+    if (!Object.keys(updates).length) return;
+    setApplying(true);
+    setError('');
+    try {
+      const result = await api.post('/tickets/bulk-update', { ticket_ids: selectedTickets.map((t) => t.id), updates });
+      if (result.failed.length) {
+        setError(`${result.succeeded.length} updated, ${result.failed.length} failed — ${result.failed.map((f) => `${f.number || f.id}: ${f.error}`).join('; ')}`);
+      }
+      setBulk({ status: '', priority: '', assignee_id: '', team: '' });
+      onDone();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  return (
+    <div className="card p-3 bg-brand-50/60 dark:bg-brand-500/5 border-brand-200 dark:border-brand-500/20 space-y-2 animate-fade-in">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-sm font-semibold text-brand-700 dark:text-brand-400">{selectedTickets.length} selected</span>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setMergeOpen(true)} disabled={selectedTickets.length < 2} className="btn-secondary text-xs">
+            <GitMerge size={12} /> Merge
+          </button>
+          <button onClick={onClear} className="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 flex items-center gap-1 py-1.5 px-1 -m-1"><X size={12} /> Clear</button>
+        </div>
+      </div>
+      {error && <div className="text-xs text-red-600 bg-red-50 dark:bg-red-500/10 rounded-md px-2 py-1.5">{error}</div>}
+      <div className="flex flex-wrap items-center gap-2">
+        <Select
+          size="sm" className="w-auto min-w-[140px]" placeholder="Set status…"
+          value={bulk.status} onChange={(v) => setBulk({ ...bulk, status: v })}
+          options={STATUSES.map((s) => ({ value: s, label: s.replace('_', ' ') }))}
+        />
+        <Select
+          size="sm" className="w-auto min-w-[130px]" placeholder="Set priority…"
+          value={bulk.priority} onChange={(v) => setBulk({ ...bulk, priority: v })}
+          options={PRIORITIES}
+        />
+        <Select
+          size="sm" className="w-auto min-w-[140px]" placeholder="Assign to…"
+          value={bulk.assignee_id} onChange={(v) => setBulk({ ...bulk, assignee_id: v })}
+          options={agents.map((a) => ({ value: a.id, label: a.name }))}
+        />
+        <Select
+          size="sm" className="w-auto min-w-[130px]" placeholder="Set group…"
+          value={bulk.team} onChange={(v) => setBulk({ ...bulk, team: v })}
+          options={groups.map((g) => ({ value: g.name, label: g.name }))}
+        />
+        <button onClick={apply} disabled={applying || !hasEdits} className="btn-primary text-xs">
+          {applying ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />} Apply to {selectedTickets.length}
+        </button>
+      </div>
+
+      {mergeOpen && (
+        <MergeModal
+          tickets={selectedTickets}
+          onClose={() => setMergeOpen(false)}
+          onMerged={() => { setMergeOpen(false); onDone(); }}
+        />
+      )}
+    </div>
   );
 }
 
@@ -294,28 +153,77 @@ export default function Tickets() {
   const availableTypes = isAgent ? ALL_TYPES : ['incident', 'request'];
   const [tickets, setTickets] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [filters, setFilters] = useState({ status: '', priority: '', type: '', q: '' });
+  const [searchParams] = useSearchParams();
+  const urlType = searchParams.get('type') || '';
+  const [filters, setFilters] = useState({ status: '', priority: '', type: urlType, q: '' });
   const [showNew, setShowNew] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [agents, setAgents] = useState([]);
+  const [groups, setGroups] = useState([]);
+  const [loadError, setLoadError] = useState('');
   const navigate = useNavigate();
 
   const load = async () => {
     setLoading(true);
-    const params = new URLSearchParams();
-    Object.entries(filters).forEach(([k, v]) => v && params.set(k, v));
-    const { tickets } = await api.get(`/tickets?${params.toString()}`);
-    setTickets(isAgent ? tickets : tickets.filter((t) => t.requester_id === user.id));
-    setLoading(false);
+    setLoadError('');
+    try {
+      const params = new URLSearchParams();
+      Object.entries(filters).forEach(([k, v]) => v && params.set(k, v));
+      const { tickets } = await api.get(`/tickets?${params.toString()}`);
+      setTickets(isAgent ? tickets : tickets.filter((t) => t.requester_id === user.id));
+    } catch (e) {
+      // Without this catch, a failed request left `loading` stuck true
+      // forever -- the whole ticket list (the single most-used page in the
+      // app) replaced permanently by its loading skeleton with no error and
+      // no way to recover short of a manual refresh.
+      setLoadError(e.message);
+    } finally {
+      setLoading(false);
+    }
   };
+
+  // The sidebar's Incidents/Service Requests sub-links navigate to
+  // /tickets?type=... without remounting this page (same route, only the
+  // query string changes), so the initial-state seed above only fires once
+  // -- this keeps the type filter in sync with the URL on every subsequent
+  // sub-link click too.
+  useEffect(() => {
+    setFilters((f) => (f.type === urlType ? f : { ...f, type: urlType }));
+  }, [urlType]);
 
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters.status, filters.priority, filters.type]);
 
+  useEffect(() => {
+    if (!isAgent) return;
+    api.get('/tickets/assignable-agents').then(({ agents }) => setAgents(agents)).catch(() => setAgents([]));
+    api.get('/groups').then(({ groups }) => setGroups(groups)).catch(() => setGroups([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Another agent creating/editing a ticket, or a bulk action landing, shows
+  // up in this list live -- re-runs the same filtered fetch rather than
+  // trusting the pushed id as content.
+  useRealtimeEvent('ticket.created', () => load());
+  useRealtimeEvent('ticket.updated', () => load());
+  useRealtimeEvent('ticket.bulk_updated', () => load());
+
   const search = (e) => {
     e.preventDefault();
     load();
   };
+
+  const toggleOne = (id) => setSelectedIds((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const toggleAll = () => setSelectedIds((prev) => (prev.size === tickets.length ? new Set() : new Set(tickets.map((t) => t.id))));
+  const clearSelection = () => setSelectedIds(new Set());
+  const afterBulkAction = () => { clearSelection(); load(); };
+  const selectedTickets = tickets.filter((t) => selectedIds.has(t.id));
 
   return (
     <div className="space-y-4">
@@ -335,19 +243,33 @@ export default function Tickets() {
             onChange={(e) => setFilters({ ...filters, q: e.target.value })}
           />
         </form>
-        <select className="input w-auto" value={filters.type} onChange={(e) => setFilters({ ...filters, type: e.target.value })}>
-          <option value="">All types</option>
-          {ALL_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-        </select>
-        <select className="input w-auto" value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}>
-          <option value="">All statuses</option>
-          {STATUSES.map((s) => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
-        </select>
-        <select className="input w-auto" value={filters.priority} onChange={(e) => setFilters({ ...filters, priority: e.target.value })}>
-          <option value="">All priorities</option>
-          {PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
-        </select>
+        <Select
+          className="w-auto min-w-[130px]" placeholder="All types"
+          value={filters.type} onChange={(v) => setFilters({ ...filters, type: v })}
+          options={ALL_TYPES}
+        />
+        <Select
+          className="w-auto min-w-[140px]" placeholder="All statuses"
+          value={filters.status} onChange={(v) => setFilters({ ...filters, status: v })}
+          options={STATUSES.map((s) => ({ value: s, label: s.replace('_', ' ') }))}
+        />
+        <Select
+          className="w-auto min-w-[130px]" placeholder="All priorities"
+          value={filters.priority} onChange={(v) => setFilters({ ...filters, priority: v })}
+          options={PRIORITIES}
+        />
       </div>
+
+      {isAgent && selectedTickets.length > 0 && (
+        <BulkActionBar selectedTickets={selectedTickets} onClear={clearSelection} onDone={afterBulkAction} agents={agents} groups={groups} />
+      )}
+
+      {loadError && !loading && (
+        <div className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 rounded-lg px-3 py-2 flex items-center justify-between gap-3">
+          <span>{loadError}</span>
+          <button onClick={load} className="btn-secondary text-xs shrink-0">Retry</button>
+        </div>
+      )}
 
       {loading && <SkeletonRows count={5} />}
 
@@ -356,6 +278,11 @@ export default function Tickets() {
           <table className="w-full text-sm">
             <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wide">
               <tr>
+                {isAgent && (
+                  <th className="text-left px-4 py-2.5 font-medium w-8">
+                    <input type="checkbox" checked={tickets.length > 0 && selectedIds.size === tickets.length} onChange={toggleAll} />
+                  </th>
+                )}
                 <th className="text-left px-4 py-2.5 font-medium">Ticket</th>
                 <th className="text-left px-4 py-2.5 font-medium">Type</th>
                 <th className="text-left px-4 py-2.5 font-medium">Status</th>
@@ -364,18 +291,27 @@ export default function Tickets() {
                 <th className="text-left px-4 py-2.5 font-medium">Updated</th>
               </tr>
             </thead>
-            <tbody>
+            <RevealGroup as={motion.tbody}>
               {tickets.length === 0 && (
-                <tr><td colSpan={6} className="text-center py-10 text-slate-400">No tickets match these filters.</td></tr>
+                <tr><td colSpan={isAgent ? 7 : 6} className="text-center py-10 text-slate-400">No tickets match these filters.</td></tr>
               )}
               {tickets.map((t) => (
-                <tr
+                <RevealItem
                   key={t.id}
+                  as={motion.tr}
                   onClick={() => navigate(`/tickets/${t.id}`)}
-                  className="border-t border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/40 cursor-pointer"
+                  className="border-t border-slate-100 dark:border-slate-800 row-interactive"
                 >
+                  {isAgent && (
+                    <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
+                      <input type="checkbox" checked={selectedIds.has(t.id)} onChange={() => toggleOne(t.id)} />
+                    </td>
+                  )}
                   <td className="px-4 py-2.5">
-                    <div className="font-medium text-slate-800 dark:text-slate-100">{t.number}</div>
+                    <div className="font-medium text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
+                      {t.number}
+                      {!!t.merged_into_id && <span className="badge bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400">merged</span>}
+                    </div>
                     <div className="text-slate-500 text-xs truncate max-w-xs">{t.title}</div>
                   </td>
                   <td className="px-4 py-2.5"><TypeBadge type={t.type} /></td>
@@ -383,9 +319,9 @@ export default function Tickets() {
                   <td className="px-4 py-2.5"><PriorityBadge priority={t.priority} /></td>
                   <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">{t.category || '—'}</td>
                   <td className="px-4 py-2.5 text-slate-400 text-xs">{new Date(t.updated_at).toLocaleString()}</td>
-                </tr>
+                </RevealItem>
               ))}
-            </tbody>
+            </RevealGroup>
           </table>
         </div>
       )}

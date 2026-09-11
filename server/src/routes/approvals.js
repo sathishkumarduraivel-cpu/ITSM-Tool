@@ -3,6 +3,7 @@ import { db, uid } from '../db.js';
 import { requireAuth, requireWorkspace } from '../middleware/auth.js';
 import { notifyUser, renderTemplate } from '../services/notifications.js';
 import { resolveTicketAfterApprovalChange } from '../services/approvalEngine.js';
+import { sendTemplatedEmail } from '../services/emailService.js';
 
 const router = Router();
 router.use(requireAuth, requireWorkspace);
@@ -43,13 +44,31 @@ router.post('/:id/decide', (req, res) => {
   const ticket = db.prepare('SELECT * FROM tickets WHERE id = ? AND workspace_id = ?').get(approval.ticket_id, req.workspaceId);
   if (ticket) {
     if (status === 'rejected') {
+      // A change tracks rejection on its own cab_status column (status
+      // itself just becomes 'closed'); anything else has no such column, so
+      // status is the only thing that changes. The previous version built
+      // this as one dynamic SET clause that, for the non-change branch,
+      // assigned `status` twice in the same statement ("SET status = ?,
+      // status = ?") -- SQLite keeps only the last assignment, so a
+      // rejected request/incident/problem silently ended up with the
+      // invalid status value 'rejected' (not one of this app's real
+      // statuses) instead of 'closed'.
       const isChange = ticket.type === 'change';
-      db.prepare(
-        `UPDATE tickets SET status = ?, ${isChange ? 'cab_status' : 'status'} = ?, updated_at = datetime('now') WHERE id = ?`
-      ).run('closed', 'rejected', ticket.id);
+      if (isChange) {
+        db.prepare("UPDATE tickets SET status = 'closed', cab_status = 'rejected', updated_at = datetime('now') WHERE id = ?").run(ticket.id);
+      } else {
+        db.prepare("UPDATE tickets SET status = 'closed', updated_at = datetime('now') WHERE id = ?").run(ticket.id);
+      }
       db.prepare('INSERT INTO ticket_history (id, ticket_id, event, detail) VALUES (?,?,?,?)').run(uid('h'), ticket.id, 'approval_rejected', comments || 'Rejected');
       const tpl = renderTemplate('change_rejected', { number: ticket.number, title: ticket.title }, req.workspaceId);
       notifyUser(ticket.requester_id, tpl?.subject || 'Request rejected', tpl?.body || `${ticket.number} — ${ticket.title} was rejected. ${comments || ''}`, `/tickets/${ticket.id}`, req.workspaceId);
+      const rejectedRequester = db.prepare('SELECT name, email FROM users WHERE id = ?').get(ticket.requester_id);
+      if (rejectedRequester?.email) {
+        sendTemplatedEmail(req.workspaceId, 'approval_rejected', rejectedRequester.email, {
+          'requester.name': rejectedRequester.name, 'ticket.number': ticket.number, 'ticket.title': ticket.title,
+          'comment.body': comments || 'No reason was provided.', 'ticket.link': `${req.protocol}://${req.get('host')}/tickets/${ticket.id}`,
+        }).catch((e) => console.error('approval rejected email error', e));
+      }
     } else {
       resolveTicketAfterApprovalChange(ticket.id, req.workspaceId);
     }

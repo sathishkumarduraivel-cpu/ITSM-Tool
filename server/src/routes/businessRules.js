@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { db, uid } from '../db.js';
-import { requireAuth, requireWorkspace, requireRole } from '../middleware/auth.js';
+import { requireAuth, requireWorkspace, requirePermission } from '../middleware/auth.js';
 import { buildFieldOptionsMap } from '../services/businessRules.js';
+import { logAudit } from '../services/auditLog.js';
 
 const router = Router();
 // Read is open to any workspace member (ticket forms need it to render);
@@ -30,7 +31,7 @@ router.get('/options', (req, res) => {
   res.json({ options: buildFieldOptionsMap(req.workspaceId, ticket_type) });
 });
 
-router.post('/', requireRole('admin'), (req, res) => {
+router.post('/', requirePermission('business_rules.manage'), (req, res) => {
   const { ticket_type, name, conditions, actions, priority = 100, status = 'active' } = req.body;
   if (!ticket_type || !name) return res.status(400).json({ error: 'ticket_type and name required' });
   if (!Array.isArray(actions) || !actions.length) return res.status(400).json({ error: 'At least one action is required' });
@@ -41,10 +42,11 @@ router.post('/', requireRole('admin'), (req, res) => {
     id, req.workspaceId, ticket_type, name,
     JSON.stringify(conditions || { logic: 'AND', rules: [] }), JSON.stringify(actions), priority, status
   );
+  logAudit(req, { action: 'business_rule.created', entityType: 'business_rule', entityId: id, entityLabel: name });
   res.status(201).json({ id });
 });
 
-router.patch('/:id', requireRole('admin'), (req, res) => {
+router.patch('/:id', requirePermission('business_rules.manage'), (req, res) => {
   const row = db.prepare('SELECT * FROM business_rules WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspaceId);
   if (!row) return res.status(404).json({ error: 'Not found' });
   const { name, conditions, actions, priority, status } = req.body;
@@ -58,11 +60,14 @@ router.patch('/:id', requireRole('admin'), (req, res) => {
   fields.push("updated_at = datetime('now')");
   params.push(req.params.id);
   db.prepare(`UPDATE business_rules SET ${fields.join(', ')} WHERE id = ?`).run(...params);
+  logAudit(req, { action: 'business_rule.updated', entityType: 'business_rule', entityId: req.params.id, entityLabel: row.name, details: { name, priority, status } });
   res.json({ ok: true });
 });
 
-router.delete('/:id', requireRole('admin'), (req, res) => {
+router.delete('/:id', requirePermission('business_rules.manage'), (req, res) => {
+  const row = db.prepare('SELECT * FROM business_rules WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspaceId);
   db.prepare('DELETE FROM business_rules WHERE id = ? AND workspace_id = ?').run(req.params.id, req.workspaceId);
+  if (row) logAudit(req, { action: 'business_rule.deleted', entityType: 'business_rule', entityId: req.params.id, entityLabel: row.name });
   res.json({ ok: true });
 });
 

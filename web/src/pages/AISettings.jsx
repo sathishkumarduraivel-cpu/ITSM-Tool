@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Plus, X, Loader2, Sparkles, Trash2, CheckCircle2, XCircle, Star } from 'lucide-react';
 import { api } from '../lib/api.js';
+import Select from '../components/Select.jsx';
 
 const PROVIDER_PRESETS = [
   { value: 'openai', label: 'OpenAI (or any OpenAI-compatible API)', base_url: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
@@ -55,9 +56,7 @@ function NewProviderModal({ onClose, onSaved }) {
 
         <div>
           <label className="label">Provider</label>
-          <select className="input" value={preset} onChange={(e) => applyPreset(e.target.value)}>
-            {PROVIDER_PRESETS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
-          </select>
+          <Select value={preset} onChange={applyPreset} options={PROVIDER_PRESETS} />
         </div>
         <div>
           <label className="label">Display name</label>
@@ -101,9 +100,12 @@ export default function AISettings() {
 
   const load = async () => {
     setLoading(true);
-    const { providers } = await api.get('/ai/providers');
-    setProviders(providers);
-    setLoading(false);
+    try {
+      const { providers } = await api.get('/ai/providers');
+      setProviders(providers);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => { load(); }, []);

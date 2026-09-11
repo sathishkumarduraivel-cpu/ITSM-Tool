@@ -73,6 +73,17 @@ function evaluate(rules, values, fieldOptionsMap) {
   });
   const working = { ...values }; // set_value writes here so later (lower-priority) rules can react to it
 
+  // A field any active rule conditionally shows is "governed" -- hidden
+  // until that rule's condition actually matches, not visible-by-default
+  // with an optional extra show layered on top. Mirrors
+  // server/src/services/businessRules.js's evaluateBusinessRules() exactly.
+  for (const rule of rules) {
+    if (rule.status !== 'active') continue;
+    for (const action of rule.actions) {
+      if (action.type === 'show_field') stateFor(action.field).visible = false;
+    }
+  }
+
   for (const rule of rules) {
     if (rule.status !== 'active') continue;
     if (!conditionsMet(rule.conditions, working)) continue;

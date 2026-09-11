@@ -3,6 +3,7 @@ import { Plus, Loader2, FileText, Trash2, AlertTriangle, ClipboardList, Pencil }
 import { api } from '../lib/api.js';
 import Modal from '../components/Modal.jsx';
 import PageHeader from '../components/PageHeader.jsx';
+import Select from '../components/Select.jsx';
 
 function daysUntil(dateStr) {
   if (!dateStr) return null;
@@ -35,9 +36,7 @@ function ContractModal({ initial, onClose, onSaved }) {
           <div><label className="label">Contract name</label><input className="input" required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
           <div>
             <label className="label">Type</label>
-            <select className="input" value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
-              {['support', 'license', 'lease', 'service'].map((t) => <option key={t} value={t}>{t}</option>)}
-            </select>
+            <Select value={form.type} onChange={(v) => setForm({ ...form, type: v })} options={['support', 'license', 'lease', 'service']} />
           </div>
           <div><label className="label">Value ($)</label><input type="number" className="input" value={form.value} onChange={(e) => setForm({ ...form, value: e.target.value })} /></div>
           <div><label className="label">Start date</label><input type="date" className="input" value={form.start_date} onChange={(e) => setForm({ ...form, start_date: e.target.value })} /></div>
@@ -84,9 +83,7 @@ function POModal({ initial, onClose, onSaved }) {
           <div><label className="label">Amount ($)</label><input type="number" className="input" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} /></div>
           <div>
             <label className="label">Status</label>
-            <select className="input" value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
-              {['draft', 'ordered', 'received', 'cancelled'].map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
+            <Select value={form.status} onChange={(v) => setForm({ ...form, status: v })} options={['draft', 'ordered', 'received', 'cancelled']} />
           </div>
         </div>
         <div className="flex justify-end gap-2 pt-2">
@@ -108,10 +105,13 @@ export default function Procurement() {
 
   const load = async () => {
     setLoading(true);
-    const [c, p] = await Promise.all([api.get('/procurement/contracts'), api.get('/procurement/purchase-orders')]);
-    setContracts(c.contracts);
-    setPos(p.purchaseOrders);
-    setLoading(false);
+    try {
+      const [c, p] = await Promise.all([api.get('/procurement/contracts'), api.get('/procurement/purchase-orders')]);
+      setContracts(c.contracts);
+      setPos(p.purchaseOrders);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => { load(); }, []);

@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { db, uid } from '../db.js';
-import { requireAuth, requireWorkspace, requireRole } from '../middleware/auth.js';
+import { requireAuth, requireWorkspace, requirePermission } from '../middleware/auth.js';
 import { listCustomFields, slugify } from '../services/customFields.js';
+import { logAudit } from '../services/auditLog.js';
 
 const router = Router();
 // Read is open to any workspace member (needed to render ticket forms);
@@ -16,7 +17,7 @@ router.get('/', (req, res) => {
   res.json({ fields: listCustomFields(req.workspaceId, ticket_type) });
 });
 
-router.post('/', requireRole('admin'), (req, res) => {
+router.post('/', requirePermission('custom_fields.manage'), (req, res) => {
   const { ticket_type, label, field_type = 'text', options = [], required = false, sort_order = 0 } = req.body;
   if (!ticket_type || !label) return res.status(400).json({ error: 'ticket_type and label required' });
   if (!FIELD_TYPES.includes(field_type)) return res.status(400).json({ error: 'invalid field_type' });
@@ -34,10 +35,11 @@ router.post('/', requireRole('admin'), (req, res) => {
   db.prepare(
     'INSERT INTO ticket_custom_fields (id, workspace_id, ticket_type, field_key, label, field_type, options, required, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
   ).run(id, req.workspaceId, ticket_type, field_key, label, field_type, JSON.stringify((options || []).filter(Boolean)), required ? 1 : 0, sort_order);
+  logAudit(req, { action: 'custom_field.created', entityType: 'custom_field', entityId: id, entityLabel: label, details: { ticket_type, field_type } });
   res.status(201).json({ id, field_key });
 });
 
-router.patch('/:id', requireRole('admin'), (req, res) => {
+router.patch('/:id', requirePermission('custom_fields.manage'), (req, res) => {
   const row = db.prepare('SELECT * FROM ticket_custom_fields WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspaceId);
   if (!row) return res.status(404).json({ error: 'Not found' });
   // field_key is intentionally not editable -- Business Rules and already-
@@ -55,13 +57,15 @@ router.patch('/:id', requireRole('admin'), (req, res) => {
   if (!fields.length) return res.status(400).json({ error: 'No valid fields' });
   params.push(req.params.id);
   db.prepare(`UPDATE ticket_custom_fields SET ${fields.join(', ')} WHERE id = ?`).run(...params);
+  logAudit(req, { action: 'custom_field.updated', entityType: 'custom_field', entityId: req.params.id, entityLabel: row.label, details: req.body });
   res.json({ ok: true });
 });
 
-router.delete('/:id', requireRole('admin'), (req, res) => {
+router.delete('/:id', requirePermission('custom_fields.manage'), (req, res) => {
   const row = db.prepare('SELECT * FROM ticket_custom_fields WHERE id = ? AND workspace_id = ?').get(req.params.id, req.workspaceId);
   if (!row) return res.status(404).json({ error: 'Not found' });
   db.prepare('DELETE FROM ticket_custom_fields WHERE id = ?').run(req.params.id);
+  logAudit(req, { action: 'custom_field.deleted', entityType: 'custom_field', entityId: req.params.id, entityLabel: row.label });
   // Courtesy cleanup: a Business Rule that targeted or conditioned on this
   // field is dead weight once the field itself no longer exists.
   db.prepare(

@@ -19,7 +19,14 @@ services:
     name: itsm-ai
     runtime: node
     plan: free
-    buildCommand: cd web && npm install && npm run build && cd ../server && npm install
+    # `--include=dev` on the web install is required, not cosmetic: vite,
+    # @vitejs/plugin-react, tailwindcss, postcss and autoprefixer all live in
+    # web/package.json's devDependencies (they're build-time only, no reason
+    # to ship them at runtime), but NODE_ENV=production is already set for
+    # this whole build step (see the envVars below) -- npm prunes
+    # devDependencies whenever that's set, so a plain `npm install` here
+    # leaves `vite` missing and `npm run build` fails with "vite: not found".
+    buildCommand: cd web && npm install --include=dev && npm run build && cd ../server && npm install
     startCommand: cd server && npm start
     healthCheckPath: /api/health
     envVars:

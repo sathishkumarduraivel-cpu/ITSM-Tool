@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import {
   LogOut, Mail, Briefcase, Users2, Building2, Calendar, Hash, Loader2, Pencil, Globe, MapPin, Clock, Info, Check,
-  UserCircle2, ChevronRight, LayoutDashboard, Ticket, Settings,
+  UserCircle2, ChevronRight, LayoutDashboard, Ticket, Settings, ShieldCheck, ShieldOff,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useTranslation } from '../i18n/I18nContext.jsx';
@@ -15,6 +15,7 @@ import Modal from './Modal.jsx';
 import DarkModeToggle from './DarkModeToggle.jsx';
 import LanguageSwitcher from './LanguageSwitcher.jsx';
 import Select from './Select.jsx';
+import MfaModal from './MfaModal.jsx';
 
 const ROLE_LABEL = { admin: 'Administrator', agent: 'Agent', requester: 'Requester' };
 
@@ -134,6 +135,7 @@ export default function UserMenu() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [mfaOpen, setMfaOpen] = useState(false);
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(false);
   const [pos, setPos] = useState(null);
@@ -341,10 +343,50 @@ export default function UserMenu() {
             </div>
           )}
 
-          <div className="flex justify-end pt-4">
+          {/* Gated on `profile` (not just !loading) -- the auth context's
+              own `user` has no totp_enabled field at all (it's never part of
+              the JWT), so rendering this from `shown` before the /auth/me
+              refresh actually lands would flash "Not enabled" even for a
+              protected account. */}
+          {profile && (
+            <div className="flex items-center justify-between gap-3 py-3 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2.5 min-w-0">
+                {profile.totp_enabled ? (
+                  <ShieldCheck size={16} className="text-emerald-500 shrink-0" />
+                ) : (
+                  <ShieldOff size={16} className="text-slate-400 shrink-0" />
+                )}
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-slate-700 dark:text-slate-200">Two-Factor Authentication</div>
+                  <div className="text-xs text-slate-400 truncate">
+                    {profile.totp_enabled ? 'Enabled — an authenticator code is required at sign-in' : 'Not enabled'}
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={() => setMfaOpen(true)}
+                className={profile.totp_enabled ? 'btn-secondary text-xs shrink-0' : 'btn-primary text-xs shrink-0'}
+              >
+                {profile.totp_enabled ? 'Disable' : 'Enable'}
+              </button>
+            </div>
+          )}
+
+          <div className="flex items-center justify-between pt-4">
+            <Link to="/privacy" onClick={() => setProfileOpen(false)} className="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
+              Privacy Policy
+            </Link>
             <button onClick={logout} className="btn-danger text-xs"><LogOut size={13} /> {t('profile.logOut')}</button>
           </div>
         </Modal>
+      )}
+
+      {mfaOpen && (
+        <MfaModal
+          enabled={!!profile?.totp_enabled}
+          onClose={() => setMfaOpen(false)}
+          onChanged={refresh}
+        />
       )}
 
       {editOpen && (

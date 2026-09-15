@@ -4,9 +4,11 @@ import rateLimit from 'express-rate-limit';
 import { db, uid, DEFAULT_WORKSPACE_ID } from '../db.js';
 import { requireAuth, requireWorkspace, requireRole, requirePermission } from '../middleware/auth.js';
 import { logAudit } from '../services/auditLog.js';
-import { sign, membershipsForUser, resolveIdentity } from '../services/authTokens.js';
-import { decrypt } from '../services/crypto.js';
+import { sign, membershipsForUser, resolveIdentity, signMfaChallenge, verifyMfaChallenge } from '../services/authTokens.js';
+import { encrypt, decrypt } from '../services/crypto.js';
 import { verifyBind } from '../services/ldapClient.js';
+import { generateSecret, verifyTOTP, otpauthUrl, generateRecoveryCodes, hashRecoveryCode } from '../services/totp.js';
+import QRCode from 'qrcode';
 
 const router = Router();
 
@@ -97,6 +99,16 @@ router.post('/login', authLimiter, async (req, res) => {
   }
   if (!passwordOk) return res.status(401).json({ error: 'Invalid email or password' });
 
+  // Password checked out, but this account has an authenticator app
+  // enrolled -- hand back a short-lived challenge instead of a real session.
+  // The full identity/workspace/permissions bundle below is only ever built
+  // AFTER POST /mfa/verify confirms the second factor too (see that route),
+  // so nothing workspace-scoped is ever computed or returned for a
+  // password-only login on an MFA-protected account.
+  if (user.totp_enabled) {
+    return res.json({ mfaRequired: true, challenge: signMfaChallenge(user.id) });
+  }
+
   const identity = resolveIdentity(user, membership);
 
   db.prepare('UPDATE users SET last_workspace_id = ? WHERE id = ?').run(membership.workspace_id, user.id);
@@ -107,6 +119,131 @@ router.post('/login', authLimiter, async (req, res) => {
     user: identity,
     workspaces: memberships.map((m) => ({ id: m.workspace_id, name: m.workspace_name, role: m.role })),
   });
+});
+
+// Completes an MFA-protected login: exchanges the short-lived challenge
+// from POST /login for a real session, once the caller proves they also
+// hold the second factor. Deliberately public (no requireAuth) -- the
+// challenge token itself, verified below, is what stands in for a session
+// here, the same way a password stands in for one at POST /login. Shares
+// that route's rate limiter since this is exactly as brute-forceable as a
+// password field.
+router.post('/mfa/verify', authLimiter, (req, res) => {
+  const { challenge, token } = req.body;
+  if (!challenge || !token) return res.status(400).json({ error: 'challenge and token required' });
+
+  let userId;
+  try {
+    userId = verifyMfaChallenge(challenge);
+  } catch {
+    return res.status(401).json({ error: 'This login attempt expired — please sign in again.' });
+  }
+
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+  if (!user || !user.totp_enabled) return res.status(401).json({ error: 'This login attempt expired — please sign in again.' });
+
+  const candidate = String(token).trim();
+  // A recovery code (XXXXX-XXXXX) is checked as a one-time fallback whenever
+  // the 6-digit shape doesn't match, rather than only on a separate "use a
+  // recovery code" mode -- one field handles both, same way a login form
+  // doesn't ask in advance whether you'll type a password or paste one from
+  // a manager.
+  let ok = verifyTOTP(decrypt(user.totp_secret), candidate);
+  if (!ok && /^[0-9a-f]{5}-[0-9a-f]{5}$/i.test(candidate)) {
+    const codeHash = hashRecoveryCode(candidate);
+    const recovery = db.prepare('SELECT id FROM mfa_recovery_codes WHERE user_id = ? AND code_hash = ? AND used_at IS NULL').get(user.id, codeHash);
+    if (recovery) {
+      db.prepare("UPDATE mfa_recovery_codes SET used_at = datetime('now') WHERE id = ?").run(recovery.id);
+      ok = true;
+    }
+  }
+  if (!ok) return res.status(401).json({ error: 'Invalid code. Check your authenticator app, or use one of your recovery codes.' });
+
+  const memberships = membershipsForUser(user.id);
+  if (memberships.length === 0) return res.status(403).json({ error: 'This account has no active workspace membership.' });
+  const membership = memberships.find((m) => m.workspace_id === user.last_workspace_id) || memberships[0];
+  const identity = resolveIdentity(user, membership);
+
+  db.prepare('UPDATE users SET last_workspace_id = ? WHERE id = ?').run(membership.workspace_id, user.id);
+  logAudit({ user: identity, workspaceId: membership.workspace_id, ip: req.ip }, { action: 'auth.login', entityType: 'user', entityId: user.id, entityLabel: user.email, details: { mfa: true } });
+
+  res.json({
+    token: sign(identity),
+    user: identity,
+    workspaces: memberships.map((m) => ({ id: m.workspace_id, name: m.workspace_name, role: m.role })),
+  });
+});
+
+// Begins enrollment: mints a brand-new secret and returns it as both a
+// scannable QR (otpauth:// URI rendered to a PNG data URL via the `qrcode`
+// package) and a plain string for manual entry. Deliberately does NOT flip
+// totp_enabled -- that only happens once POST /mfa/enable proves the user
+// actually captured a working code from it, so an abandoned setup attempt
+// never silently starts being required at login.
+router.post('/mfa/setup', requireAuth, requireWorkspace, async (req, res) => {
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  if (user.totp_enabled) return res.status(400).json({ error: 'MFA is already enabled on this account. Disable it before setting up a new authenticator.' });
+
+  const secret = generateSecret();
+  db.prepare('UPDATE users SET totp_secret = ? WHERE id = ?').run(encrypt(secret), user.id);
+  const url = otpauthUrl(secret, user.email);
+  const qrCode = await QRCode.toDataURL(url);
+  res.json({ secret, otpauthUrl: url, qrCode });
+});
+
+// Confirms enrollment with a real code from the authenticator app, turns
+// MFA on, and issues the one-time set of recovery codes -- shown to the
+// caller exactly once in this response, never retrievable again (only their
+// hashes are persisted; see services/totp.js).
+router.post('/mfa/enable', requireAuth, requireWorkspace, (req, res) => {
+  const { token } = req.body;
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  if (user.totp_enabled) return res.status(400).json({ error: 'MFA is already enabled on this account.' });
+  if (!user.totp_secret) return res.status(400).json({ error: 'Start setup first (POST /mfa/setup) before confirming a code.' });
+  if (!verifyTOTP(decrypt(user.totp_secret), token)) {
+    return res.status(400).json({ error: 'Invalid code — check your authenticator app and try again.' });
+  }
+
+  db.prepare("UPDATE users SET totp_enabled = 1, totp_enrolled_at = datetime('now') WHERE id = ?").run(user.id);
+  db.prepare('DELETE FROM mfa_recovery_codes WHERE user_id = ?').run(user.id);
+  const codes = generateRecoveryCodes();
+  for (const code of codes) {
+    db.prepare('INSERT INTO mfa_recovery_codes (id, user_id, code_hash) VALUES (?,?,?)').run(uid('mrc'), user.id, hashRecoveryCode(code));
+  }
+  logAudit(req, { action: 'user.mfa_enabled', entityType: 'user', entityId: user.id, entityLabel: user.email });
+  res.json({ recoveryCodes: codes });
+});
+
+// Requires the current password (not a TOTP code) -- consistent with how
+// most apps gate turning 2FA off, since the whole point is that losing the
+// authenticator shouldn't have to mean losing the account, but turning
+// protection off should still cost something an attacker who only stole a
+// session token wouldn't have. Mirrors POST /login's own password-vs-LDAP-
+// bind branch (see the comment there) -- a directory-linked user has only a
+// random unusable local password_hash, so re-confirming them the same way
+// login does is what makes this route reachable for them at all.
+router.post('/mfa/disable', requireAuth, requireWorkspace, async (req, res) => {
+  const { password } = req.body;
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  if (!user.totp_enabled) return res.status(400).json({ error: 'MFA is not enabled on this account.' });
+
+  const membership = db.prepare('SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?').get(req.workspaceId, req.user.id);
+  let passwordOk = false;
+  if (membership?.directory_provider_id) {
+    const provider = db.prepare("SELECT * FROM directory_providers WHERE id = ? AND type = 'ldap' AND enabled = 1").get(membership.directory_provider_id);
+    if (provider) {
+      const config = JSON.parse(decrypt(provider.config) || '{}');
+      passwordOk = !!password && await verifyBind(config, membership.directory_external_id, password);
+    }
+  } else {
+    passwordOk = !!password && bcrypt.compareSync(password, user.password_hash);
+  }
+  if (!passwordOk) return res.status(401).json({ error: 'Incorrect password.' });
+
+  db.prepare("UPDATE users SET totp_enabled = 0, totp_secret = NULL, totp_enrolled_at = NULL WHERE id = ?").run(user.id);
+  db.prepare('DELETE FROM mfa_recovery_codes WHERE user_id = ?').run(user.id);
+  logAudit(req, { action: 'user.mfa_disabled', entityType: 'user', entityId: user.id, entityLabel: user.email });
+  res.json({ ok: true });
 });
 
 // Only succeeds if the caller actually has a membership in the target
@@ -175,7 +312,7 @@ router.get('/me', requireAuth, requireWorkspace, (req, res) => {
   // token at all (avatar, join date, employee id, manager), read fresh from
   // the DB so the profile view is never stale for the life of a 7-day token.
   const profile = db.prepare(
-    `SELECT u.avatar_color, u.created_at, u.language, u.location, u.timezone, wm.role, wm.team, wm.employee_id, wm.manager_id, mu.name AS manager_name, cr.name AS custom_role_name
+    `SELECT u.avatar_color, u.created_at, u.language, u.location, u.timezone, u.totp_enabled, wm.role, wm.team, wm.employee_id, wm.manager_id, mu.name AS manager_name, cr.name AS custom_role_name
      FROM workspace_members wm JOIN users u ON u.id = wm.user_id
      LEFT JOIN users mu ON mu.id = wm.manager_id
      LEFT JOIN custom_roles cr ON cr.id = wm.custom_role_id

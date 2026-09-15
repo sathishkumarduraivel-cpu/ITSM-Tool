@@ -63,6 +63,8 @@ import emailSettingsRoutes from './routes/emailSettings.js';
 import emailTemplateRoutes from './routes/emailTemplates.js';
 import cannedResponseRoutes from './routes/cannedResponses.js';
 import { startDirectorySyncScheduler } from './services/directorySyncScheduler.js';
+import { startInboundEmailScheduler } from './services/inboundEmailScheduler.js';
+import { logError } from './services/errorLog.js';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -107,6 +109,37 @@ app.use((req, res, next) => {
     },
     credentials: true,
   })(req, res, next);
+});
+// Security headers -- hand-rolled rather than pulling in helmet, consistent
+// with this app's existing zero-unnecessary-deps philosophy (these are ~10
+// lines, not worth a dependency). Scoped precisely to what this app actually
+// loads (same-origin JS/CSS bundle, Google Fonts, no other third-party
+// resources anywhere in the product) rather than a generic permissive
+// default, since a CSP that's too loose defeats its own purpose.
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+  if (process.env.NODE_ENV === 'production') {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'self'",
+    "script-src 'self'",
+    // 'unsafe-inline' on style-src only (never script-src) -- React sets a
+    // lot of inline `style={{...}}` (progress bars, avatar colors, popover
+    // positioning), which CSP treats the same as a <style> tag. This has no
+    // effect on XSS protection, which comes from script-src staying strict.
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    "img-src 'self' data: blob:",
+    "connect-src 'self'",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+  ].join('; '));
+  next();
 });
 app.use(express.json({ limit: '2mb' }));
 // The real-time stream carries its auth token as a query param (EventSource
@@ -187,7 +220,29 @@ if (fs.existsSync(webDist)) {
 
 app.use((err, req, res, next) => {
   console.error(err);
+  logError(err, req);
   res.status(500).json({ error: 'Internal server error' });
+});
+
+// A truly unhandled error outside Express's own request/response cycle --
+// a rejected promise nothing awaited, a callback that threw -- would
+// otherwise just print to stderr and vanish the moment this process is
+// replaced (this app's Render deployment has no persistent disk or log
+// aggregator; see the auto-seed comment above for the same reality). Logged
+// with no `req` (there may not be one), and deliberately NOT followed by
+// process.exit(): Node's own guidance is that a real restart is safer after
+// an uncaughtException, but this app has no in-memory state whose
+// corruption would outlast the offending request (everything durable lives
+// in SQLite), so staying up and recording the error is the more useful
+// behavior for a single small instance without a process supervisor
+// configured to restart it quickly.
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err);
+  logError(err, null);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason);
+  logError(reason instanceof Error ? reason : new Error(String(reason)), null);
 });
 
 app.listen(PORT, () => {
@@ -198,3 +253,4 @@ app.listen(PORT, () => {
 // services/directorySyncScheduler.js's own header comment for why) --
 // started once here, unref'd, so it never keeps the process alive on its own.
 startDirectorySyncScheduler();
+startInboundEmailScheduler();

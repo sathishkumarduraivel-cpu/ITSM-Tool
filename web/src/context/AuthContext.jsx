@@ -28,8 +28,28 @@ export function AuthProvider({ children }) {
     loadMe();
   }, [loadMe]);
 
+  // When the account has an authenticator app enrolled, the server hands
+  // back { mfaRequired: true, challenge } instead of a real session -- no
+  // token is stored and no user/workspace state changes yet, so an
+  // MFA-protected account never has even a moment of being "logged in"
+  // before the second factor is checked. The caller (Login.jsx) is
+  // responsible for noticing `mfaRequired` and prompting for a code, then
+  // completing the sign-in via verifyMfa() below.
   const login = async (email, password) => {
     const data = await api.post('/auth/login', { email, password });
+    if (data.mfaRequired) return { mfaRequired: true, challenge: data.challenge };
+    setToken(data.token);
+    setUser(data.user);
+    setWorkspaces(data.workspaces || []);
+    return data.user;
+  };
+
+  // Second step of an MFA-protected login -- exchanges the short-lived
+  // challenge from login() above for a real session, once the caller also
+  // proves they hold the second factor (an authenticator code, or one of
+  // their recovery codes).
+  const verifyMfa = async (challenge, token) => {
+    const data = await api.post('/auth/mfa/verify', { challenge, token });
     setToken(data.token);
     setUser(data.user);
     setWorkspaces(data.workspaces || []);
@@ -104,7 +124,7 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, workspaces, loading, login, loginWithToken, register, logout, switchWorkspace, updateProfile, impersonate, endImpersonation }}>
+    <AuthContext.Provider value={{ user, workspaces, loading, login, verifyMfa, loginWithToken, register, logout, switchWorkspace, updateProfile, impersonate, endImpersonation }}>
       {children}
     </AuthContext.Provider>
   );

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
-import { Sparkles, Loader2 } from 'lucide-react';
+import { Sparkles, Loader2, ShieldCheck, ArrowLeft } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useAuth } from '../context/AuthContext.jsx';
 import NeuralBackground from '../components/NeuralBackground.jsx';
@@ -37,7 +37,7 @@ const container = { hidden: {}, show: { transition: { staggerChildren: 0.07, del
 const field = { hidden: { opacity: 0, y: 10 }, show: { opacity: 1, y: 0, transition: { type: 'spring', stiffness: 300, damping: 26 } } };
 
 export default function Login() {
-  const { login } = useAuth();
+  const { login, verifyMfa } = useAuth();
   const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
@@ -46,6 +46,13 @@ export default function Login() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [ssoProviders, setSsoProviders] = useState([]);
+  // Set only when the account has MFA enrolled -- the password step above
+  // already succeeded (see AuthContext.login's mfaRequired branch), so this
+  // being non-null is what switches the form below into the code-entry step
+  // instead of a separate page/route (keeps the "one wrong step" back-arrow
+  // trivial, and there's never a URL a bookmark could land on mid-login).
+  const [challenge, setChallenge] = useState(null);
+  const [mfaCode, setMfaCode] = useState('');
 
   useEffect(() => {
     api.get('/auth/sso/providers').then((d) => setSsoProviders(d.providers)).catch(() => setSsoProviders([]));
@@ -56,13 +63,37 @@ export default function Login() {
     setError('');
     setLoading(true);
     try {
-      await login(email, password);
+      const result = await login(email, password);
+      if (result?.mfaRequired) {
+        setChallenge(result.challenge);
+      } else {
+        navigate(location.state?.from || '/', { replace: true });
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const submitMfa = async (e) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    try {
+      await verifyMfa(challenge, mfaCode);
       navigate(location.state?.from || '/', { replace: true });
     } catch (err) {
       setError(err.message);
     } finally {
       setLoading(false);
     }
+  };
+
+  const backToPassword = () => {
+    setChallenge(null);
+    setMfaCode('');
+    setError('');
   };
 
   return (
@@ -102,68 +133,122 @@ export default function Login() {
         </motion.div>
 
         <motion.form
-          onSubmit={submit}
+          onSubmit={challenge ? submitMfa : submit}
           variants={container}
           initial="hidden"
           animate="show"
           className="command-glow rounded-2xl"
         >
           <div className="card p-6 space-y-4 shadow-popover dark:shadow-popover-dark !rounded-2xl">
-            <motion.div variants={field}>
-              <h1 className="text-lg font-display font-semibold text-slate-800 dark:text-slate-100">{t('auth.signIn')}</h1>
-              <p className="text-sm text-slate-500 dark:text-slate-400">{t('auth.signInDesc')}</p>
-            </motion.div>
+            {challenge ? (
+              <>
+                <motion.div variants={field} className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-brand-50 dark:bg-brand-500/10 flex items-center justify-center shrink-0">
+                    <ShieldCheck size={17} className="text-brand-600 dark:text-brand-400" />
+                  </div>
+                  <div>
+                    <h1 className="text-lg font-display font-semibold text-slate-800 dark:text-slate-100">Enter your code</h1>
+                    <p className="text-sm text-slate-500 dark:text-slate-400">From your authenticator app, or a recovery code</p>
+                  </div>
+                </motion.div>
 
-            {error && (
-              <motion.div initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 border border-red-100 dark:border-red-900 rounded-lg px-3 py-2">
-                {error}
-              </motion.div>
+                {error && (
+                  <motion.div initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 border border-red-100 dark:border-red-900 rounded-lg px-3 py-2">
+                    {error}
+                  </motion.div>
+                )}
+
+                <motion.div variants={field}>
+                  <input
+                    className="input text-center tracking-[0.3em] font-mono text-lg" placeholder="000000" autoFocus
+                    value={mfaCode} onChange={(e) => setMfaCode(e.target.value.trim())} required
+                  />
+                </motion.div>
+
+                <motion.button
+                  variants={field}
+                  whileHover={{ y: -1 }}
+                  whileTap={{ scale: 0.98 }}
+                  type="submit"
+                  disabled={loading || !mfaCode}
+                  className="btn-primary w-full justify-center"
+                >
+                  {loading ? <Loader2 size={16} className="animate-spin" /> : <ShieldCheck size={16} />}
+                  Verify
+                </motion.button>
+
+                <motion.button
+                  variants={field}
+                  type="button"
+                  onClick={backToPassword}
+                  className="w-full flex items-center justify-center gap-1.5 text-sm text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                >
+                  <ArrowLeft size={13} /> Back
+                </motion.button>
+              </>
+            ) : (
+              <>
+                <motion.div variants={field}>
+                  <h1 className="text-lg font-display font-semibold text-slate-800 dark:text-slate-100">{t('auth.signIn')}</h1>
+                  <p className="text-sm text-slate-500 dark:text-slate-400">{t('auth.signInDesc')}</p>
+                </motion.div>
+
+                {error && (
+                  <motion.div initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 border border-red-100 dark:border-red-900 rounded-lg px-3 py-2">
+                    {error}
+                  </motion.div>
+                )}
+
+                {ssoProviders.length > 0 && (
+                  <motion.div variants={field} className="space-y-2">
+                    {ssoProviders.map((p) => {
+                      const Mark = PROVIDER_MARK[p.provider];
+                      return (
+                        <a key={p.id} href={`/api/auth/sso/${p.id}/start`} className="btn-secondary w-full justify-center gap-2.5">
+                          {Mark && <Mark />} {t('auth.continueWith', { provider: p.label })}
+                        </a>
+                      );
+                    })}
+                    <div className="flex items-center gap-3 pt-1">
+                      <div className="flex-1 h-px bg-slate-200 dark:bg-slate-700" />
+                      <span className="text-xs text-slate-400">{t('auth.orSignInWithEmail')}</span>
+                      <div className="flex-1 h-px bg-slate-200 dark:bg-slate-700" />
+                    </div>
+                  </motion.div>
+                )}
+
+                <motion.div variants={field}>
+                  <label className="label">{t('auth.email')}</label>
+                  <input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+                </motion.div>
+                <motion.div variants={field}>
+                  <label className="label">{t('auth.password')}</label>
+                  <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+                </motion.div>
+
+                <motion.button
+                  variants={field}
+                  whileHover={{ y: -1 }}
+                  whileTap={{ scale: 0.98 }}
+                  type="submit"
+                  disabled={loading}
+                  className="btn-primary w-full justify-center"
+                >
+                  {loading ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+                  {t('auth.signIn')}
+                </motion.button>
+
+                <motion.div variants={field} className="text-center text-sm">
+                  <Link to="/register" className="text-brand-600 hover:text-brand-700 font-medium">{t('auth.createAccount')}</Link>
+                </motion.div>
+              </>
             )}
-
-            {ssoProviders.length > 0 && (
-              <motion.div variants={field} className="space-y-2">
-                {ssoProviders.map((p) => {
-                  const Mark = PROVIDER_MARK[p.provider];
-                  return (
-                    <a key={p.id} href={`/api/auth/sso/${p.id}/start`} className="btn-secondary w-full justify-center gap-2.5">
-                      {Mark && <Mark />} {t('auth.continueWith', { provider: p.label })}
-                    </a>
-                  );
-                })}
-                <div className="flex items-center gap-3 pt-1">
-                  <div className="flex-1 h-px bg-slate-200 dark:bg-slate-700" />
-                  <span className="text-xs text-slate-400">{t('auth.orSignInWithEmail')}</span>
-                  <div className="flex-1 h-px bg-slate-200 dark:bg-slate-700" />
-                </div>
-              </motion.div>
-            )}
-
-            <motion.div variants={field}>
-              <label className="label">{t('auth.email')}</label>
-              <input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-            </motion.div>
-            <motion.div variants={field}>
-              <label className="label">{t('auth.password')}</label>
-              <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
-            </motion.div>
-
-            <motion.button
-              variants={field}
-              whileHover={{ y: -1 }}
-              whileTap={{ scale: 0.98 }}
-              type="submit"
-              disabled={loading}
-              className="btn-primary w-full justify-center"
-            >
-              {loading ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
-              {t('auth.signIn')}
-            </motion.button>
-
-            <motion.div variants={field} className="text-center text-sm">
-              <Link to="/register" className="text-brand-600 hover:text-brand-700 font-medium">{t('auth.createAccount')}</Link>
-            </motion.div>
           </div>
         </motion.form>
+
+        <p className="text-center text-xs text-slate-400 mt-5">
+          <Link to="/privacy" className="hover:text-slate-600 dark:hover:text-slate-300">Privacy Policy</Link>
+        </p>
       </motion.div>
     </div>
   );

@@ -39,6 +39,23 @@ export function sign(identity) {
   );
 }
 
+// A deliberately weak, short-lived token for the gap between "password
+// checked out" and "MFA code checked out" -- carries nothing but the
+// user's id and an mfa_pending marker, unlike sign() above which always
+// bakes in workspace/role/permissions. middleware/auth.js's requireAuth
+// refuses any token carrying mfa_pending outright, so even if one leaked it
+// cannot be used against a single real API route -- its only valid
+// destination is POST /auth/mfa/verify.
+export function signMfaChallenge(userId) {
+  return jwt.sign({ sub: userId, mfa_pending: true }, JWT_SECRET, { expiresIn: '5m' });
+}
+
+export function verifyMfaChallenge(token) {
+  const payload = jwt.verify(token, JWT_SECRET);
+  if (!payload.mfa_pending || !payload.sub) throw new Error('Not an MFA challenge token');
+  return payload.sub;
+}
+
 export function membershipsForUser(userId) {
   return db.prepare(
     `SELECT wm.workspace_id, wm.role, wm.team, wm.active, wm.custom_role_id,

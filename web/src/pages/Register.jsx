@@ -106,6 +106,11 @@ export default function Register() {
             </motion.div>
           </div>
         </motion.form>
+
+        <p className="text-center text-xs text-slate-400 mt-5">
+          By creating an account you agree to your organization's use of this application as described in the{' '}
+          <Link to="/privacy" className="hover:text-slate-600 dark:hover:text-slate-300 underline">Privacy Policy</Link>.
+        </p>
       </motion.div>
     </div>
   );

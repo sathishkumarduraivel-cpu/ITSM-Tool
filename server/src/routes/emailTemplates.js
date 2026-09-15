@@ -3,10 +3,24 @@ import { db } from '../db.js';
 import { requireAuth, requireWorkspace, requirePermission } from '../middleware/auth.js';
 import { logAudit } from '../services/auditLog.js';
 import { ensureDefaultTemplates, sendMail, fillVars } from '../services/emailService.js';
-import { SAMPLE_VARS } from '../services/emailTemplateCatalog.js';
+import { SAMPLE_VARS, findTemplateDefault } from '../services/emailTemplateCatalog.js';
 
 const router = Router();
 router.use(requireAuth, requireWorkspace, requirePermission('notifications.manage'));
+
+// `variables` (the list that drives the editor's "Insert" palette) only ever
+// lived in the static DEFAULT_EMAIL_TEMPLATES catalog, never as a real
+// column on the email_templates table -- `SELECT *` alone left every row's
+// `variables` undefined, and the editor unconditionally called
+// `tpl.variables.map(...)` to render that palette. With no error boundary
+// anywhere above it, that TypeError took down the whole admin shell the
+// instant a template was opened -- a blank, frozen screen with no visible
+// error. Every response that returns a template row goes through this so
+// the fix can't be reintroduced by a future route forgetting to attach it.
+function withVariables(row) {
+  if (!row) return row;
+  return { ...row, variables: findTemplateDefault(row.key)?.variables || [] };
+}
 
 function getOwned(id, workspaceId) {
   return db.prepare('SELECT * FROM email_templates WHERE id = ? AND workspace_id = ?').get(id, workspaceId);
@@ -15,13 +29,13 @@ function getOwned(id, workspaceId) {
 router.get('/', (req, res) => {
   ensureDefaultTemplates(req.workspaceId);
   const rows = db.prepare('SELECT * FROM email_templates WHERE workspace_id = ? ORDER BY category, name').all(req.workspaceId);
-  res.json({ templates: rows });
+  res.json({ templates: rows.map(withVariables) });
 });
 
 router.get('/:id', (req, res) => {
   const tpl = getOwned(req.params.id, req.workspaceId);
   if (!tpl) return res.status(404).json({ error: 'Not found' });
-  res.json({ template: tpl });
+  res.json({ template: withVariables(tpl) });
 });
 
 // Only content is editable -- key/audience/category/name identify WHICH
@@ -40,7 +54,7 @@ router.patch('/:id', (req, res) => {
   params.push(req.params.id);
   db.prepare(`UPDATE email_templates SET ${fields.join(', ')} WHERE id = ?`).run(...params);
   logAudit(req, { action: 'email_template.updated', entityType: 'email_template', entityId: req.params.id, entityLabel: tpl.name, details: { enabled } });
-  res.json({ template: getOwned(req.params.id, req.workspaceId) });
+  res.json({ template: withVariables(getOwned(req.params.id, req.workspaceId)) });
 });
 
 // Renders with sample data -- no send, no log entry -- so an admin can see

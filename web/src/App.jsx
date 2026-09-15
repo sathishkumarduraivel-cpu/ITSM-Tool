@@ -30,6 +30,7 @@ import ExternalConnections from './pages/ExternalConnections.jsx';
 import MajorIncidents from './pages/MajorIncidents.jsx';
 import MajorIncidentDetail from './pages/MajorIncidentDetail.jsx';
 import SsoCallback from './pages/SsoCallback.jsx';
+import PrivacyPolicy from './pages/PrivacyPolicy.jsx';
 import PrintReport from './pages/PrintReport.jsx';
 import DeveloperDocs from './pages/DeveloperDocs.jsx';
 import NotFound from './pages/NotFound.jsx';
@@ -82,6 +83,7 @@ export default function App() {
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
       <Route path="/sso-callback" element={<SsoCallback />} />
+      <Route path="/privacy" element={<PrivacyPolicy />} />
       <Route path="/reports/print" element={<PrivateRoute><PrintReport /></PrivateRoute>} />
       <Route
         path="/*"

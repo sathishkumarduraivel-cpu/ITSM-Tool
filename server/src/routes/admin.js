@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { db } from '../db.js';
 import { requireAuth, requireWorkspace, requireRole } from '../middleware/auth.js';
+import { buildWorkspaceBackup, snapshotRawDatabase, cleanupSnapshot, dbFileSizeBytes } from '../services/backup.js';
+import { logAudit } from '../services/auditLog.js';
 
 const router = Router();
 router.use(requireAuth, requireWorkspace);
@@ -24,6 +26,69 @@ router.patch('/settings', requireRole('admin'), (req, res) => {
   ).run(req.workspaceId, SETTINGS_KEY, value);
   if (name) db.prepare('UPDATE workspaces SET name = ? WHERE id = ?').run(name, req.workspaceId);
   res.json({ ok: true });
+});
+
+// A quick summary (row counts, whether a full-instance snapshot is even an
+// option for this account) so the Backups screen can show something useful
+// before anyone actually triggers a download.
+router.get('/backup/summary', requireRole('admin'), (req, res) => {
+  const { meta } = buildWorkspaceBackup(req.workspaceId);
+  res.json({
+    workspace: meta.workspace,
+    counts: meta.counts,
+    canDownloadDatabase: !!req.user.is_super_admin,
+    dbSizeBytes: req.user.is_super_admin ? dbFileSizeBytes() : null,
+  });
+});
+
+// Workspace-scoped JSON export -- any workspace admin, not just a
+// super-admin, since this only ever contains data that workspace's own
+// admin can already see through the normal UI. See services/backup.js for
+// exactly what is (and deliberately isn't) included.
+router.get('/backup/export', requireRole('admin'), (req, res) => {
+  const backup = buildWorkspaceBackup(req.workspaceId);
+  const slug = (backup.meta.workspace.slug || 'workspace').replace(/[^a-z0-9-]/gi, '-');
+  logAudit(req, { action: 'backup.exported', entityType: 'workspace', entityId: req.workspaceId, entityLabel: backup.meta.workspace.name, details: { counts: backup.meta.counts } });
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Disposition', `attachment; filename="itsm-ai-backup-${slug}-${new Date().toISOString().slice(0, 10)}.json"`);
+  res.send(JSON.stringify(backup, null, 2));
+});
+
+// The raw SQLite file, via VACUUM INTO for a guaranteed-consistent snapshot
+// rather than a live filesystem copy -- see services/backup.js. Spans every
+// workspace in this instance, so it's gated to super-admins only, unlike the
+// JSON export above. Genuinely important given this app's Render deployment
+// has no persistent disk (see index.js's auto-seed-on-boot comment) -- this
+// is the one way to actually get data OFF an ephemeral instance.
+// Platform-operator concern, not a per-workspace one -- see error_log's own
+// comment in db.js for why this is super-admin-gated the same way the raw
+// database backup below is, rather than requireRole('admin').
+router.get('/errors', (req, res) => {
+  if (!req.user.is_super_admin) return res.status(403).json({ error: 'Only a super-admin can view the error log.' });
+  const rows = db.prepare('SELECT * FROM error_log ORDER BY created_at DESC LIMIT 200').all();
+  res.json({ errors: rows });
+});
+
+router.delete('/errors', (req, res) => {
+  if (!req.user.is_super_admin) return res.status(403).json({ error: 'Only a super-admin can clear the error log.' });
+  db.prepare('DELETE FROM error_log').run();
+  logAudit(req, { action: 'error_log.cleared', entityType: 'system' });
+  res.json({ ok: true });
+});
+
+router.get('/backup/database', (req, res) => {
+  if (!req.user.is_super_admin) return res.status(403).json({ error: 'Only a super-admin can download the full database.' });
+  let tmpPath;
+  try {
+    tmpPath = snapshotRawDatabase();
+  } catch (e) {
+    return res.status(500).json({ error: 'Could not snapshot the database: ' + e.message });
+  }
+  logAudit(req, { action: 'backup.database_downloaded', entityType: 'workspace' });
+  res.download(tmpPath, `itsm-ai-database-${new Date().toISOString().slice(0, 10)}.db`, (err) => {
+    cleanupSnapshot(tmpPath);
+    if (err && !res.headersSent) res.status(500).json({ error: 'Download failed' });
+  });
 });
 
 export default router;

@@ -10,6 +10,7 @@ import nodemailer from 'nodemailer';
 import { db, uid } from '../db.js';
 import { encrypt, decrypt } from './crypto.js';
 import { DEFAULT_EMAIL_TEMPLATES, SAMPLE_VARS } from './emailTemplateCatalog.js';
+import { getValidAccessToken, sendMailViaGraph } from './graphMailer.js';
 
 // For emails composed inside a service module rather than a route handler
 // (approvalEngine.js, escalationEngine.js, directorySync.js), there's no
@@ -24,14 +25,14 @@ export function getEmailSettings(workspaceId) {
   return db.prepare('SELECT * FROM email_settings WHERE workspace_id = ?').get(workspaceId) || null;
 }
 
-// Redacts the encrypted password for anything that leaves the server --
-// the admin UI only ever needs to know a password IS set, never its value,
+// Redacts the encrypted password/tokens for anything that leaves the server
+// -- the admin UI only ever needs to know a secret IS set, never its value,
 // same convention as the SSO/directory-provider config redaction.
 export function settingsForApi(workspaceId) {
   const row = getEmailSettings(workspaceId);
-  if (!row) return { workspace_id: workspaceId, enabled: 0, port: 587, secure: 0, hasPassword: false };
-  const { password, ...rest } = row;
-  return { ...rest, hasPassword: !!password };
+  if (!row) return { workspace_id: workspaceId, enabled: 0, port: 587, secure: 0, hasPassword: false, mailbox_provider: 'smtp', graphConnected: false };
+  const { password, graph_access_token, graph_refresh_token, ...rest } = row;
+  return { ...rest, hasPassword: !!password, graphConnected: !!graph_refresh_token };
 }
 
 export function upsertEmailSettings(workspaceId, body) {
@@ -60,6 +61,48 @@ export function upsertEmailSettings(workspaceId, body) {
       `INSERT INTO email_settings (id, workspace_id, enabled, host, port, secure, username, password, from_name, from_email, reply_to, footer_html) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
     ).run(uid('ems'), workspaceId, fields.enabled, fields.host, fields.port, fields.secure, fields.username, fields.password, fields.from_name, fields.from_email, fields.reply_to, fields.footer_html);
   }
+  return settingsForApi(workspaceId);
+}
+
+// Called once, right after the OAuth callback exchanges a code for tokens
+// (routes/emailSettings.js). Switching mailbox_provider to 'microsoft' here
+// is what makes sendMail()/testEmailConfig() below start using Graph instead
+// of nodemailer -- the SMTP columns are left exactly as they were (not
+// cleared), so disconnecting later falls back to whatever SMTP config, if
+// any, was already saved rather than an empty form.
+export function connectMicrosoftMailbox(workspaceId, { email, accessToken, refreshToken, expiresIn, connectedBy }) {
+  const existing = getEmailSettings(workspaceId);
+  const expires_at = new Date(Date.now() + (expiresIn || 3600) * 1000).toISOString();
+  if (existing) {
+    db.prepare(
+      `UPDATE email_settings SET mailbox_provider='microsoft', enabled=1, graph_mailbox_email=?, graph_access_token=?, graph_refresh_token=?, graph_token_expires_at=?, graph_connected_by=?, from_email=COALESCE(from_email, ?), updated_at=datetime('now') WHERE workspace_id=?`
+    ).run(email, encrypt(accessToken), encrypt(refreshToken), expires_at, connectedBy, email, workspaceId);
+  } else {
+    db.prepare(
+      `INSERT INTO email_settings (id, workspace_id, mailbox_provider, enabled, graph_mailbox_email, graph_access_token, graph_refresh_token, graph_token_expires_at, graph_connected_by, from_email) VALUES (?,?,'microsoft',1,?,?,?,?,?,?)`
+    ).run(uid('ems'), workspaceId, email, encrypt(accessToken), encrypt(refreshToken), expires_at, connectedBy, email);
+  }
+  return settingsForApi(workspaceId);
+}
+
+export function disconnectMicrosoftMailbox(workspaceId) {
+  db.prepare(
+    `UPDATE email_settings SET mailbox_provider='smtp', graph_mailbox_email=NULL, graph_access_token=NULL, graph_refresh_token=NULL, graph_token_expires_at=NULL, graph_connected_by=NULL, inbound_enabled=0, updated_at=datetime('now') WHERE workspace_id=?`
+  ).run(workspaceId);
+  return settingsForApi(workspaceId);
+}
+
+export function setInboundSettings(workspaceId, { inbound_enabled, inbound_default_type }) {
+  const settings = getEmailSettings(workspaceId);
+  if (!settings || settings.mailbox_provider !== 'microsoft') {
+    throw new Error('Connect a Microsoft mailbox before turning this on.');
+  }
+  if (inbound_default_type && !['incident', 'request'].includes(inbound_default_type)) {
+    throw new Error('inbound_default_type must be incident or request');
+  }
+  db.prepare(
+    `UPDATE email_settings SET inbound_enabled=?, inbound_default_type=COALESCE(?, inbound_default_type), updated_at=datetime('now') WHERE workspace_id=?`
+  ).run(inbound_enabled ? 1 : 0, inbound_default_type || null, workspaceId);
   return settingsForApi(workspaceId);
 }
 
@@ -108,14 +151,28 @@ async function deliver(settings, { to, subject, html, text }) {
   });
 }
 
-// Sends real mail via nodemailer/SMTP once host/from are configured and
-// enabled; otherwise logs a simulated send so every call site above can
+// Sends real mail -- via a connected Microsoft mailbox (Graph) when one's
+// connected, otherwise nodemailer/SMTP once host/from are configured and
+// enabled -- or logs a simulated send so every call site above can
 // fire-and-forget unconditionally without checking "is email set up yet" --
 // the exact same simulated-fallback convention services/notify.js already
 // established for the older email_smtp integration path.
 export async function sendMail(workspaceId, { to, subject, html, text, templateKey }) {
   if (!to) return { ok: false, error: 'No recipient email address' };
   const settings = getEmailSettings(workspaceId);
+
+  if (settings?.mailbox_provider === 'microsoft' && settings.enabled && settings.graph_refresh_token) {
+    try {
+      const accessToken = await getValidAccessToken(workspaceId, settings);
+      await sendMailViaGraph(accessToken, { to, subject, html });
+      logEmail(workspaceId, { templateKey, to, subject, status: 'sent' });
+      return { ok: true };
+    } catch (e) {
+      logEmail(workspaceId, { templateKey, to, subject, status: 'failed', error: e.message });
+      return { ok: false, error: e.message };
+    }
+  }
+
   if (!settings || !settings.enabled || !settings.host) {
     console.log(`[email:simulated] workspace=${workspaceId} to=${to} subject="${subject}"`);
     logEmail(workspaceId, { templateKey, to, subject, status: 'simulated' });
@@ -140,6 +197,22 @@ export async function sendMail(workspaceId, { to, subject, html, text, templateK
 // connection is exactly how an admin decides whether to flip it on.
 export async function testEmailConfig(workspaceId, draft, to) {
   const saved = getEmailSettings(workspaceId);
+
+  if (saved?.mailbox_provider === 'microsoft' && saved.graph_refresh_token) {
+    try {
+      const accessToken = await getValidAccessToken(workspaceId, saved);
+      await sendMailViaGraph(accessToken, {
+        to, subject: 'ITSM AI — Test email',
+        html: `<p>This is a test email sent through the Microsoft mailbox connected to your ITSM AI Email Configuration (${saved.graph_mailbox_email}). If you received this, it's working.</p>`,
+      });
+      logEmail(workspaceId, { templateKey: null, to, subject: 'ITSM AI — Test email', status: 'sent' });
+      return { ok: true };
+    } catch (e) {
+      logEmail(workspaceId, { templateKey: null, to, subject: 'ITSM AI — Test email', status: 'failed', error: e.message });
+      return { ok: false, error: e.message };
+    }
+  }
+
   const settings = {
     host: draft.host ?? saved?.host,
     port: draft.port ?? saved?.port ?? 587,

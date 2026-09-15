@@ -11,7 +11,7 @@
     "start": "node src/index.js",
     "dev": "node --watch-path=src src/index.js",
     "seed": "node src/seed.js",
-    "test": "node --test"
+    "test": "node --import ./test-support/bootstrap.mjs --test"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -25,6 +25,7 @@
     "multer": "^2.0.1",
     "nanoid": "^5.0.7",
     "node-fetch": "^3.3.2",
-    "nodemailer": "^9.0.4"
+    "nodemailer": "^9.0.4",
+    "qrcode": "^1.5.4"
   }
 }

@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  server-tests:
+    name: Server tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Matches server/package.json's engines field -- node:sqlite (this
+          # app's zero-native-deps database layer) needs 22.5+.
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install dependencies
+        working-directory: server
+        run: npm ci
+
+      - name: Run test suite
+        working-directory: server
+        run: npm test
+
+      # Informational only (never fails the build) -- surfaces known
+      # dependency vulnerabilities in the Actions log without blocking
+      # merges on issues that may be pre-existing/unrelated to this change.
+      # A real fix or an accepted-risk decision is a separate, deliberate
+      # action, not something CI should silently gate on.
+      - name: Dependency audit (informational)
+        if: always()
+        working-directory: server
+        run: npm audit --audit-level=high || true
+
+  web-build:
+    name: Web build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        # devDependencies included -- vite itself lives there, same fix as
+        # render.yaml's own buildCommand needed for the exact same reason
+        # (NODE_ENV=production would otherwise prune it away).
+        working-directory: web
+        run: npm ci --include=dev
+
+      - name: Build
+        working-directory: web
+        run: npm run build

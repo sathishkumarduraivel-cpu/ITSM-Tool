@@ -9,10 +9,21 @@ import { encrypt, isEncrypted } from './services/crypto.js';
 import { legacyToGraph } from './services/workflowGraph.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dataDir = path.join(__dirname, '..', 'data');
+// Overridable so the automated test suite (test/setup.mjs) can point every
+// test file at its own throwaway temp directory instead of ever touching
+// this project's real server/data/itsm.db -- the same "configurable
+// location for testability" pattern already used for graphMailer.js's
+// GRAPH_LOGIN_BASE/GRAPH_API_BASE. Unset in every real deployment.
+const dataDir = process.env.ITSM_DATA_DIR || path.join(__dirname, '..', 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
-const rawDb = new DatabaseSync(path.join(dataDir, 'itsm.db'));
+// Exposed for services/backup.js's raw-database export (super-admin only) --
+// nothing else outside this module should ever need the file's location on
+// disk, every other consumer goes through the `db` wrapper below.
+export const DATA_DIR = dataDir;
+export const DB_FILE_PATH = path.join(dataDir, 'itsm.db');
+
+const rawDb = new DatabaseSync(DB_FILE_PATH);
 // Rollback-journal mode (SQLite's default) rather than WAL: WAL relies on
 // shared-memory-mapped files which some mounted/network/sandboxed filesystems
 // reject with "disk I/O error". DELETE mode works everywhere.
@@ -638,6 +649,23 @@ CREATE TABLE IF NOT EXISTS email_log (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+-- One row per inbound email the poller (services/inboundEmail.js) looked at
+-- on a connected mailbox -- gives the admin real visibility ("14 tickets
+-- created from email, 6 replies matched, 2 skipped") the same way
+-- directory_sync_logs does for directory sync, instead of inbound
+-- processing being a silent background thing nobody can audit.
+CREATE TABLE IF NOT EXISTS email_inbound_log (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  message_id TEXT,
+  from_email TEXT,
+  subject TEXT,
+  action TEXT NOT NULL,        -- ticket_created | comment_added | skipped | error
+  ticket_id TEXT,
+  detail TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
 -- Canned Responses: agent-authored reply snippets surfaced in the ticket
 -- Reply composer (routes/cannedResponses.js, TicketDetail.jsx). The team
 -- column scopes one to a specific team's queue (e.g. only Network agents see a
@@ -1002,6 +1030,46 @@ CREATE TABLE IF NOT EXISTS ticket_sync_logs (
   created_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (link_id) REFERENCES ticket_external_links(id) ON DELETE CASCADE
 );
+
+-- MFA recovery codes: a table rather than a single column because there are
+-- several (see services/totp.js's generateRecoveryCodes), each independently
+-- single-use -- used_at is stamped the moment one is redeemed so it can
+-- never be replayed, and the set is fully replaced (old rows deleted) every
+-- time MFA is re-enabled. Only a SHA-256 hash is ever stored, never the
+-- code itself, same show-once/hash-at-rest pattern as api_keys.key_hash.
+CREATE TABLE IF NOT EXISTS mfa_recovery_codes (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  code_hash TEXT NOT NULL,
+  used_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- Error Monitoring: every unhandled request error (Express's final error
+-- handler in index.js) and every process-level uncaughtException/
+-- unhandledRejection lands here -- see services/errorLog.js. workspace_id is
+-- nullable because plenty of failures happen before requireWorkspace (or
+-- even requireAuth) ever runs, and process-level crashes have no request at
+-- all. Deliberately a platform-operator (super-admin) concern, not a
+-- per-workspace one, unlike audit_log -- see routes/admin.js's GET /errors:
+-- stack traces can carry internal implementation detail that a regular
+-- workspace admin has no reason to see, and most rows here aren't cleanly
+-- attributable to one workspace anyway.
+CREATE TABLE IF NOT EXISTS error_log (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT,
+  method TEXT,
+  path TEXT,
+  status_code INTEGER,
+  message TEXT,
+  stack TEXT,
+  user_id TEXT,
+  user_email TEXT,
+  ip_address TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_error_log_created ON error_log(created_at DESC);
 `);
 
 // Additive migrations for columns introduced after the initial tickets table
@@ -1169,6 +1237,37 @@ const ticketColumnMigrations = [
   // resolveConditions() in services/sla.js) without a migration script.
   "ALTER TABLE sla_policies ADD COLUMN conditions TEXT",
   "ALTER TABLE sla_policies ADD COLUMN sort_order INTEGER DEFAULT 0",
+  // Connect a real Microsoft 365/Outlook mailbox for sending AND receiving,
+  // as an alternative to typing raw SMTP credentials -- reuses whichever
+  // Microsoft app registration is already configured under Single Sign-On
+  // (client_id/client_secret/tenant_id on that sso_providers row), just with
+  // a wider delegated scope (Mail.Send, Mail.ReadWrite, offline_access)
+  // requested through a separate consent screen, since a login flow has no
+  // reason to ask for mail permissions. Tokens are encrypted at rest exactly
+  // like every other stored secret (crypto.js). mailbox_provider being
+  // 'smtp' (the default) means every column below is simply unused --
+  // sendMail()/testEmailConfig() in emailService.js branch on it.
+  "ALTER TABLE email_settings ADD COLUMN mailbox_provider TEXT DEFAULT 'smtp'",
+  "ALTER TABLE email_settings ADD COLUMN graph_mailbox_email TEXT",
+  "ALTER TABLE email_settings ADD COLUMN graph_access_token TEXT",
+  "ALTER TABLE email_settings ADD COLUMN graph_refresh_token TEXT",
+  "ALTER TABLE email_settings ADD COLUMN graph_token_expires_at TEXT",
+  "ALTER TABLE email_settings ADD COLUMN graph_connected_by TEXT",
+  // Inbound side of the same connected mailbox: "email this address, get a
+  // ticket" -- off by default even once a mailbox is connected for sending,
+  // since turning a real inbox into a ticket source is a bigger decision
+  // than just wanting outbound mail to come from a real address.
+  "ALTER TABLE email_settings ADD COLUMN inbound_enabled INTEGER DEFAULT 0",
+  "ALTER TABLE email_settings ADD COLUMN inbound_default_type TEXT DEFAULT 'incident'",
+  "ALTER TABLE email_settings ADD COLUMN inbound_last_synced_at TEXT",
+  // MFA (TOTP): totp_secret is encrypted at rest exactly like every other
+  // stored secret (crypto.js) and is written at /mfa/setup time before it's
+  // actually active -- totp_enabled only flips to 1 once the user proves
+  // they can generate a real code from it (POST /mfa/enable), so a secret
+  // sitting unconfirmed never silently starts being required at login.
+  "ALTER TABLE users ADD COLUMN totp_secret TEXT",
+  "ALTER TABLE users ADD COLUMN totp_enabled INTEGER DEFAULT 0",
+  "ALTER TABLE users ADD COLUMN totp_enrolled_at TEXT",
 ];
 for (const sql of ticketColumnMigrations) {
   try {

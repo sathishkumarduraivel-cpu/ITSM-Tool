@@ -22,7 +22,13 @@ export function requireAuth(req, res, next) {
   const token = header.startsWith('Bearer ') ? header.slice(7) : (isStreamRoute ? req.query.token || null : null);
   if (!token) return res.status(401).json({ error: 'Missing auth token' });
   try {
-    req.user = jwt.verify(token, JWT_SECRET);
+    const payload = jwt.verify(token, JWT_SECRET);
+    // An MFA challenge token (see services/authTokens.js's signMfaChallenge)
+    // is only ever valid at POST /auth/mfa/verify -- rejected here up front
+    // so a leaked/stolen challenge token can never reach any real API route,
+    // regardless of what that route does or doesn't check.
+    if (payload.mfa_pending) return res.status(401).json({ error: 'MFA verification required' });
+    req.user = payload;
     next();
   } catch (e) {
     return res.status(401).json({ error: 'Invalid or expired token' });

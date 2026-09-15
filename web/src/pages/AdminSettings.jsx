@@ -7,6 +7,7 @@ import {
   AlertTriangle, Inbox, Search, GitBranch, Pencil, ShieldCheck,
   Milestone, ToggleLeft, ToggleRight, RefreshCw, ArrowUp, ArrowDown, FileStack, Hash, KeyRound,
   History, Download, Filter, LogIn, Copy, Check, Webhook, AlertOctagon, UserCog, Server, Mail,
+  DatabaseBackup, FileJson, HardDrive, Bug,
 } from 'lucide-react';
 import { api, getStoredToken } from '../lib/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -40,6 +41,8 @@ const SECTIONS = [
   { key: 'hrCaseTemplates', label: 'Onboarding/Offboarding Templates', description: 'Reusable department checklists for the Onboarding & Offboarding module', icon: FileStack },
   { key: 'auditLog', label: 'Audit Log', description: 'Every administrative change in this workspace — who did what, when — with CSV export for compliance reporting', icon: History, permission: 'audit_log.view' },
   { key: 'apiKeys', label: 'API Keys', description: 'Issue scoped credentials so other company systems can connect directly to the public developer API', icon: Webhook },
+  { key: 'backups', label: 'Backups & Export', description: 'Download a full copy of your workspace data, or (super-admin) the entire underlying database', icon: DatabaseBackup },
+  { key: 'errorMonitoring', label: 'Error Monitoring', description: 'Unhandled server errors across this instance, for platform operators (super-admin only)', icon: Bug },
 ];
 
 // Groups the flat SECTIONS list above into the categories rendered on the
@@ -72,7 +75,7 @@ const SECTION_GROUPS = [
   {
     key: 'security', label: 'Security & Compliance', icon: ShieldCheck, accent: 'from-rose-400 to-rose-600',
     description: 'Audit trails and credentials for anything connecting to this workspace',
-    sectionKeys: ['auditLog', 'apiKeys'],
+    sectionKeys: ['auditLog', 'apiKeys', 'backups', 'errorMonitoring'],
   },
 ];
 
@@ -1347,6 +1350,262 @@ function ApiKeysTab() {
         />
       )}
       {revealKey && <RevealKeyModal rawKey={revealKey} onClose={() => setRevealKey(null)} />}
+    </div>
+  );
+}
+
+// Downloads a fetch() response as a real file save via a throwaway <a
+// download> element -- the same pattern AuditLogTab's exportCsv already
+// uses, needed because the auth token has to go on an Authorization header
+// (a plain <a href> GET can't carry one, and this route is behind
+// requireRole('admin')).
+async function downloadFile(path, filename) {
+  const resp = await fetch(path, { headers: { authorization: `Bearer ${getStoredToken()}` } });
+  if (!resp.ok) {
+    const data = await resp.json().catch(() => null);
+    throw new Error(data?.error || `Download failed (${resp.status})`);
+  }
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function formatBytes(n) {
+  if (n == null) return '—';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function BackupTab() {
+  const [summary, setSummary] = useState(null);
+  const [loadError, setLoadError] = useState('');
+  const [busy, setBusy] = useState(null); // null | 'export' | 'database'
+  const [error, setError] = useState('');
+  const [done, setDone] = useState(null); // null | 'export' | 'database'
+
+  const load = async () => {
+    setLoadError('');
+    try {
+      setSummary(await api.get('/admin/backup/summary'));
+    } catch (e) {
+      setLoadError(e.message);
+    }
+  };
+  useEffect(() => { load(); }, []);
+
+  const runExport = async () => {
+    setBusy('export'); setError(''); setDone(null);
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      await downloadFile('/api/admin/backup/export', `itsm-ai-backup-${summary?.workspace?.slug || 'workspace'}-${today}.json`);
+      setDone('export');
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const runDatabase = async () => {
+    setBusy('database'); setError(''); setDone(null);
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      await downloadFile('/api/admin/backup/database', `itsm-ai-database-${today}.db`);
+      setDone('database');
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (loadError && !summary) return <LoadErrorState error={loadError} onRetry={load} />;
+  if (!summary) return <div className="text-slate-400 text-sm py-10 text-center">Loading…</div>;
+
+  const totalRecords = Object.values(summary.counts).reduce((a, b) => a + b, 0);
+  const topCounts = Object.entries(summary.counts).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]).slice(0, 8);
+
+  return (
+    <div className="space-y-4 max-w-2xl">
+      {error && <div className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 rounded-lg px-3 py-2">{error}</div>}
+
+      <div className="card p-5 space-y-4">
+        <div className="flex items-start gap-3">
+          <div className="w-10 h-10 rounded-xl bg-brand-50 dark:bg-brand-500/10 flex items-center justify-center shrink-0">
+            <FileJson size={18} className="text-brand-600 dark:text-brand-400" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="font-medium text-slate-800 dark:text-slate-100">Export workspace data</div>
+            <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
+              A readable JSON file with everything in <strong>{summary.workspace.name}</strong> — tickets, assets, the
+              knowledge base, SLA policies, automations, and more ({totalRecords.toLocaleString()} records across{' '}
+              {Object.values(summary.counts).filter((n) => n > 0).length} record types). Credentials and integration
+              secrets are never included.
+            </p>
+          </div>
+        </div>
+
+        {topCounts.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 pl-[52px]">
+            {topCounts.map(([key, n]) => (
+              <span key={key} className="badge bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300 text-[11px]">
+                {n.toLocaleString()} {key.replace(/_/g, ' ')}
+              </span>
+            ))}
+          </div>
+        )}
+
+        <div className="flex items-center gap-2 pl-[52px]">
+          <button onClick={runExport} disabled={busy === 'export'} className="btn-primary text-xs">
+            {busy === 'export' ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />} Download JSON export
+          </button>
+          {done === 'export' && <span className="text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-1"><Check size={12} /> Downloaded</span>}
+        </div>
+      </div>
+
+      <div className="card p-5 space-y-4">
+        <div className="flex items-start gap-3">
+          <div className="w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center shrink-0">
+            <HardDrive size={18} className="text-amber-600 dark:text-amber-400" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="font-medium text-slate-800 dark:text-slate-100 flex items-center gap-2">
+              Full database backup
+              <span className="badge bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400 text-[10px]">Super-admin only</span>
+            </div>
+            <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
+              The complete underlying SQLite database ({formatBytes(summary.dbSizeBytes)}) — every workspace on this
+              instance, for true disaster recovery. Stored secrets inside it stay encrypted at rest; this is a snapshot
+              taken at download time, not a live file copy.
+            </p>
+          </div>
+        </div>
+
+        {summary.canDownloadDatabase ? (
+          <div className="flex items-center gap-2 pl-[52px]">
+            <button onClick={runDatabase} disabled={busy === 'database'} className="btn-secondary text-xs">
+              {busy === 'database' ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />} Download database (.db)
+            </button>
+            {done === 'database' && <span className="text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-1"><Check size={12} /> Downloaded</span>}
+          </div>
+        ) : (
+          <p className="text-xs text-slate-400 pl-[52px]">Only a platform super-admin can download the full database.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const STATUS_TONE = (code) => {
+  if (code >= 500) return 'bg-red-50 text-red-700 dark:bg-red-500/10 dark:text-red-400';
+  if (code >= 400) return 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400';
+  return 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300';
+};
+
+// Platform-operator only (see error_log's comment in db.js) -- shows the
+// same "restricted" framing as BackupTab's full-database card rather than
+// hiding the section outright, so a regular workspace admin at least
+// understands why it's here and who to ask, instead of it silently missing.
+function ErrorMonitoringTab() {
+  const [errors, setErrors] = useState(null);
+  const [forbidden, setForbidden] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [expanded, setExpanded] = useState(null);
+  const [clearing, setClearing] = useState(false);
+
+  const load = async () => {
+    setLoadError('');
+    setForbidden(false);
+    try {
+      const data = await api.get('/admin/errors');
+      setErrors(data.errors);
+    } catch (e) {
+      if (/super-admin/i.test(e.message)) setForbidden(true);
+      else setLoadError(e.message);
+    }
+  };
+  useEffect(() => { load(); }, []);
+
+  const clearAll = async () => {
+    if (!confirm('Clear the entire error log? This cannot be undone.')) return;
+    setClearing(true);
+    try {
+      await api.del('/admin/errors');
+      await load();
+    } catch (e) {
+      setLoadError(e.message);
+    } finally {
+      setClearing(false);
+    }
+  };
+
+  if (forbidden) {
+    return (
+      <div className="card p-6 flex items-start gap-3 max-w-2xl">
+        <Bug size={18} className="text-slate-400 shrink-0 mt-0.5" />
+        <div>
+          <div className="font-medium text-slate-700 dark:text-slate-200">Super-admin only</div>
+          <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
+            Server error details (including stack traces) are only shown to a platform super-admin, since they can
+            reveal internal implementation detail beyond any one workspace. Ask your platform operator if you need
+            something investigated.
+          </p>
+        </div>
+      </div>
+    );
+  }
+  if (loadError && !errors) return <LoadErrorState error={loadError} onRetry={load} />;
+  if (!errors) return <div className="text-slate-400 text-sm py-10 text-center">Loading…</div>;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-slate-500 dark:text-slate-400">
+          Unhandled server errors across every workspace on this instance — most recent 200. Nothing here means the
+          server hasn't hit an unexpected error recently.
+        </p>
+        {errors.length > 0 && (
+          <button onClick={clearAll} disabled={clearing} className="btn-secondary text-xs shrink-0">
+            {clearing ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />} Clear all
+          </button>
+        )}
+      </div>
+
+      {errors.length === 0 ? (
+        <EmptyState icon={Bug} title="No errors recorded" description="Clean bill of health — nothing has hit the server's error handler yet." />
+      ) : (
+        <div className="card divide-y divide-slate-100 dark:divide-slate-800">
+          {errors.map((e) => {
+            const isOpen = expanded === e.id;
+            return (
+              <div key={e.id}>
+                <button type="button" onClick={() => setExpanded(isOpen ? null : e.id)} className="w-full flex items-start gap-3 px-4 py-2.5 text-left hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                  <span className={`badge shrink-0 mt-0.5 ${STATUS_TONE(e.status_code || 500)}`}>{e.status_code || 500}</span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 text-xs text-slate-400">
+                      <span className="font-mono">{new Date(e.created_at).toLocaleString()}</span>
+                      {e.method && e.path && <span className="font-mono truncate">{e.method} {e.path}</span>}
+                      {e.user_email && <span className="truncate">— {e.user_email}</span>}
+                    </div>
+                    <div className="text-sm text-slate-700 dark:text-slate-200 truncate">{e.message}</div>
+                  </div>
+                  {e.stack && (isOpen ? <ChevronUp size={14} className="text-slate-300 shrink-0 mt-1" /> : <ChevronDown size={14} className="text-slate-300 shrink-0 mt-1" />)}
+                </button>
+                {isOpen && e.stack && (
+                  <pre className="mx-4 mb-3 p-3 rounded-lg bg-slate-50 dark:bg-slate-800/60 text-[11px] text-slate-600 dark:text-slate-300 overflow-x-auto whitespace-pre-wrap">{e.stack}</pre>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -2849,8 +3108,12 @@ export default function AdminSettings() {
   const { user } = useAuth();
   // The Workflow builder is a full top-level route (/automations/:id); its
   // Back button returns here with { state: { section: 'workflows' } } so
-  // the admin lands back on the same tab instead of the hub home.
-  const [section, setSection] = useState(() => location.state?.section ?? null);
+  // the admin lands back on the same tab instead of the hub home. A plain
+  // `?section=` query param is the same idea for a hard server redirect
+  // (the Microsoft mailbox-connect OAuth callback, routes/emailSettings.js)
+  // -- location.state doesn't survive a real HTTP redirect the way client
+  // -side navigate() state does, so that flow has to use the URL instead.
+  const [section, setSection] = useState(() => location.state?.section ?? new URLSearchParams(location.search).get('section') ?? null);
   const [counts, setCounts] = useState({});
   const visibleSections = SECTIONS.filter((s) => canSeeSection(user, s));
 
@@ -2950,6 +3213,8 @@ export default function AdminSettings() {
           {section === 'sso' && <SsoTab />}
           {section === 'directory' && <DirectorySyncTab />}
           {section === 'apiKeys' && <ApiKeysTab />}
+          {section === 'backups' && <BackupTab />}
+          {section === 'errorMonitoring' && <ErrorMonitoringTab />}
         </>
       )}
     </div>

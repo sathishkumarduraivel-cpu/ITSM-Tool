@@ -76,6 +76,29 @@ router.delete('/errors', (req, res) => {
   res.json({ ok: true });
 });
 
+// Grant/revoke the platform-wide super-admin flag on a user account.
+// Deliberately gated the same way as /errors and /backup/database above
+// (super-admin only, NOT requireRole('admin')) -- a regular workspace admin
+// must never be able to hand this power to themselves or anyone else.
+// is_super_admin lives on `users`, not `workspace_members`, since it isn't
+// scoped to any one workspace.
+router.patch('/users/:id/super-admin', (req, res) => {
+  if (!req.user.is_super_admin) return res.status(403).json({ error: 'Only a super-admin can grant or revoke super-admin access.' });
+  const target = db.prepare('SELECT id, email FROM users WHERE id = ?').get(req.params.id);
+  if (!target) return res.status(404).json({ error: 'User not found' });
+  const value = req.body.is_super_admin ? 1 : 0;
+  // Same self-protection as DELETE /auth/users/:id's self-removal guard --
+  // without it, the last super-admin could lock everyone (including
+  // themselves) out of the raw-backup/error-log features with no UI left to
+  // undo it (recovery would mean editing the database directly again).
+  if (!value && req.params.id === req.user.id) {
+    return res.status(400).json({ error: "You can't revoke your own super-admin access." });
+  }
+  db.prepare('UPDATE users SET is_super_admin = ? WHERE id = ?').run(value, target.id);
+  logAudit(req, { action: value ? 'user.super_admin_granted' : 'user.super_admin_revoked', entityType: 'user', entityId: target.id, entityLabel: target.email });
+  res.json({ ok: true });
+});
+
 router.get('/backup/database', (req, res) => {
   if (!req.user.is_super_admin) return res.status(403).json({ error: 'Only a super-admin can download the full database.' });
   let tmpPath;

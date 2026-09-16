@@ -4,7 +4,7 @@ import { motion } from 'framer-motion';
 import {
   Loader2, Save, UserPlus, Users, ListChecks, UsersRound, Layers,
   Workflow, ArrowLeft, ChevronRight, Plus, Trash2, ChevronDown, ChevronUp, X,
-  AlertTriangle, Inbox, Search, GitBranch, Pencil, ShieldCheck,
+  AlertTriangle, Inbox, Search, GitBranch, Pencil, ShieldCheck, ShieldOff,
   Milestone, ToggleLeft, ToggleRight, RefreshCw, ArrowUp, ArrowDown, FileStack, Hash, KeyRound,
   History, Download, Filter, LogIn, Copy, Check, Webhook, AlertOctagon, UserCog, Server, Mail,
   DatabaseBackup, FileJson, HardDrive, Bug,
@@ -159,16 +159,237 @@ function AddUserModal({ onClose, onSaved, groups }) {
   );
 }
 
+function SortableHeader({ label, sortKey, sort, onSort }) {
+  const active = sort.key === sortKey;
+  return (
+    <th className="text-left px-3 py-2.5 font-medium select-none">
+      <button type="button" onClick={() => onSort(sortKey)} className="inline-flex items-center gap-1 hover:text-slate-700 dark:hover:text-slate-200">
+        {label}
+        {active ? (sort.dir === 'asc' ? <ArrowUp size={11} /> : <ArrowDown size={11} />) : <ArrowUp size={11} className="opacity-25" />}
+      </button>
+    </th>
+  );
+}
+
+function UsersBulkActionBar({ selectedUsers, currentUserId, groups, onClear, onDone }) {
+  const [bulk, setBulk] = useState({ role: '', team: '', active: '' });
+  const [applying, setApplying] = useState(false);
+  const [error, setError] = useState('');
+  const hasEdits = Object.values(bulk).some((v) => v !== '');
+  // Bulk changes never touch the caller's own row -- same self-protection
+  // already established for role/status/super-admin edits elsewhere in this
+  // tab, just applied across a selection instead of one row at a time.
+  const targetable = selectedUsers.filter((u) => u.id !== currentUserId);
+  const skippedSelf = selectedUsers.length !== targetable.length;
+
+  const apply = async () => {
+    const updates = {};
+    if (bulk.role) updates.role = bulk.role;
+    if (bulk.team) updates.team = bulk.team;
+    if (bulk.active !== '') updates.active = bulk.active === 'active';
+    if (!Object.keys(updates).length || !targetable.length) return;
+    setApplying(true);
+    setError('');
+    try {
+      const result = await api.post('/auth/users/bulk-update', { user_ids: targetable.map((u) => u.id), updates });
+      if (result.failed?.length) {
+        setError(`${result.succeeded.length} updated, ${result.failed.length} failed — ${result.failed.map((f) => f.error).join('; ')}`);
+      }
+      setBulk({ role: '', team: '', active: '' });
+      onDone();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  return (
+    <div className="card p-3 bg-brand-50/60 dark:bg-brand-500/5 border-brand-200 dark:border-brand-500/20 space-y-2 animate-fade-in">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-sm font-semibold text-brand-700 dark:text-brand-400">
+          {selectedUsers.length} selected{skippedSelf ? ' (your own account is skipped in bulk changes)' : ''}
+        </span>
+        <button onClick={onClear} className="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 flex items-center gap-1 py-1.5 px-1 -m-1"><X size={12} /> Clear</button>
+      </div>
+      {error && <div className="text-xs text-red-600 bg-red-50 dark:bg-red-500/10 rounded-md px-2 py-1.5">{error}</div>}
+      <div className="flex flex-wrap items-center gap-2">
+        <Select
+          size="sm" className="w-auto min-w-[130px]" placeholder="Set role…"
+          value={bulk.role} onChange={(v) => setBulk({ ...bulk, role: v })}
+          options={[{ value: 'requester', label: 'Requester' }, { value: 'agent', label: 'Agent' }, { value: 'admin', label: 'Admin' }]}
+        />
+        <Select
+          size="sm" className="w-auto min-w-[140px]" placeholder="Set team…"
+          value={bulk.team} onChange={(v) => setBulk({ ...bulk, team: v })}
+          options={groups.map((g) => ({ value: g.name, label: g.name }))}
+        />
+        <Select
+          size="sm" className="w-auto min-w-[130px]" placeholder="Set status…"
+          value={bulk.active} onChange={(v) => setBulk({ ...bulk, active: v })}
+          options={[{ value: 'active', label: 'Active' }, { value: 'inactive', label: 'Deactivated' }]}
+        />
+        <button onClick={apply} disabled={applying || !hasEdits || !targetable.length} className="btn-primary text-xs">
+          {applying ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />} Apply to {targetable.length}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function UserDrawer({ target, currentUser, users, roles, catalog, groupsFor, onClose, onUpdate, onToggleActive, onToggleSuperAdmin, onRemove, onImpersonate, impersonating, canImpersonate }) {
+  const isSelf = target.id === currentUser.id;
+  const memberOf = groupsFor(target.id);
+  const customRole = roles.find((r) => r.id === target.custom_role_id);
+  const permissionLabel = (key) => catalog.find((p) => p.key === key)?.label || key;
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <div className="absolute inset-0 bg-slate-900/30 backdrop-blur-[1px] animate-fade-in" onClick={onClose} />
+      <div className="relative w-full max-w-md h-full bg-white dark:bg-slate-900 shadow-2xl overflow-y-auto animate-slide-in-right">
+        <div className="sticky top-0 bg-white dark:bg-slate-900 border-b border-slate-100 dark:border-slate-800 px-5 py-4 flex items-center gap-3 z-10">
+          <div
+            className="w-10 h-10 rounded-full flex items-center justify-center text-white text-sm font-semibold shrink-0"
+            style={{ backgroundColor: target.avatar_color || '#6366f1' }}
+          >
+            {target.name?.[0]?.toUpperCase() || '?'}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-semibold text-slate-800 dark:text-slate-100 truncate">{target.name}</div>
+            <div className="text-xs text-slate-500 truncate">{target.email}</div>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 shrink-0"><X size={18} /></button>
+        </div>
+
+        <div className="p-5 space-y-5">
+          {target.directory_provider_name && (
+            <div className="badge bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400" title="Name, email and team are overwritten on this directory's next sync">
+              <Server size={10} /> Synced from {target.directory_provider_name}
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-3 text-sm">
+            <div>
+              <div className="text-xs text-slate-400 mb-1">Joined</div>
+              <div className="text-slate-700 dark:text-slate-200">{target.created_at ? new Date(target.created_at).toLocaleDateString() : '—'}</div>
+            </div>
+            <div>
+              <div className="text-xs text-slate-400 mb-1">Status</div>
+              <button
+                onClick={onToggleActive} disabled={isSelf}
+                className={`text-xs px-2 py-1 rounded-md disabled:opacity-60 disabled:cursor-not-allowed ${target.active ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-slate-100 text-slate-500 dark:bg-slate-800'}`}
+              >
+                {target.active ? 'Active' : 'Deactivated'}
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <div className="text-xs text-slate-400 mb-1">Role</div>
+            <Select
+              size="sm" value={target.role} onChange={(v) => onUpdate({ role: v })} disabled={isSelf}
+              options={[{ value: 'requester', label: 'Requester' }, { value: 'agent', label: 'Agent' }, { value: 'admin', label: 'Admin' }]}
+            />
+          </div>
+
+          {currentUser.is_super_admin && (
+            <div>
+              <div className="text-xs text-slate-400 mb-1">Super admin</div>
+              <button
+                onClick={onToggleSuperAdmin}
+                disabled={isSelf}
+                title={isSelf ? "You can't revoke your own super-admin access" : 'Cross-workspace access: full database backup + error log. Reserve for platform operators.'}
+                className={`text-xs px-2 py-1 rounded-md inline-flex items-center gap-1 disabled:opacity-60 disabled:cursor-not-allowed ${target.is_super_admin ? 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400' : 'bg-slate-100 text-slate-500 dark:bg-slate-800'}`}
+              >
+                {target.is_super_admin ? <ShieldCheck size={12} /> : <ShieldOff size={12} />}
+                {target.is_super_admin ? 'On' : 'Off'}
+              </button>
+            </div>
+          )}
+
+          <div>
+            <div className="text-xs text-slate-400 mb-1">Employee ID</div>
+            <input
+              className="input text-sm w-full"
+              defaultValue={target.employee_id || ''}
+              placeholder="Not set"
+              onBlur={(e) => { if (e.target.value !== (target.employee_id || '')) onUpdate({ employee_id: e.target.value }); }}
+            />
+          </div>
+
+          <div>
+            <div className="text-xs text-slate-400 mb-1">Manager</div>
+            <Select
+              size="sm" value={target.manager_id || ''} onChange={(v) => onUpdate({ manager_id: v })}
+              options={[{ value: '', label: 'Not set' }, ...users.filter((x) => x.id !== target.id).map((x) => ({ value: x.id, label: x.name }))]}
+            />
+          </div>
+
+          <div>
+            <div className="text-xs text-slate-400 mb-1">Groups</div>
+            {memberOf.length ? (
+              <div className="flex flex-wrap gap-1">
+                {memberOf.map((g) => <span key={g.id} className="badge bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">{g.name}</span>)}
+              </div>
+            ) : <span className="text-slate-400 text-sm">none</span>}
+          </div>
+
+          {target.role !== 'admin' && (
+            <div>
+              <div className="text-xs text-slate-400 mb-1 flex items-center justify-between">
+                <span>Delegated role</span>
+                {customRole && <span>{(customRole.permissions || []).length} permission{(customRole.permissions || []).length === 1 ? '' : 's'}</span>}
+              </div>
+              <Select
+                size="sm" value={target.custom_role_id || ''} onChange={(v) => onUpdate({ custom_role_id: v })}
+                options={[{ value: '', label: `None — base ${target.role} permissions only` }, ...roles.map((r) => ({ value: r.id, label: r.name }))]}
+              />
+              {customRole && (
+                <div className="mt-2 text-xs text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800/60 rounded-lg px-2.5 py-2">
+                  Grants: {(customRole.permissions || []).length ? customRole.permissions.map(permissionLabel).join(', ') : 'no permissions selected on this role'}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center gap-2">
+            {canImpersonate && !isSelf && target.active && (
+              <button onClick={onImpersonate} disabled={impersonating} className="btn-secondary text-xs flex-1">
+                {impersonating ? <Loader2 size={13} className="animate-spin" /> : <UserCog size={13} />} Log in as {target.name.split(' ')[0]}
+              </button>
+            )}
+            <button onClick={onRemove} disabled={isSelf} className="btn-secondary text-xs text-red-600 hover:bg-red-50 dark:hover:bg-red-500/10 disabled:opacity-40 flex-1">
+              <Trash2 size={13} /> Remove from workspace
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function UsersTab() {
   const { user, impersonate } = useAuth();
   const navigate = useNavigate();
   const [users, setUsers] = useState(null);
   const [groups, setGroups] = useState([]);
   const [roles, setRoles] = useState([]);
+  const [catalog, setCatalog] = useState([]);
   const [loadError, setLoadError] = useState('');
   const [showAdd, setShowAdd] = useState(false);
-  const [expanded, setExpanded] = useState(null);
   const [impersonating, setImpersonating] = useState('');
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [drawerUserId, setDrawerUserId] = useState(null);
+  const [search, setSearch] = useState('');
+  const [roleFilter, setRoleFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
+  const [sort, setSort] = useState({ key: 'name', dir: 'asc' });
 
   const startImpersonating = async (u) => {
     setImpersonating(u.id);
@@ -189,6 +410,7 @@ function UsersTab() {
       setUsers(usersRes.users);
       setGroups(groupsRes.groups);
       setRoles(rolesRes.roles);
+      setCatalog(rolesRes.catalog || []);
     } catch (e) {
       // Without this catch, a failed request left `users` null forever --
       // the whole tab stuck on "Loading…" with no error and no way out.
@@ -198,8 +420,8 @@ function UsersTab() {
 
   useEffect(() => { load(); }, []);
 
-  const updateRole = async (userId, roleValue) => {
-    await api.patch(`/auth/users/${userId}`, { role: roleValue });
+  const updateProfile = async (userId, patch) => {
+    await api.patch(`/auth/users/${userId}`, patch);
     load();
   };
 
@@ -211,131 +433,202 @@ function UsersTab() {
   const removeUser = async (u) => {
     if (!confirm(`Remove ${u.name} from this workspace? They will lose access entirely.`)) return;
     await api.del(`/auth/users/${u.id}`);
+    setDrawerUserId(null);
     load();
+  };
+
+  const toggleSuperAdmin = async (u) => {
+    const turningOn = !u.is_super_admin;
+    if (turningOn && !confirm(`Grant ${u.name} super-admin access? This gives them the full cross-workspace database backup and error log (with stack traces) — reserve it for platform operators, not regular workspace admins.`)) return;
+    try {
+      await api.patch(`/admin/users/${u.id}/super-admin`, { is_super_admin: turningOn });
+      load();
+    } catch (e) {
+      alert(e.message);
+    }
   };
 
   const groupsFor = (userId) => groups.filter((g) => g.members.some((m) => m.id === userId));
-
-  const updateProfile = async (userId, patch) => {
-    await api.patch(`/auth/users/${userId}`, patch);
-    load();
-  };
+  const roleById = (id) => roles.find((r) => r.id === id);
 
   if (loadError && !users) return <LoadErrorState error={loadError} onRetry={load} />;
   if (!users) return <div className="text-slate-400 text-sm py-10 text-center">Loading…</div>;
 
+  // Drawer target is looked up fresh from `users` every render (by id, not a
+  // stored snapshot) so an edit made inside the drawer -- which reloads
+  // `users` -- is reflected immediately instead of showing stale data.
+  const drawerUser = drawerUserId ? users.find((u) => u.id === drawerUserId) : null;
+
+  const filtered = users.filter((u) => {
+    if (roleFilter && u.role !== roleFilter) return false;
+    if (statusFilter === 'active' && !u.active) return false;
+    if (statusFilter === 'inactive' && u.active) return false;
+    if (search) {
+      const q = search.trim().toLowerCase();
+      if (!u.name?.toLowerCase().includes(q) && !u.email?.toLowerCase().includes(q)) return false;
+    }
+    return true;
+  });
+
+  const sorted = [...filtered].sort((a, b) => {
+    const av = sort.key === 'joined' ? (a.created_at || '') : (a[sort.key] || '');
+    const bv = sort.key === 'joined' ? (b.created_at || '') : (b[sort.key] || '');
+    const cmp = String(av).localeCompare(String(bv));
+    return sort.dir === 'asc' ? cmp : -cmp;
+  });
+
+  const toggleSort = (key) => setSort((s) => (s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }));
+  const toggleOne = (id) => setSelectedIds((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const toggleAll = () => setSelectedIds((s) => (s.size === sorted.length ? new Set() : new Set(sorted.map((u) => u.id))));
+  const clearSelection = () => setSelectedIds(new Set());
+  const selectedUsers = sorted.filter((u) => selectedIds.has(u.id));
+
+  const exportCsv = () => {
+    const headers = ['Name', 'Email', 'Role', 'Team', 'Delegated role', 'Status', 'Joined'];
+    const rows = sorted.map((u) => [
+      u.name, u.email, u.role, u.team || '', roleById(u.custom_role_id)?.name || '',
+      u.active ? 'Active' : 'Deactivated', u.created_at ? new Date(u.created_at).toLocaleDateString() : '',
+    ]);
+    const csv = [headers, ...rows].map((r) => r.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\r\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `users-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="space-y-3">
-      <div className="flex justify-end">
-        <button onClick={() => setShowAdd(true)} className="btn-primary"><UserPlus size={14} /> Add user</button>
+      <div className="flex flex-wrap items-center gap-2 justify-between">
+        <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
+          <div className="relative w-full sm:w-56">
+            <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              className="input pl-8 text-sm w-full" placeholder="Search name or email…"
+              value={search} onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+          <Select
+            size="sm" className="w-auto" value={roleFilter} onChange={setRoleFilter}
+            options={[{ value: '', label: 'All roles' }, { value: 'requester', label: 'Requester' }, { value: 'agent', label: 'Agent' }, { value: 'admin', label: 'Admin' }]}
+          />
+          <Select
+            size="sm" className="w-auto" value={statusFilter} onChange={setStatusFilter}
+            options={[{ value: '', label: 'All statuses' }, { value: 'active', label: 'Active' }, { value: 'inactive', label: 'Deactivated' }]}
+          />
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <button onClick={exportCsv} disabled={!sorted.length} className="btn-secondary text-xs"><Download size={14} /> Export CSV</button>
+          <button onClick={() => setShowAdd(true)} className="btn-primary"><UserPlus size={14} /> Add user</button>
+        </div>
       </div>
 
-      {users.length === 0 ? (
-        <EmptyState icon={Users} title="No users yet" />
+      {selectedIds.size > 0 && (
+        <UsersBulkActionBar selectedUsers={selectedUsers} currentUserId={user.id} groups={groups} onClear={clearSelection} onDone={() => { clearSelection(); load(); }} />
+      )}
+
+      {sorted.length === 0 ? (
+        <EmptyState icon={Users} title={users.length === 0 ? 'No users yet' : 'No users match your filters'} />
       ) : (
-        <div className="card divide-y divide-slate-100 dark:divide-slate-800">
-          {users.map((u) => {
-            const isOpen = expanded === u.id;
-            const memberOf = groupsFor(u.id);
-            return (
-              <div key={u.id}>
-                <div className="flex items-center gap-3 px-4 py-3">
-                  <div
-                    className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-semibold shrink-0"
-                    style={{ backgroundColor: u.avatar_color || '#6366f1' }}
-                  >
-                    {u.name?.[0]?.toUpperCase() || '?'}
-                  </div>
-                  <button type="button" className="min-w-0 flex-1 text-left" onClick={() => setExpanded(isOpen ? null : u.id)}>
-                    <div className="text-sm font-medium text-slate-800 dark:text-slate-100 truncate flex items-center gap-1.5">
-                      {u.name}
-                      {u.directory_provider_name && (
-                        <span className="badge bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400 shrink-0" title="Name, email and team are overwritten on this directory's next sync">
-                          <Server size={10} /> {u.directory_provider_name}
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-xs text-slate-500 truncate">{u.email}{memberOf.length ? ` · ${memberOf.map((g) => g.name).join(', ')}` : ''}</div>
-                  </button>
-                  <Select
-                    size="sm" className="w-auto" value={u.role} onChange={(v) => updateRole(u.id, v)} disabled={u.id === user.id}
-                    options={[{ value: 'requester', label: 'Requester' }, { value: 'agent', label: 'Agent' }, { value: 'admin', label: 'Admin' }]}
-                  />
-                  <button
-                    onClick={() => toggleActive(u)}
-                    disabled={u.id === user.id}
-                    className={`text-xs px-2 py-1 rounded-md ${u.active ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-slate-100 text-slate-500 dark:bg-slate-800'}`}
-                  >
-                    {u.active ? 'Active' : 'Deactivated'}
-                  </button>
-                  {hasPermission(user, 'users.impersonate') && u.id !== user.id && u.active && (
-                    <button
-                      onClick={() => startImpersonating(u)}
-                      disabled={impersonating === u.id}
-                      className="text-slate-400 hover:text-brand-600"
-                      title={`Log in as ${u.name} (audited)`}
-                    >
-                      {impersonating === u.id ? <Loader2 size={15} className="animate-spin" /> : <UserCog size={15} />}
-                    </button>
-                  )}
-                  <button
-                    onClick={() => removeUser(u)}
-                    disabled={u.id === user.id}
-                    className="text-slate-400 hover:text-red-500 disabled:opacity-30 disabled:hover:text-slate-400"
-                    title="Remove from workspace"
-                  >
-                    <Trash2 size={15} />
-                  </button>
-                  <button onClick={() => setExpanded(isOpen ? null : u.id)} className="text-slate-400 hover:text-slate-600">
-                    {isOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
-                  </button>
-                </div>
-                {isOpen && (
-                  <div className="px-4 pb-4 pt-0.5 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5 text-sm">
-                    <div><span className="text-slate-400">Email:</span> <span className="text-slate-700 dark:text-slate-200">{u.email}</span></div>
-                    <div><span className="text-slate-400">Joined:</span> <span className="text-slate-700 dark:text-slate-200">{u.created_at ? new Date(u.created_at).toLocaleDateString() : '—'}</span></div>
-                    <div><span className="text-slate-400">Status:</span> <span className="text-slate-700 dark:text-slate-200">{u.active ? 'Active' : 'Deactivated'}</span></div>
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-slate-400 shrink-0">Employee ID:</span>
-                      <input
-                        className="input w-auto py-0.5 px-1.5 text-xs"
-                        defaultValue={u.employee_id || ''}
-                        placeholder="Not set"
-                        onBlur={(e) => { if (e.target.value !== (u.employee_id || '')) updateProfile(u.id, { employee_id: e.target.value }); }}
-                      />
-                    </div>
-                    <div className="flex items-center gap-1.5 col-span-2">
-                      <span className="text-slate-400 shrink-0">Manager:</span>
-                      <Select
-                        size="xs" className="w-auto" value={u.manager_id || ''} onChange={(v) => updateProfile(u.id, { manager_id: v })}
-                        options={[{ value: '', label: 'Not set' }, ...users.filter((x) => x.id !== u.id).map((x) => ({ value: x.id, label: x.name }))]}
-                      />
-                    </div>
-                    <div className="col-span-2">
-                      <span className="text-slate-400">Groups:</span>{' '}
-                      {memberOf.length ? memberOf.map((g) => (
-                        <span key={g.id} className="badge bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300 mr-1">{g.name}</span>
-                      )) : <span className="text-slate-400">none</span>}
-                    </div>
-                    {u.role !== 'admin' && (
-                      <div className="flex items-center gap-1.5 col-span-2">
-                        <span className="text-slate-400 shrink-0">Delegated role:</span>
-                        <Select
-                          size="xs" className="w-auto" value={u.custom_role_id || ''} onChange={(v) => updateProfile(u.id, { custom_role_id: v })}
-                          options={[{ value: '', label: `None — base ${u.role} permissions only` }, ...roles.map((r) => ({ value: r.id, label: r.name }))]}
-                        />
+        <div className="card overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-slate-100 dark:border-slate-800 text-xs text-slate-400">
+                <th className="text-left px-4 py-2.5 font-medium w-8">
+                  <input type="checkbox" checked={selectedIds.size > 0 && selectedIds.size === sorted.length} onChange={toggleAll} />
+                </th>
+                <SortableHeader label="Name" sortKey="name" sort={sort} onSort={toggleSort} />
+                <SortableHeader label="Role" sortKey="role" sort={sort} onSort={toggleSort} />
+                <th className="text-left px-3 py-2.5 font-medium">Delegated role</th>
+                <th className="text-left px-3 py-2.5 font-medium">Team</th>
+                <th className="text-left px-3 py-2.5 font-medium">Status</th>
+                <SortableHeader label="Joined" sortKey="joined" sort={sort} onSort={toggleSort} />
+                <th className="w-8" />
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+              {sorted.map((u) => {
+                const memberOf = groupsFor(u.id);
+                const customRole = roleById(u.custom_role_id);
+                return (
+                  <tr key={u.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 cursor-pointer" onClick={() => setDrawerUserId(u.id)}>
+                    <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
+                      <input type="checkbox" checked={selectedIds.has(u.id)} onChange={() => toggleOne(u.id)} />
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div
+                          className="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-semibold shrink-0"
+                          style={{ backgroundColor: u.avatar_color || '#6366f1' }}
+                        >
+                          {u.name?.[0]?.toUpperCase() || '?'}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium text-slate-800 dark:text-slate-100 truncate flex items-center gap-1.5">
+                            {u.name}
+                            {!!u.is_super_admin && <ShieldCheck size={12} className="text-amber-500 shrink-0" />}
+                            {u.directory_provider_name && (
+                              <span className="badge bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400 shrink-0" title="Name, email and team are overwritten on this directory's next sync">
+                                <Server size={10} /> {u.directory_provider_name}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-xs text-slate-500 truncate">{u.email}</div>
+                        </div>
                       </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
+                    </td>
+                    <td className="px-3 py-2.5 text-slate-600 dark:text-slate-300 capitalize">{u.role}</td>
+                    <td className="px-3 py-2.5">
+                      {customRole ? (
+                        <span
+                          className="badge bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-400"
+                          title={`Grants: ${(customRole.permissions || []).map((k) => catalog.find((p) => p.key === k)?.label || k).join(', ') || 'no permissions'}`}
+                        >
+                          {customRole.name} · {(customRole.permissions || []).length}
+                        </span>
+                      ) : <span className="text-slate-400 text-xs">—</span>}
+                    </td>
+                    <td className="px-3 py-2.5 text-slate-600 dark:text-slate-300">{u.team || '—'}{memberOf.length ? ` +${memberOf.length}` : ''}</td>
+                    <td className="px-3 py-2.5">
+                      <span className={`text-xs px-2 py-0.5 rounded-md ${u.active ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-slate-100 text-slate-500 dark:bg-slate-800'}`}>
+                        {u.active ? 'Active' : 'Deactivated'}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2.5 text-slate-500 text-xs">{u.created_at ? new Date(u.created_at).toLocaleDateString() : '—'}</td>
+                    <td className="px-3 py-2.5"><ChevronRight size={15} className="text-slate-300" /></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       )}
 
       {showAdd && (
         <AddUserModal onClose={() => setShowAdd(false)} onSaved={() => { setShowAdd(false); load(); }} groups={groups} />
+      )}
+
+      {drawerUser && (
+        <UserDrawer
+          target={drawerUser}
+          currentUser={user}
+          users={users}
+          roles={roles}
+          catalog={catalog}
+          groupsFor={groupsFor}
+          onClose={() => setDrawerUserId(null)}
+          onUpdate={(patch) => updateProfile(drawerUser.id, patch)}
+          onToggleActive={() => toggleActive(drawerUser)}
+          onToggleSuperAdmin={() => toggleSuperAdmin(drawerUser)}
+          onRemove={() => removeUser(drawerUser)}
+          onImpersonate={() => startImpersonating(drawerUser)}
+          impersonating={impersonating === drawerUser.id}
+          canImpersonate={hasPermission(user, 'users.impersonate')}
+        />
       )}
     </div>
   );

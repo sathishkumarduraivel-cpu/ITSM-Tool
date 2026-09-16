@@ -372,7 +372,7 @@ router.get('/users', requireAuth, requireWorkspace, (req, res) => {
 // the workspace(s) they were actually added to.
 router.get('/users/all', requireAuth, requireWorkspace, requireRole('admin'), (req, res) => {
   const rows = db.prepare(
-    `SELECT u.id, u.name, u.email, wm.role, wm.team, u.avatar_color, wm.active, u.created_at, wm.employee_id, wm.manager_id, mu.name AS manager_name, wm.custom_role_id, cr.name AS custom_role_name, dp.name AS directory_provider_name
+    `SELECT u.id, u.name, u.email, wm.role, wm.team, u.avatar_color, wm.active, u.created_at, wm.employee_id, wm.manager_id, mu.name AS manager_name, wm.custom_role_id, cr.name AS custom_role_name, dp.name AS directory_provider_name, u.is_super_admin
      FROM workspace_members wm JOIN users u ON u.id = wm.user_id
      LEFT JOIN users mu ON mu.id = wm.manager_id
      LEFT JOIN custom_roles cr ON cr.id = wm.custom_role_id
@@ -406,6 +406,38 @@ router.post('/users', requireAuth, requireWorkspace, requireRole('admin'), (req,
     .run(uid('wm'), req.workspaceId, user.id, role, team || null);
   logAudit(req, { action: 'user.created', entityType: 'user', entityId: user.id, entityLabel: email, details: { role, team } });
   res.status(201).json({ id: user.id });
+});
+
+// Admin: apply role/team/active to many members at once (Admin Settings →
+// Users' bulk action bar) -- same shape as POST /tickets/bulk-update:
+// partial success is fine, each row reports its own outcome rather than
+// the whole batch failing for one bad id. Deliberately excludes
+// custom_role_id/employee_id/manager_id (reviewed one-at-a-time in the
+// user drawer) and is_super_admin (its own dedicated, more tightly guarded
+// route in routes/admin.js) -- this endpoint only ever touches the same
+// three fields the per-row Role/Status controls already expose.
+router.post('/users/bulk-update', requireAuth, requireWorkspace, requireRole('admin'), (req, res) => {
+  const { user_ids, updates } = req.body;
+  if (!Array.isArray(user_ids) || !user_ids.length) return res.status(400).json({ error: 'user_ids required' });
+  const allowed = ['role', 'team', 'active'];
+  const keys = Object.keys(updates || {}).filter((k) => allowed.includes(k));
+  if (!keys.length) return res.status(400).json({ error: 'No valid fields to update (role, team, active only)' });
+
+  const succeeded = [];
+  const failed = [];
+  for (const id of user_ids) {
+    const membership = db.prepare('SELECT id FROM workspace_members WHERE workspace_id = ? AND user_id = ?').get(req.workspaceId, id);
+    if (!membership) { failed.push({ id, error: 'Not found in this workspace' }); continue; }
+    const fields = []; const params = [];
+    if (keys.includes('role')) { fields.push('role = ?'); params.push(updates.role); }
+    if (keys.includes('team')) { fields.push('team = ?'); params.push(updates.team || null); }
+    if (keys.includes('active')) { fields.push('active = ?'); params.push(updates.active ? 1 : 0); }
+    params.push(membership.id);
+    db.prepare(`UPDATE workspace_members SET ${fields.join(', ')} WHERE id = ?`).run(...params);
+    succeeded.push(id);
+  }
+  logAudit(req, { action: 'user.bulk_updated', entityType: 'user', details: { count: succeeded.length, failed: failed.length, updates } });
+  res.json({ succeeded, failed });
 });
 
 // Admin: change a member's role/team within the current workspace, or

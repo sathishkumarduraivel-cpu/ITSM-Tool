@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Plus, Search, X, Loader2, BookOpen, Eye, Pencil } from 'lucide-react';
 import { api } from '../lib/api.js';
+import { useSearchParams } from 'react-router-dom';
 import Modal from '../components/Modal.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import EmptyState from '../components/EmptyState.jsx';
@@ -62,6 +63,7 @@ function ArticleModal({ initial, onClose, onSaved }) {
 }
 
 export default function KnowledgeBase() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [articles, setArticles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState('');
@@ -75,6 +77,8 @@ export default function KnowledgeBase() {
       if (query) params.set('q', query);
       const { articles } = await api.get(`/kb?${params.toString()}`);
       setArticles(articles);
+      const selected = searchParams.get('selected');
+      if (selected) setOpen(articles.find((article) => article.id === selected) || null);
     } finally {
       setLoading(false);
     }
@@ -131,7 +135,7 @@ export default function KnowledgeBase() {
           <div className="card w-full max-w-2xl p-6 max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-2">
               <span className="badge bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-400">{open.category || 'General'}</span>
-              <button onClick={() => setOpen(null)} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
+              <button aria-label="Close article" onClick={() => { setOpen(null); setSearchParams({}); }} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
             </div>
             <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100 mb-3">{open.title}</h2>
             <p className="text-sm text-slate-600 dark:text-slate-300 whitespace-pre-line">{open.body}</p>

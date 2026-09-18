@@ -4,6 +4,7 @@ import { db, uid } from '../db.js';
 import { requireAuth, requireWorkspace, requireRole } from '../middleware/auth.js';
 import { getProvider, testProvider, dashboardInsights, askAssistant, describeProblem, askAboutMyTickets } from '../services/aiClient.js';
 import { encrypt } from '../services/crypto.js';
+import { getOnlineUserIds } from '../services/realtime.js';
 
 const router = Router();
 
@@ -92,7 +93,7 @@ router.get('/dashboard-stats', (req, res) => {
 // tables/columns this schema actually has -- no major_incidents,
 // problem_incident_links, change_type, or known_error/workaround columns, so
 // equivalents are built from real fields instead (e.g. risk, responded_at). ----
-function buildCommandCenterStats(workspaceId, filters = {}) {
+function buildCommandCenterStats(workspaceId, filters = {}, callerId) {
   const days = Number(filters.days) > 0 ? Number(filters.days) : 30;
   const { team, priority, status, owner, type } = filters;
 
@@ -176,26 +177,23 @@ function buildCommandCenterStats(workspaceId, filters = {}) {
   ).get(workspaceId).c;
   const posInFlight = db.prepare("SELECT COUNT(*) c FROM purchase_orders WHERE workspace_id = ? AND status = 'ordered'").get(workspaceId).c;
 
+  // Scoped to the viewer's own team (e.g. someone on "Service Desk" sees
+  // only other "Service Desk" people here) -- unless the viewer has no team
+  // set, in which case there's nothing to scope by and every admin/agent is
+  // shown, same as before this filter existed.
+  const callerTeam = callerId ? db.prepare('SELECT team FROM workspace_members WHERE workspace_id = ? AND user_id = ?').get(workspaceId, callerId)?.team : null;
   const agents = db.prepare(
     `SELECT u.id, u.name, wm.team, u.avatar_color, wm.role FROM workspace_members wm JOIN users u ON u.id = wm.user_id
-     WHERE wm.workspace_id = ? AND wm.role IN ('admin','agent') AND wm.active = 1 ORDER BY u.name`
-  ).all(workspaceId);
-  const workloadWhere = (() => {
-    const clauses = ['t.workspace_id = ?', "t.created_at >= datetime('now', ?)"];
-    const params = [workspaceId, `-${days} days`];
-    if (team) { clauses.push('t.team = ?'); params.push(team); }
-    if (priority) { clauses.push('t.priority = ?'); params.push(priority); }
-    if (status) { clauses.push('t.status = ?'); params.push(status); }
-    if (owner) { clauses.push('t.assignee_id = ?'); params.push(owner); }
-    if (type) { clauses.push('t.type = ?'); params.push(type); }
-    return { sql: clauses.join(' AND '), params };
-  })();
-  const workloadByAgent = db.prepare(
-    `SELECT u.id, COUNT(*) c FROM tickets t JOIN users u ON u.id = t.assignee_id
-     WHERE ${workloadWhere.sql} AND t.status NOT IN ('resolved','closed') GROUP BY t.assignee_id ORDER BY c DESC`
-  ).all(...workloadWhere.params);
-  const activeAgentIds = new Set(workloadByAgent.filter((a) => a.c > 0).map((a) => a.id));
-  const teamRow = agents.slice(0, 7).map((a) => ({ ...a, active: activeAgentIds.has(a.id) }));
+     WHERE wm.workspace_id = ? AND wm.role IN ('admin','agent') AND wm.active = 1
+       AND (? IS NULL OR wm.team = ?)
+     ORDER BY u.name`
+  ).all(workspaceId, callerTeam || null, callerTeam || null);
+  // `active` here means real presence (an open SSE connection right now --
+  // see services/realtime.js), not workload. It used to be keyed off having
+  // any open assigned tickets, which just meant "busy," not "online," and
+  // showed green for someone who hadn't touched the app in days.
+  const onlineIds = getOnlineUserIds(workspaceId);
+  const teamRow = agents.slice(0, 7).map((a) => ({ ...a, active: onlineIds.has(a.id) }));
 
   const operatingHealth = openRisks === 0 ? 'Healthy' : openRisks <= 3 ? 'Stable' : 'At Risk';
   const maturityStage = automationCoverage >= 67
@@ -237,7 +235,7 @@ function buildCommandCenterStats(workspaceId, filters = {}) {
 
 router.get('/command-center-stats', (req, res) => {
   try {
-    const stats = buildCommandCenterStats(req.workspaceId, req.query);
+    const stats = buildCommandCenterStats(req.workspaceId, req.query, req.user.id);
     res.json({ stats });
   } catch (e) {
     res.status(400).json({ error: e.message });

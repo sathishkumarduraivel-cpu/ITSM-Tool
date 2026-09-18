@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Plus, Search, Loader2, Check, GitMerge, X } from 'lucide-react';
+import { Plus, Search, Loader2, Check, GitMerge, X, SlidersHorizontal, Bookmark, AlertTriangle, Inbox, UserRoundCheck } from 'lucide-react';
 import { api } from '../lib/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { PriorityBadge, StatusBadge, TypeBadge } from '../components/Badge.jsx';
@@ -155,12 +155,15 @@ export default function Tickets() {
   const [loading, setLoading] = useState(true);
   const [searchParams] = useSearchParams();
   const urlType = searchParams.get('type') || '';
-  const [filters, setFilters] = useState({ status: '', priority: '', type: urlType, q: '' });
+  const [filters, setFilters] = useState({ status: '', priority: '', type: urlType, q: '', assignee_id: '' });
   const [showNew, setShowNew] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [agents, setAgents] = useState([]);
   const [groups, setGroups] = useState([]);
   const [loadError, setLoadError] = useState('');
+  const [sort, setSort] = useState(() => localStorage.getItem('itsm_ticket_sort') || 'updated');
+  const [visibleColumns, setVisibleColumns] = useState(() => new Set(JSON.parse(localStorage.getItem('itsm_ticket_columns') || '["type","status","priority","category","updated"]')));
+  const [showCustomize, setShowCustomize] = useState(false);
   const navigate = useNavigate();
 
   const load = async () => {
@@ -194,7 +197,7 @@ export default function Tickets() {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters.status, filters.priority, filters.type]);
+  }, [filters.status, filters.priority, filters.type, filters.assignee_id]);
 
   useEffect(() => {
     if (!isAgent) return;
@@ -224,6 +227,14 @@ export default function Tickets() {
   const clearSelection = () => setSelectedIds(new Set());
   const afterBulkAction = () => { clearSelection(); load(); };
   const selectedTickets = tickets.filter((t) => selectedIds.has(t.id));
+  const displayedTickets = useMemo(() => [...tickets].sort((a, b) => {
+    if (sort === 'priority') return PRIORITIES.indexOf(b.priority) - PRIORITIES.indexOf(a.priority);
+    if (sort === 'oldest') return new Date(a.created_at) - new Date(b.created_at);
+    if (sort === 'sla') return new Date(a.sla_due_at || '2999-01-01') - new Date(b.sla_due_at || '2999-01-01');
+    return new Date(b.updated_at) - new Date(a.updated_at);
+  }), [tickets, sort]);
+  const applyQueue = (queue) => setFilters({ status: queue === 'waiting' ? 'on_hold' : '', priority: queue === 'urgent' ? 'critical' : '', type: '', q: '', assignee_id: queue === 'mine' ? user.id : queue === 'unassigned' ? 'unassigned' : '' });
+  const toggleColumn = (column) => setVisibleColumns((current) => { const next = new Set(current); if (next.has(column)) next.delete(column); else next.add(column); localStorage.setItem('itsm_ticket_columns', JSON.stringify([...next])); return next; });
 
   return (
     <div className="space-y-4">
@@ -258,7 +269,13 @@ export default function Tickets() {
           value={filters.priority} onChange={(v) => setFilters({ ...filters, priority: v })}
           options={PRIORITIES}
         />
+        <Select className="w-auto min-w-[130px]" value={sort} onChange={(value) => { setSort(value); localStorage.setItem('itsm_ticket_sort', value); }} options={[{ value: 'updated', label: 'Recently updated' }, { value: 'priority', label: 'Priority' }, { value: 'sla', label: 'SLA due first' }, { value: 'oldest', label: 'Oldest first' }]} />
+        {isAgent && <button onClick={() => setShowCustomize((open) => !open)} className="btn-secondary text-xs"><SlidersHorizontal size={13} /> Columns</button>}
       </div>
+
+      {isAgent && <div className="flex flex-wrap items-center gap-2"><span className="text-xs font-semibold uppercase tracking-wide text-slate-400 mr-1">Work queues</span><button onClick={() => applyQueue('mine')} className="btn-secondary text-xs"><UserRoundCheck size={13} /> My work</button><button onClick={() => applyQueue('urgent')} className="btn-secondary text-xs"><AlertTriangle size={13} /> Critical</button><button onClick={() => applyQueue('waiting')} className="btn-secondary text-xs"><Inbox size={13} /> Awaiting customer</button><button onClick={() => applyQueue('unassigned')} className="btn-secondary text-xs"><Bookmark size={13} /> Unassigned</button></div>}
+      {Object.entries(filters).some(([key, value]) => value && key !== 'q') && <div className="flex flex-wrap items-center gap-1.5 text-xs"><span className="text-slate-400">Active filters:</span>{Object.entries(filters).filter(([key, value]) => value && key !== 'q').map(([key, value]) => <button key={key} onClick={() => setFilters((current) => ({ ...current, [key]: '' }))} className="inline-flex items-center gap-1 rounded-full bg-brand-50 px-2 py-1 text-brand-700 dark:bg-brand-500/10 dark:text-brand-300">{key.replace('_id', '').replace('_', ' ')}: {value === 'unassigned' ? 'unassigned' : String(value).replace('_', ' ')} <X size={11} /></button>)}</div>}
+      {showCustomize && <div className="card-flat flex flex-wrap gap-3 p-3 text-xs text-slate-600 dark:text-slate-300">{['type', 'status', 'priority', 'category', 'updated'].map((column) => <label key={column} className="flex items-center gap-1.5 capitalize"><input type="checkbox" checked={visibleColumns.has(column)} onChange={() => toggleColumn(column)} /> {column}</label>)}</div>}
 
       {isAgent && selectedTickets.length > 0 && (
         <BulkActionBar selectedTickets={selectedTickets} onClear={clearSelection} onDone={afterBulkAction} agents={agents} groups={groups} />
@@ -284,18 +301,18 @@ export default function Tickets() {
                   </th>
                 )}
                 <th className="text-left px-4 py-2.5 font-medium">Ticket</th>
-                <th className="text-left px-4 py-2.5 font-medium">Type</th>
-                <th className="text-left px-4 py-2.5 font-medium">Status</th>
-                <th className="text-left px-4 py-2.5 font-medium">Priority</th>
-                <th className="text-left px-4 py-2.5 font-medium">Category</th>
-                <th className="text-left px-4 py-2.5 font-medium">Updated</th>
+                {visibleColumns.has('type') && <th className="text-left px-4 py-2.5 font-medium">Type</th>}
+                {visibleColumns.has('status') && <th className="text-left px-4 py-2.5 font-medium">Status</th>}
+                {visibleColumns.has('priority') && <th className="text-left px-4 py-2.5 font-medium">Priority</th>}
+                {visibleColumns.has('category') && <th className="text-left px-4 py-2.5 font-medium">Category</th>}
+                {visibleColumns.has('updated') && <th className="text-left px-4 py-2.5 font-medium">Updated</th>}
               </tr>
             </thead>
             <RevealGroup as={motion.tbody}>
               {tickets.length === 0 && (
-                <tr><td colSpan={isAgent ? 7 : 6} className="text-center py-10 text-slate-400">No tickets match these filters.</td></tr>
+                <tr><td colSpan={(isAgent ? 2 : 1) + visibleColumns.size} className="text-center py-10 text-slate-400">No tickets match these filters.</td></tr>
               )}
-              {tickets.map((t) => (
+              {displayedTickets.map((t) => (
                 <RevealItem
                   key={t.id}
                   as={motion.tr}
@@ -314,11 +331,11 @@ export default function Tickets() {
                     </div>
                     <div className="text-slate-500 text-xs truncate max-w-xs">{t.title}</div>
                   </td>
-                  <td className="px-4 py-2.5"><TypeBadge type={t.type} /></td>
-                  <td className="px-4 py-2.5"><StatusBadge status={t.status} /></td>
-                  <td className="px-4 py-2.5"><PriorityBadge priority={t.priority} /></td>
-                  <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">{t.category || '—'}</td>
-                  <td className="px-4 py-2.5 text-slate-400 text-xs">{new Date(t.updated_at).toLocaleString()}</td>
+                  {visibleColumns.has('type') && <td className="px-4 py-2.5"><TypeBadge type={t.type} /></td>}
+                  {visibleColumns.has('status') && <td className="px-4 py-2.5"><StatusBadge status={t.status} /></td>}
+                  {visibleColumns.has('priority') && <td className="px-4 py-2.5"><PriorityBadge priority={t.priority} /></td>}
+                  {visibleColumns.has('category') && <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">{t.category || '—'}</td>}
+                  {visibleColumns.has('updated') && <td className="px-4 py-2.5 text-slate-400 text-xs">{new Date(t.updated_at).toLocaleString()}</td>}
                 </RevealItem>
               ))}
             </RevealGroup>

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { db, uid } from '../db.js';
 import { requireAuth, requireWorkspace } from '../middleware/auth.js';
 import { GROUP_BY_DIMENSIONS, METRICS, runCustomReport, runPivotReport, previousPeriod, runBacklogAging } from '../services/reportBuilder.js';
+import { getProvider, chatComplete } from '../services/aiClient.js';
 
 const router = Router();
 router.use(requireAuth, requireWorkspace);
@@ -69,6 +70,37 @@ router.get('/dimensions', (req, res) => {
     dimensions: Object.entries(GROUP_BY_DIMENSIONS).map(([key, d]) => ({ key, label: d.label })),
     metrics: METRICS,
   });
+});
+
+// Sona converts a plain-language analytical request into the same safe report
+// configuration the visual builder uses. The server validates every field so
+// an LLM response can never become an arbitrary query.
+router.post('/sona', async (req, res) => {
+  try {
+    const prompt = String(req.body.prompt || '').trim();
+    if (!prompt) return res.status(400).json({ error: 'Tell Sona what you want to analyse.' });
+    const provider = getProvider(req.workspaceId, req.body.provider_id);
+    const dimensions = Object.keys(GROUP_BY_DIMENSIONS);
+    const metrics = METRICS.map((metric) => metric.key);
+    const teams = db.prepare("SELECT DISTINCT team FROM tickets WHERE workspace_id = ? AND team IS NOT NULL AND team != '' ORDER BY team").all(req.workspaceId).map((row) => row.team);
+    const categories = db.prepare("SELECT DISTINCT category FROM tickets WHERE workspace_id = ? AND category IS NOT NULL AND category != '' ORDER BY category").all(req.workspaceId).map((row) => row.category);
+    const text = await chatComplete(provider, [
+      { role: 'system', content: 'You configure safe ITSM reports. Return strict JSON only.' },
+      { role: 'user', content: `Turn this request into a report configuration: ${prompt}\n\nAllowed group_by: ${dimensions.join(', ')}\nAllowed metrics: ${metrics.join(', ')}\nAllowed chart_type: bar, line, pie, donut, table, scorecard\nAllowed type: incident, request, problem, change. Allowed priority: low, medium, high, critical. Allowed status: open, in_progress, on_hold, pending_approval, resolved, closed. Teams: ${teams.join(', ') || 'none'}. Categories: ${categories.join(', ') || 'none'}.\n\nReturn exactly: {"title":string,"summary":string,"group_by":string,"chart_type":string,"metrics":string[],"filters":{"type":string,"priority":string,"status":string,"team":string,"category":string,"from":string,"to":string},"compare":boolean}` },
+    ], { json: true, temperature: 0.1, max_tokens: 500 });
+    const parsed = JSON.parse(text.trim().replace(/^```json/i, '').replace(/^```/, '').replace(/```$/, ''));
+    const filters = parsed.filters || {};
+    const valid = (value, allowed) => allowed.includes(value) ? value : '';
+    const report = {
+      title: String(parsed.title || 'Sona report').slice(0, 100), summary: String(parsed.summary || 'Built from your request.').slice(0, 220),
+      group_by: valid(parsed.group_by, dimensions) || 'status', chart_type: valid(parsed.chart_type, ['bar', 'line', 'pie', 'donut', 'table', 'scorecard']) || 'bar',
+      metrics: Array.isArray(parsed.metrics) ? parsed.metrics.filter((metric) => metrics.includes(metric)).slice(0, 4) : ['count'],
+      filters: { type: valid(filters.type, ['incident', 'request', 'problem', 'change']), priority: valid(filters.priority, ['low', 'medium', 'high', 'critical']), status: valid(filters.status, ['open', 'in_progress', 'on_hold', 'pending_approval', 'resolved', 'closed']), team: valid(filters.team, teams), category: valid(filters.category, categories), from: /^\d{4}-\d{2}-\d{2}$/.test(filters.from || '') ? filters.from : '', to: /^\d{4}-\d{2}-\d{2}$/.test(filters.to || '') ? filters.to : '' },
+      compare: !!parsed.compare,
+    };
+    if (!report.metrics.length) report.metrics = ['count'];
+    res.json({ report });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 router.get('/custom', (req, res) => {

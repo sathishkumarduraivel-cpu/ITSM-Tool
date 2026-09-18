@@ -121,6 +121,16 @@ h1, h2, h3 {
   @apply card hover:shadow-card-hover dark:hover:shadow-card-hover-dark hover:-translate-y-1 hover:rotate-[0.15deg] hover:border-brand-300/70 dark:hover:border-neon-400/30 transition-all duration-300 ease-out cursor-pointer;
 }
 
+/* Workspace rhythm: used by high-density operational pages to keep action,
+   analysis, and supporting information visually distinct without adding more
+   one-off card treatments. */
+.workspace-section {
+  @apply rounded-2xl border border-slate-200/80 bg-white/75 p-4 shadow-card backdrop-blur-xl dark:border-white/[0.07] dark:bg-slate-900/70;
+}
+.workspace-kicker {
+  @apply text-[10px] font-bold uppercase tracking-[0.16em] text-brand-600 dark:text-brand-400;
+}
+
 /* Shared "live console" hover for clickable list/table rows across the app
    (Tickets, Changes, Problems, Assets, HR cases, ...) -- an inset accent bar
    plus a directional brand->neon glow sweep, instead of a flat bg swap. Works

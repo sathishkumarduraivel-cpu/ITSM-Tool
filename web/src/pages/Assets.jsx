@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Plus, X, Loader2, Boxes, Link2, Ticket as TicketIcon, Trash2, Pencil } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import Modal from '../components/Modal.jsx';
 import PageHeader from '../components/PageHeader.jsx';
@@ -214,6 +214,7 @@ function AssetModal({ initial, onClose, onSaved }) {
 }
 
 export default function Assets() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [assets, setAssets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null); // null | 'new' | asset object
@@ -224,6 +225,8 @@ export default function Assets() {
     try {
       const { assets } = await api.get('/assets');
       setAssets(assets);
+      const selected = searchParams.get('selected');
+      if (selected) setDetailAsset(assets.find((asset) => asset.id === selected) || null);
     } finally {
       setLoading(false);
     }
@@ -280,7 +283,7 @@ export default function Assets() {
         <AssetModal initial={modal === 'new' ? null : modal} onClose={() => setModal(null)} onSaved={() => { setModal(null); load(); }} />
       )}
       {detailAsset && (
-        <AssetDetailModal asset={detailAsset} allAssets={assets} onClose={() => setDetailAsset(null)} onChanged={load} />
+        <AssetDetailModal asset={detailAsset} allAssets={assets} onClose={() => { setDetailAsset(null); setSearchParams({}); }} onChanged={load} />
       )}
     </div>
   );

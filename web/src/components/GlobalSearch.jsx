@@ -103,7 +103,7 @@ export default function GlobalSearch() {
             <div className="mb-2">
               <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-2 mb-1">Assets</div>
               {results.assets.map((a) => (
-                <button key={a.id} onClick={() => go('/assets')} className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-left">
+                <button key={a.id} onClick={() => go(`/assets?selected=${a.id}`)} className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-left">
                   <Boxes size={14} className="text-amber-500 shrink-0" />
                   <span className="text-sm text-slate-700 dark:text-slate-200 truncate">{a.tag} — {a.name}</span>
                 </button>
@@ -115,7 +115,7 @@ export default function GlobalSearch() {
             <div>
               <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-2 mb-1">Knowledge Base</div>
               {results.kb.map((k) => (
-                <button key={k.id} onClick={() => go('/knowledge-base')} className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-left">
+                <button key={k.id} onClick={() => go(`/knowledge-base?selected=${k.id}`)} className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-left">
                   <BookOpen size={14} className="text-emerald-500 shrink-0" />
                   <span className="text-sm text-slate-700 dark:text-slate-200 truncate">{k.title}</span>
                 </button>

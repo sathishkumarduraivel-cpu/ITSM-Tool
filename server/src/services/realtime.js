@@ -64,3 +64,17 @@ export function sendToUser(workspaceId, userId, event, payload) {
     if (conn.workspaceId === workspaceId && conn.userId === userId) write(conn.res, event, payload);
   }
 }
+
+// Real presence, not a proxy for it -- "online" means this user currently
+// has an open SSE connection (RealtimeContext.jsx opens exactly one for the
+// whole signed-in session, recreated on login/workspace switch, so this
+// reflects "has the app open right now" regardless of which page they're
+// on). Used by the dashboard's team roster (routes/ai.js) instead of
+// guessing from unrelated data like ticket assignment.
+export function getOnlineUserIds(workspaceId) {
+  const ids = new Set();
+  for (const conn of connections.values()) {
+    if (conn.workspaceId === workspaceId) ids.add(conn.userId);
+  }
+  return ids;
+}

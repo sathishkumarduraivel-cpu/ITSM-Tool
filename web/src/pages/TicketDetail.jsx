@@ -5,7 +5,7 @@ import {
   ArrowLeft, ArrowRight, Sparkles, Loader2, Send, Wand2, Tags, Lock, ShieldCheck, Check, X, Boxes, Star, Paperclip,
   Download, Trash2, UserCircle2, Radar, Milestone, Save, MessageSquare, ChevronDown, ChevronUp,
   UserPlus, CheckCircle2, MoreHorizontal, Ban, Link2, ShieldAlert, Pencil, GitMerge, RotateCcw, XCircle,
-  Tag, Search, BookmarkPlus, ListChecks, Plus,
+  Tag, Search, BookmarkPlus, ListChecks, Plus, Clock, CircleAlert, UserRoundCheck,
 } from 'lucide-react';
 import { api, getStoredToken } from '../lib/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -710,6 +710,15 @@ export default function TicketDetail() {
   // while it's still open -- everyone else (including other requesters)
   // never sees it, matching the same rule PATCH /:id enforces server-side.
   const canRequesterEdit = user.id === ticket.requester_id && !['resolved', 'closed'].includes(ticket.status);
+  const workBrief = (() => {
+    const now = Date.now();
+    const dueAt = ticket.sla_due_at ? new Date(ticket.sla_due_at).getTime() : null;
+    const remainingMinutes = dueAt ? Math.round((dueAt - now) / 60000) : null;
+    const isClosed = ['resolved', 'closed'].includes(ticket.status);
+    const slaLabel = !dueAt ? 'No SLA target' : remainingMinutes < 0 ? `Breached ${Math.abs(remainingMinutes)}m ago` : remainingMinutes < 60 ? `Due in ${remainingMinutes}m` : `Due in ${Math.ceil(remainingMinutes / 60)}h`;
+    const next = isClosed ? 'Ticket is complete — review the resolution or reopen if needed.' : !ticket.assignee_id ? 'Assign an owner so this ticket has a clear next step.' : ticket.status === 'on_hold' ? 'Awaiting customer or dependency — follow up when the hold is ready to clear.' : ticket.priority === 'critical' ? 'Critical priority — assess impact and update stakeholders now.' : 'Review the latest activity, respond to the requester, then update the ticket.';
+    return { slaLabel, atRisk: remainingMinutes !== null && remainingMinutes < 60 && !isClosed, next };
+  })();
 
   return (
     <div className="space-y-4">
@@ -824,6 +833,12 @@ export default function TicketDetail() {
           )}
         </div>
       </div>
+
+      <section className="sticky top-2 z-10 grid grid-cols-1 gap-px overflow-hidden rounded-2xl border border-slate-200 bg-slate-200 shadow-card dark:border-white/10 dark:bg-white/10 md:grid-cols-4">
+        <div className="bg-white p-3.5 dark:bg-slate-900/95 md:col-span-2"><div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-brand-600 dark:text-brand-400"><CircleAlert size={14} /> Recommended next action</div><p className="mt-1.5 text-sm font-medium leading-5 text-slate-800 dark:text-slate-100">{workBrief.next}</p></div>
+        <div className="bg-white p-3.5 dark:bg-slate-900/95"><div className="flex items-center gap-1.5 text-xs text-slate-400"><UserRoundCheck size={13} /> Owner</div><p className="mt-1.5 text-sm font-semibold text-slate-800 dark:text-slate-100">{ticket.assignee_name || 'Unassigned'}</p></div>
+        <div className="bg-white p-3.5 dark:bg-slate-900/95"><div className="flex items-center gap-1.5 text-xs text-slate-400"><Clock size={13} /> SLA target</div><p className={`mt-1.5 text-sm font-semibold ${workBrief.atRisk ? 'text-red-600 dark:text-red-400' : 'text-slate-800 dark:text-slate-100'}`}>{workBrief.slaLabel}</p></div>
+      </section>
 
       {aiError && <div className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 rounded-lg px-3 py-2">{aiError}</div>}
       {fieldError && <div className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 rounded-lg px-3 py-2">{fieldError}</div>}

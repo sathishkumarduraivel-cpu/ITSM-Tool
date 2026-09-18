@@ -4,6 +4,10 @@ function getToken() {
   return localStorage.getItem('itsm_token');
 }
 
+function notifyError(message) {
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('itsm:toast', { detail: { message, type: 'error' } }));
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -61,6 +65,7 @@ async function request(path, { method = 'GET', body, headers = {} } = {}) {
   }
   if (!resp.ok) {
     const message = data?.error || `Request failed (${resp.status})`;
+    notifyError(message);
     throw new Error(message);
   }
   return data;
@@ -79,7 +84,11 @@ async function upload(path, formData) {
   } catch {
     data = null;
   }
-  if (!resp.ok) throw new Error(data?.error || `Request failed (${resp.status})`);
+  if (!resp.ok) {
+    const message = data?.error || `Request failed (${resp.status})`;
+    notifyError(message);
+    throw new Error(message);
+  }
   return data;
 }
 

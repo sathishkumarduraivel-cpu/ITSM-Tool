@@ -3,6 +3,7 @@ import { useAuth } from './context/AuthContext.jsx';
 import { hasPermission, hasAnyPermission } from './lib/permissions.js';
 import { RealtimeProvider } from './context/RealtimeContext.jsx';
 import { I18nProvider } from './i18n/I18nContext.jsx';
+import { ToastProvider } from './context/ToastContext.jsx';
 import AppShell from './components/AppShell.jsx';
 import Login from './pages/Login.jsx';
 import Register from './pages/Register.jsx';
@@ -77,6 +78,7 @@ export default function App() {
   return (
     <>
     <div className="grain-overlay" />
+    <ToastProvider>
     <AppI18nProvider>
     <RealtimeProvider>
     <Routes>
@@ -123,6 +125,7 @@ export default function App() {
     </Routes>
     </RealtimeProvider>
     </AppI18nProvider>
+    </ToastProvider>
     </>
   );
 }

@@ -6,11 +6,9 @@ import {
 import {
   Download, Star, Clock, SlidersHorizontal, Save, Trash2, Play, Loader2, LayoutList, Bot, BookOpen, Ticket,
   BarChart3, LineChart as LineChartIcon, PieChart as PieChartIcon, Table2, Hash, Grid3x3,
-  TrendingUp, TrendingDown, Minus, Lock, Users2, Printer, Sparkles, Rows3,
+  TrendingUp, TrendingDown, Minus, Lock, Users2, Printer, Sparkles, Rows3, RefreshCw, ArrowUpRight, Activity, CircleCheck, CalendarDays,
 } from 'lucide-react';
 import { api, getStoredToken } from '../lib/api.js';
-import PageHeader from '../components/PageHeader.jsx';
-import StatCard from '../components/StatCard.jsx';
 import Select from '../components/Select.jsx';
 
 const AGING_COLORS = ['#22c55e', '#84cc16', '#f59e0b', '#f97316', '#ef4444'];
@@ -654,38 +652,71 @@ export default function Reports() {
   }
 
   const byMonthData = summary.byMonth.map((m) => ({ month: m.month, created: m.c, resolved: m.resolved }));
+  const assignedTickets = summary.byAgent.reduce((sum, agent) => sum + agent.total, 0);
+  const resolvedTickets = summary.byAgent.reduce((sum, agent) => sum + agent.resolved, 0);
+  const breachedTickets = summary.byAgent.reduce((sum, agent) => sum + agent.breached, 0);
+  const resolutionRate = assignedTickets ? Math.round((resolvedTickets / assignedTickets) * 100) : 0;
+  const slaRate = assignedTickets ? Math.max(0, Math.round(((assignedTickets - breachedTickets) / assignedTickets) * 100)) : 100;
+  const bestAgent = [...summary.byAgent].sort((a, b) => b.resolved - a.resolved)[0];
+  const lastMonth = byMonthData.at(-1);
 
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Reports"
-        description="Volume trends, agent performance, satisfaction"
-        actions={<button onClick={exportCsv} disabled={exporting} className="btn-secondary"><Download size={14} /> Export tickets CSV</button>}
-      />
+    <div className="space-y-6 pb-8">
+      <section className="relative overflow-hidden rounded-3xl border border-brand-200/70 bg-gradient-to-br from-brand-700 via-brand-600 to-cyan-600 px-5 py-6 text-white shadow-glow-brand sm:px-7 sm:py-7 dark:border-brand-400/20">
+        <div className="absolute -right-20 -top-24 h-64 w-64 rounded-full bg-white/10 blur-2xl" />
+        <div className="absolute bottom-0 right-20 h-28 w-72 rounded-full bg-cyan-300/20 blur-3xl" />
+        <div className="relative flex flex-col justify-between gap-6 lg:flex-row lg:items-end">
+          <div>
+            <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-cyan-100"><Activity size={14} /> Operations intelligence</div>
+            <h1 className="font-display text-3xl font-bold tracking-tight sm:text-4xl">Reports command center</h1>
+            <p className="mt-2 max-w-xl text-sm leading-6 text-blue-100">A live view of service performance, workload health, and the signals that need your team’s attention.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={load} className="btn bg-white/15 text-white ring-1 ring-white/25 hover:bg-white/25"><RefreshCw size={14} /> Refresh data</button>
+            <button onClick={exportCsv} disabled={exporting} className="btn bg-white text-brand-700 shadow-lg hover:bg-blue-50"><Download size={14} /> {exporting ? 'Preparing…' : 'Export data'}</button>
+          </div>
+        </div>
+        <div className="relative mt-7 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-white/15 pt-4 text-xs text-blue-100">
+          <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 animate-pulse rounded-full bg-emerald-300" /> Live operational data</span>
+          <span className="inline-flex items-center gap-1.5"><CalendarDays size={13} /> Updated on demand</span>
+          <span>{lastMonth ? `${lastMonth.month}: ${lastMonth.created} new tickets` : 'No monthly volume yet'}</span>
+        </div>
+      </section>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <StatCard icon={Clock} label="Avg resolution time" value={summary.avgResolutionHours ? `${summary.avgResolutionHours.toFixed(1)}h` : '—'} tone="brand" />
-        <StatCard icon={Star} label={`CSAT (${summary.csat.responses} responses)`} value={summary.csat.avg_rating ? `${summary.csat.avg_rating.toFixed(1)} / 5` : '—'} tone="amber" />
-        <StatCard icon={Clock} label="Tickets assigned" value={summary.byAgent.reduce((s, a) => s + a.total, 0)} tone="green" />
-      </div>
+      <section className="grid grid-cols-2 gap-px overflow-hidden rounded-2xl border border-slate-200 bg-slate-200 shadow-card dark:border-white/10 dark:bg-white/10 lg:grid-cols-4">
+        {[
+          { label: 'Tickets handled', value: assignedTickets, detail: `${resolvedTickets} resolved`, icon: Ticket, tone: 'text-brand-600 dark:text-brand-400', bg: 'bg-brand-50 dark:bg-brand-500/10' },
+          { label: 'Resolution rate', value: `${resolutionRate}%`, detail: 'of assigned workload', icon: CircleCheck, tone: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-500/10' },
+          { label: 'SLA adherence', value: `${slaRate}%`, detail: breachedTickets ? `${breachedTickets} breaches flagged` : 'No breaches flagged', icon: Activity, tone: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-50 dark:bg-amber-500/10' },
+          { label: 'Customer sentiment', value: summary.csat.avg_rating ? `${summary.csat.avg_rating.toFixed(1)}/5` : '—', detail: `${summary.csat.responses} survey responses`, icon: Star, tone: 'text-violet-600 dark:text-violet-400', bg: 'bg-violet-50 dark:bg-violet-500/10' },
+        ].map(({ label, value, detail, icon: Icon, tone, bg }) => (
+          <div key={label} className="bg-white p-4 dark:bg-slate-900/90 sm:p-5">
+            <div className="flex items-start justify-between gap-3"><span className="text-xs font-medium text-slate-500 dark:text-slate-400">{label}</span><span className={`grid h-8 w-8 place-items-center rounded-lg ${bg} ${tone}`}><Icon size={16} /></span></div>
+            <div className="mt-4 text-2xl font-bold tracking-tight text-slate-900 dark:text-white">{value}</div>
+            <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">{detail}</p>
+          </div>
+        ))}
+      </section>
 
-      <div className="card p-4">
-        <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3">Created vs. resolved by month</h3>
-        <ResponsiveContainer width="100%" height={240}>
-          <BarChart data={byMonthData}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-            <XAxis dataKey="month" tick={{ fontSize: 12 }} stroke="#94a3b8" />
-            <YAxis tick={{ fontSize: 12 }} stroke="#94a3b8" allowDecimals={false} />
-            <Tooltip />
-            <Bar dataKey="created" fill="#a5b4fc" radius={[4, 4, 0, 0]} />
-            <Bar dataKey="resolved" fill="#6366f1" radius={[4, 4, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
+      <section className="grid grid-cols-1 gap-5 xl:grid-cols-3">
+        <div className="card p-5 xl:col-span-2">
+          <div className="mb-5 flex items-start justify-between gap-3"><div><p className="text-xs font-semibold uppercase tracking-wider text-brand-600 dark:text-brand-400">Workload momentum</p><h2 className="mt-1 text-lg font-semibold text-slate-800 dark:text-slate-100">Created vs. resolved</h2><p className="mt-1 text-xs text-slate-400">Monthly flow of incoming and completed work</p></div><span className="rounded-lg bg-brand-50 px-2.5 py-1 text-xs font-semibold text-brand-700 dark:bg-brand-500/10 dark:text-brand-300">{byMonthData.length} periods</span></div>
+          <ResponsiveContainer width="100%" height={280}><BarChart data={byMonthData} barGap={5}><CartesianGrid strokeDasharray="4 4" stroke="#e2e8f0" vertical={false} /><XAxis dataKey="month" tick={{ fontSize: 11 }} stroke="#94a3b8" axisLine={false} tickLine={false} /><YAxis tick={{ fontSize: 11 }} stroke="#94a3b8" allowDecimals={false} axisLine={false} tickLine={false} /><Tooltip cursor={{ fill: 'rgba(99, 102, 241, 0.06)' }} /><Legend iconType="circle" wrapperStyle={{ fontSize: 12, paddingTop: 12 }} /><Bar name="Created" dataKey="created" fill="#bfdbfe" radius={[6, 6, 0, 0]} /><Bar name="Resolved" dataKey="resolved" fill="#4f46e5" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer>
+        </div>
+        <div className="card overflow-hidden">
+          <div className="border-b border-slate-100 px-5 py-4 dark:border-slate-800"><p className="text-xs font-semibold uppercase tracking-wider text-brand-600 dark:text-brand-400">Performance signal</p><h2 className="mt-1 text-lg font-semibold text-slate-800 dark:text-slate-100">Team snapshot</h2></div>
+          <div className="space-y-5 p-5">
+            <div><div className="mb-2 flex items-center justify-between text-sm"><span className="text-slate-600 dark:text-slate-300">SLA compliance</span><strong className="text-slate-900 dark:text-white">{slaRate}%</strong></div><div className="h-2 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800"><div className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-cyan-400" style={{ width: `${slaRate}%` }} /></div></div>
+            <div><div className="mb-2 flex items-center justify-between text-sm"><span className="text-slate-600 dark:text-slate-300">Resolution efficiency</span><strong className="text-slate-900 dark:text-white">{resolutionRate}%</strong></div><div className="h-2 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800"><div className="h-full rounded-full bg-gradient-to-r from-brand-500 to-violet-500" style={{ width: `${resolutionRate}%` }} /></div></div>
+            <div className="rounded-xl border border-brand-100 bg-brand-50/70 p-3.5 dark:border-brand-500/20 dark:bg-brand-500/10"><div className="flex items-center gap-2 text-xs font-semibold text-brand-700 dark:text-brand-300"><TrendingUp size={14} /> Leading contributor</div><div className="mt-2 flex items-end justify-between"><div><div className="font-semibold text-slate-800 dark:text-slate-100">{bestAgent?.name || 'No activity yet'}</div><div className="mt-0.5 text-xs text-slate-500">{bestAgent ? `${bestAgent.resolved} tickets resolved` : 'Awaiting ticket data'}</div></div><ArrowUpRight size={18} className="text-brand-500" /></div></div>
+          </div>
+        </div>
+      </section>
 
-      <BacklogAging />
-
-      <SelfServiceStats />
+      <section className="grid grid-cols-1 gap-5 xl:grid-cols-2">
+        <BacklogAging />
+        <SelfServiceStats />
+      </section>
 
       <ReportGallery onRun={setGalleryPick} />
 
@@ -694,7 +725,7 @@ export default function Reports() {
       <PivotBuilder />
 
       <div className="card overflow-hidden overflow-x-auto">
-        <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-800"><h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Agent performance</h3></div>
+        <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-5 py-4 dark:border-slate-800"><div><p className="text-xs font-semibold uppercase tracking-wider text-brand-600 dark:text-brand-400">Delivery capacity</p><h3 className="mt-1 text-lg font-semibold text-slate-800 dark:text-slate-100">Agent performance</h3></div><span className="text-xs text-slate-400">Sorted by team activity</span></div>
         <table className="w-full text-sm">
           <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wide">
             <tr>
@@ -706,8 +737,8 @@ export default function Reports() {
           </thead>
           <tbody>
             {summary.byAgent.map((a) => (
-              <tr key={a.name} className="border-t border-slate-100 dark:border-slate-800">
-                <td className="px-4 py-2 font-medium text-slate-800 dark:text-slate-100">{a.name}</td>
+              <tr key={a.name} className="row-interactive border-t border-slate-100 dark:border-slate-800">
+                <td className="px-4 py-3 font-medium text-slate-800 dark:text-slate-100"><span className="mr-2 inline-grid h-7 w-7 place-items-center rounded-full bg-brand-50 text-[10px] font-bold text-brand-700 dark:bg-brand-500/10 dark:text-brand-300">{a.name.split(' ').map((part) => part[0]).join('').slice(0, 2)}</span>{a.name}</td>
                 <td className="px-4 py-2 text-slate-600 dark:text-slate-300">{a.total}</td>
                 <td className="px-4 py-2 text-slate-600 dark:text-slate-300">{a.resolved}</td>
                 <td className="px-4 py-2 text-red-600 dark:text-red-400">{a.breached}</td>
@@ -717,8 +748,8 @@ export default function Reports() {
         </table>
       </div>
 
-      <div className="card p-4">
-        <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3">Recent CSAT feedback</h3>
+      <div className="card p-5">
+        <div className="mb-4 flex items-center justify-between"><div><p className="text-xs font-semibold uppercase tracking-wider text-brand-600 dark:text-brand-400">Voice of customer</p><h3 className="mt-1 text-lg font-semibold text-slate-800 dark:text-slate-100">Recent CSAT feedback</h3></div><div className="flex items-center gap-1 text-amber-500"><Star size={15} className="fill-current" /><span className="text-sm font-bold">{summary.csat.avg_rating ? summary.csat.avg_rating.toFixed(1) : '—'}</span></div></div>
         {csatList.length === 0 && <p className="text-sm text-slate-400">No feedback submitted yet.</p>}
         <div className="space-y-2">
           {csatList.slice(0, 10).map((c) => (

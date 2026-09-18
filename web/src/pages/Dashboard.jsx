@@ -509,6 +509,12 @@ export default function Dashboard() {
   const [cc, setCc] = useState(null);
   const [filters, setFilters] = useState({ days: '30', team: '', priority: '', type: '', status: '', owner: '' });
   const [loadError, setLoadError] = useState('');
+  // Mirrors `filters` for the presence poll below -- that interval is set up
+  // once (empty deps) so its closure over `loadCc` would otherwise keep
+  // reading whatever `filters` was at mount, silently reverting the roster
+  // to stale filter values every 30s after the user changes one.
+  const filtersRef = useRef(filters);
+  useEffect(() => { filtersRef.current = filters; }, [filters]);
 
   // Each of these three feeds a piece of state the initial render is gated
   // on (see the "Loading dashboard..." check below) -- without a catch here,
@@ -525,7 +531,7 @@ export default function Dashboard() {
   };
 
   const loadCc = async (f) => {
-    const active = f || filters;
+    const active = f || filtersRef.current;
     const query = new URLSearchParams(Object.entries(active).filter(([, v]) => v)).toString();
     try {
       const { stats: command } = await api.get(`/ai/command-center-stats${query ? `?${query}` : ''}`);
@@ -568,6 +574,12 @@ export default function Dashboard() {
     loadLayout();
     loadQueue();
     loadCc();
+    // Keeps the team roster's online/offline dots close to live while this
+    // page is open -- everything else here is fetch-on-load/action like the
+    // rest of the app, but presence specifically goes stale within seconds,
+    // not minutes, so it alone gets a light poll rather than a full-page one.
+    const presenceTimer = setInterval(loadCc, 30000);
+    return () => clearInterval(presenceTimer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

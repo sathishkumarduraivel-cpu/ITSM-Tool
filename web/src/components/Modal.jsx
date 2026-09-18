@@ -1,4 +1,5 @@
 import { createPortal } from 'react-dom';
+import { useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
 import { motion, useReducedMotion } from 'framer-motion';
 
@@ -26,6 +27,20 @@ import { motion, useReducedMotion } from 'framer-motion';
 // this can never happen regardless of where a call site is mounted.
 export default function Modal({ title, onClose, maxWidth = 'max-w-lg', footer, headerActions, children }) {
   const shouldReduceMotion = useReducedMotion();
+  const closeRef = useRef(null);
+  const previouslyFocused = useRef(null);
+  useEffect(() => {
+    previouslyFocused.current = document.activeElement;
+    closeRef.current?.focus();
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      previouslyFocused.current?.focus?.();
+    };
+  }, [onClose]);
   const cardMotion = {
     initial: shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.94, y: 12 },
     animate: shouldReduceMotion ? { opacity: 1 } : { opacity: 1, scale: 1, y: 0 },
@@ -34,6 +49,8 @@ export default function Modal({ title, onClose, maxWidth = 'max-w-lg', footer, h
   const closeButton = (
     <button
       type="button"
+      ref={closeRef}
+      aria-label={`Close ${title}`}
       onClick={onClose}
       className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg p-1 transition-colors"
     >
@@ -56,6 +73,9 @@ export default function Modal({ title, onClose, maxWidth = 'max-w-lg', footer, h
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.15 }}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
         className="fixed inset-0 bg-slate-900/40 dark:bg-slate-950/60 backdrop-blur-[2px] flex items-center justify-center z-50 px-4 py-8 overflow-y-auto"
       >
         <motion.div {...cardMotion} className={`card w-full ${maxWidth} p-5 space-y-4 my-auto shadow-popover dark:shadow-popover-dark`}>
@@ -75,6 +95,9 @@ export default function Modal({ title, onClose, maxWidth = 'max-w-lg', footer, h
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.15 }}
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
       className="fixed inset-0 bg-slate-900/40 dark:bg-slate-950/60 backdrop-blur-[2px] flex items-center justify-center z-50 px-4 py-8 overflow-y-auto"
     >
       <motion.div {...cardMotion} className={`card w-full ${maxWidth} max-h-[88vh] flex flex-col overflow-hidden p-0 my-auto shadow-popover dark:shadow-popover-dark`}>

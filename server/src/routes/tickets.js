@@ -74,7 +74,8 @@ router.get('/', (req, res) => {
   if (status) { sql += ' AND status = ?'; params.push(status); }
   if (priority) { sql += ' AND priority = ?'; params.push(priority); }
   if (type) { sql += ' AND type = ?'; params.push(type); }
-  if (assignee_id) { sql += ' AND assignee_id = ?'; params.push(assignee_id); }
+  if (assignee_id === 'unassigned') sql += ' AND assignee_id IS NULL';
+  else if (assignee_id) { sql += ' AND assignee_id = ?'; params.push(assignee_id); }
   if (team) { sql += ' AND team = ?'; params.push(team); }
   if (q) { sql += ' AND (title LIKE ? OR number LIKE ? OR description LIKE ?)'; params.push(`%${q}%`, `%${q}%`, `%${q}%`); }
   sql += ' ORDER BY created_at DESC LIMIT 500';

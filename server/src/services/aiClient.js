@@ -186,8 +186,22 @@ export async function analyzeRootCause(provider, ticket, comments = []) {
   ]);
 }
 
-export async function categorizeTicket(provider, ticket) {
-  const prompt = `Classify this IT service desk ticket.\nTitle: ${ticket.title}\nDescription: ${ticket.description || ''}\n\nRespond with strict JSON only, no markdown, matching this shape:\n{"category": string, "subcategory": string, "priority": "low"|"medium"|"high"|"critical", "sentiment": "positive"|"neutral"|"frustrated"|"angry"}\nCategory should be one of: Hardware, Software, Network, Access & Identity, Email, Facilities, HR, Security, Other.`;
+// `taxonomy` comes from services/ticketCategories.js's listTaxonomy(). It
+// used to be a hardcoded list in this prompt, which meant the AI and the
+// ticket form could disagree about what a category even is -- the model
+// would tag "Access & Identity" while an agent typed "access", and reporting
+// split the two. The caller now passes the workspace's real taxonomy so the
+// model can only answer with categories that actually exist, and its
+// subcategory suggestion lands on a real one too.
+export async function categorizeTicket(provider, ticket, taxonomy = []) {
+  const categoryList = taxonomy.length
+    ? taxonomy.map((c) => c.name).join(', ')
+    : 'Hardware, Software, Network, Access & Identity, Email, Facilities, HR, Security, Other';
+  const subcategoryHint = taxonomy.length
+    ? `\nValid subcategories per category (pick one that belongs to the category you choose):\n${
+      taxonomy.map((c) => `- ${c.name}: ${(c.subcategories || []).map((s) => s.name).join(', ') || 'none'}`).join('\n')}`
+    : '';
+  const prompt = `Classify this IT service desk ticket.\nTitle: ${ticket.title}\nDescription: ${ticket.description || ''}\n\nRespond with strict JSON only, no markdown, matching this shape:\n{"category": string, "subcategory": string, "priority": "low"|"medium"|"high"|"critical", "sentiment": "positive"|"neutral"|"frustrated"|"angry"}\nCategory must be exactly one of: ${categoryList}.${subcategoryHint}`;
   const text = await chatComplete(
     provider,
     [

@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Plus, Search, Loader2, Check, GitMerge, X, SlidersHorizontal, Bookmark, AlertTriangle, Inbox, UserRoundCheck } from 'lucide-react';
 import { api } from '../lib/api.js';
+import { fmtDateTime, fmtRelative, dateValue } from '../lib/dates.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { PriorityBadge, StatusBadge, TypeBadge } from '../components/Badge.jsx';
 import PageHeader from '../components/PageHeader.jsx';
@@ -229,9 +230,12 @@ export default function Tickets() {
   const selectedTickets = tickets.filter((t) => selectedIds.has(t.id));
   const displayedTickets = useMemo(() => [...tickets].sort((a, b) => {
     if (sort === 'priority') return PRIORITIES.indexOf(b.priority) - PRIORITIES.indexOf(a.priority);
-    if (sort === 'oldest') return new Date(a.created_at) - new Date(b.created_at);
-    if (sort === 'sla') return new Date(a.sla_due_at || '2999-01-01') - new Date(b.sla_due_at || '2999-01-01');
-    return new Date(b.updated_at) - new Date(a.updated_at);
+    if (sort === 'oldest') return dateValue(a.created_at) - dateValue(b.created_at);
+    // Tickets with no SLA sort last rather than first, hence the far-future
+    // fallback -- dateValue() returns 0 for an unparseable value, which would
+    // otherwise put them at the top of an "SLA due first" list.
+    if (sort === 'sla') return (dateValue(a.sla_due_at) || Infinity) - (dateValue(b.sla_due_at) || Infinity);
+    return dateValue(b.updated_at) - dateValue(a.updated_at);
   }), [tickets, sort]);
   const applyQueue = (queue) => setFilters({ status: queue === 'waiting' ? 'on_hold' : '', priority: queue === 'urgent' ? 'critical' : '', type: '', q: '', assignee_id: queue === 'mine' ? user.id : queue === 'unassigned' ? 'unassigned' : '' });
   const toggleColumn = (column) => setVisibleColumns((current) => { const next = new Set(current); if (next.has(column)) next.delete(column); else next.add(column); localStorage.setItem('itsm_ticket_columns', JSON.stringify([...next])); return next; });
@@ -335,7 +339,7 @@ export default function Tickets() {
                   {visibleColumns.has('status') && <td className="px-4 py-2.5"><StatusBadge status={t.status} /></td>}
                   {visibleColumns.has('priority') && <td className="px-4 py-2.5"><PriorityBadge priority={t.priority} /></td>}
                   {visibleColumns.has('category') && <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">{t.category || '—'}</td>}
-                  {visibleColumns.has('updated') && <td className="px-4 py-2.5 text-slate-400 text-xs">{new Date(t.updated_at).toLocaleString()}</td>}
+                  {visibleColumns.has('updated') && <td className="px-4 py-2.5 text-slate-400 text-xs" title={fmtDateTime(t.updated_at)}>{fmtRelative(t.updated_at)}</td>}
                 </RevealItem>
               ))}
             </RevealGroup>

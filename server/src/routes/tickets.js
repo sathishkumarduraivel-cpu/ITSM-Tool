@@ -16,6 +16,8 @@ import { computeBlastRadius } from '../services/blastRadius.js';
 import { getLifecycle, initialStageFor, describeAvailableTransitions, transitionTicket, stageForBucket } from '../services/lifecycleEngine.js';
 import { pushToLinkedConnections, createExternalTicket, linkExistingTicket, pushTicketUpdate, pullTicketUpdate, pushCommentToConnections } from '../services/externalSync.js';
 import { evaluateEscalationsSafely } from '../services/escalationEngine.js';
+import { autoAssignSafely } from '../services/assignmentEngine.js';
+import { reconcileSubcategories, listTaxonomy } from '../services/ticketCategories.js';
 import { withComputed } from '../services/majorIncidents.js';
 import { broadcastToWorkspace } from '../services/realtime.js';
 import { logAudit } from '../services/auditLog.js';
@@ -347,7 +349,8 @@ router.post('/', async (req, res) => {
     `INSERT INTO tickets (id, workspace_id, number, type, title, description, priority, impact, category, subcategory, team, requester_id, sla_due_at, response_due_at, sla_policy_id, source, risk, planned_start, planned_end, rollback_plan, cab_status, catalog_item_id, lifecycle_stage, status)
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).run(
-    id, req.workspaceId, number, type, title, description || '', priority, impact || 'medium', category || null, subcategory || null, team || null,
+    id, req.workspaceId, number, type, title, description || '', priority, impact || 'medium', category || null,
+    reconcileSubcategories(req.workspaceId, category, subcategory), team || null,
     requester_id || req.user.id, sla_due_at, response_due_at, policy?.id || null, source,
     risk || null, planned_start || null, planned_end || null, rollback_plan || null, cab_status, finalCatalogItemId,
     initialStage?.key || null, initialStage?.bucket || 'open'
@@ -378,6 +381,12 @@ router.post('/', async (req, res) => {
       'requester.name': ticketRequester.name, 'ticket.number': number, 'ticket.title': title, 'ticket.priority': priority, 'ticket.link': ticketLink(req, id),
     }).catch((e) => console.error('ticket created email error', e));
   }
+  // Availability-based routing. Deliberately after the ticket exists and
+  // before automations run, so a workflow's own assign action still has the
+  // last word -- and fire-and-forget like escalation, since a routing
+  // failure must never be the reason a ticket couldn't be raised. No-ops
+  // when the ticket already has an owner or no policy matches.
+  autoAssignSafely(ticket);
   evaluateAutomations('ticket_created', ticket).catch((e) => console.error('automation error', e));
   broadcastToWorkspace(req.workspaceId, 'ticket.created', { ticketId: id });
   res.status(201).json({ ticket, custom: getCustomValues(id) });
@@ -443,6 +452,20 @@ router.patch('/:id', (req, res) => {
   }
 
   const allowed = ['title', 'description', 'status', 'type', 'priority', 'category', 'subcategory', 'assignee_id', 'team', 'impact', 'risk', 'planned_start', 'planned_end', 'rollback_plan'];
+
+  // Subcategories only mean anything under their own category, so they are
+  // normalized against the category this ticket will actually have once this
+  // request is applied -- not the one it had before. Changing category alone
+  // therefore also drops subcategories that no longer belong, rather than
+  // leaving a Network ticket tagged "Payroll" because the UI only sent the
+  // category field.
+  const effectiveCategory = evalBody.category !== undefined ? evalBody.category : ticket.category;
+  if (evalBody.subcategory !== undefined) {
+    evalBody.subcategory = reconcileSubcategories(req.workspaceId, effectiveCategory, evalBody.subcategory);
+  } else if (evalBody.category !== undefined && evalBody.category !== ticket.category && ticket.subcategory) {
+    evalBody.subcategory = reconcileSubcategories(req.workspaceId, effectiveCategory, ticket.subcategory);
+  }
+
   const fields = [];
   const params = [];
   for (const key of allowed) {
@@ -951,11 +974,37 @@ router.post('/:id/ai/categorize', requireRole('agent', 'admin'), async (req, res
     const ticket = getTicket(req.params.id, req.workspaceId);
     if (!ticket) return res.status(404).json({ error: 'Not found' });
     const provider = getProvider(req.workspaceId, req.body.provider_id);
-    const result = await categorizeTicket(provider, ticket);
+    const taxonomy = listTaxonomy(req.workspaceId);
+    const result = await categorizeTicket(provider, ticket, taxonomy);
+
+    // The model's answer is checked against the real taxonomy before it is
+    // allowed to change anything -- same allowlist discipline as
+    // POST /reports/sona and the assignment engine. Previously whatever
+    // string came back was written straight onto the ticket, so one bad
+    // response could invent a category that exists nowhere and quietly
+    // fragment reporting.
+    const match = taxonomy.find((c) => c.name.toLowerCase() === String(result.category || '').trim().toLowerCase());
+    const category = match ? match.name : null;
+    const subcategory = category
+      ? reconcileSubcategories(req.workspaceId, category, [result.subcategory].filter(Boolean))
+      : null;
+    const sentiment = ['positive', 'neutral', 'frustrated', 'angry'].includes(result.sentiment) ? result.sentiment : null;
+
+    if (!category) {
+      // Recorded as a suggestion only, so the agent can see what the model
+      // thought without it overwriting a real value.
+      db.prepare("UPDATE tickets SET ai_sentiment = ?, ai_suggested_category = ?, updated_at = datetime('now') WHERE id = ?")
+        .run(sentiment, String(result.category || '').slice(0, 100) || null, ticket.id);
+      return res.json({ result, applied: false, reason: 'The suggested category is not in this workspace\'s taxonomy' });
+    }
+
     db.prepare(
       "UPDATE tickets SET category = ?, subcategory = ?, ai_sentiment = ?, ai_suggested_category = ?, updated_at = datetime('now') WHERE id = ?"
-    ).run(result.category, result.subcategory || null, result.sentiment || null, result.category, ticket.id);
-    res.json({ result });
+    ).run(category, subcategory, sentiment, category, ticket.id);
+    db.prepare('INSERT INTO ticket_history (id, ticket_id, event, detail) VALUES (?,?,?,?)').run(
+      uid('h'), ticket.id, 'updated', `AI categorised as ${category}${subcategory ? ` / ${subcategory}` : ''}`
+    );
+    res.json({ result: { ...result, category, subcategory }, applied: true });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }

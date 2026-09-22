@@ -22,6 +22,14 @@ import { db } from '../db.js';
 export const PERMISSIONS = [
   { key: 'sla.manage', group: 'Service Levels', label: 'Manage SLA policies & business hours' },
   { key: 'escalations.manage', group: 'Service Levels', label: 'Manage escalation rules' },
+  // Operational routing. Delegable for the same reason SLA policies are: a
+  // service-desk lead owning the rota and the alert pipeline is exactly the
+  // person who should configure them, and none of these three can grant a
+  // permission or reach a credential. Alert *sources* hold a webhook secret,
+  // so that secret is write-only over the API (see routes/alerts.js).
+  { key: 'alerts.manage', group: 'Operations', label: 'Manage alert sources, rules & monitors' },
+  { key: 'oncall.manage', group: 'Operations', label: 'Manage on-call schedules, rotations & overrides' },
+  { key: 'assignment.manage', group: 'Operations', label: 'Manage assignment policies & agent availability' },
   { key: 'automations.manage', group: 'Automation', label: 'Manage workflow automations' },
   { key: 'business_rules.manage', group: 'Automation', label: 'Manage business rules' },
   { key: 'lifecycles.manage', group: 'Automation', label: 'Manage ticket lifecycles & stages' },
@@ -33,6 +41,7 @@ export const PERMISSIONS = [
   { key: 'ticket_numbering.manage', group: 'Workspace', label: 'Manage ticket number prefixes' },
   { key: 'audit_log.view', group: 'Compliance', label: 'View the audit log & export compliance reports' },
   { key: 'tickets.delete', group: 'Tickets', label: 'Delete (archive) tickets' },
+  { key: 'ticket_categories.manage', group: 'Tickets', label: 'Manage ticket categories & subcategories' },
   { key: 'incident.manage', group: 'Tickets', label: 'Incident Manager — process ownership for incidents' },
   { key: 'problem.manage', group: 'Tickets', label: 'Problem Manager — process ownership for problems' },
   { key: 'change.manage', group: 'Tickets', label: 'Change Manager — process ownership for changes' },

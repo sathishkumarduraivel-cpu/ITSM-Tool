@@ -26,20 +26,28 @@
 //                                   home for "stop the whole record"), so it's tracked as a
 //                                   record-level flag instead of a per-field one.
 import { db, uid } from '../db.js';
+import { fieldOptionValues } from './ticketFields.js';
+import { categoryNames } from './ticketCategories.js';
 
-const ENUM_OPTIONS = {
-  priority: ['low', 'medium', 'high', 'critical'],
-  risk: ['low', 'medium', 'high'],
-  impact: ['low', 'medium', 'high'],
-  status: ['open', 'pending_approval', 'in_progress', 'on_hold', 'resolved', 'closed'],
-};
+// Status is still a literal here: its values are process buckets the whole
+// app queries by name, owned by Lifecycles rather than by Field Manager.
+// Priority, impact and risk now come from ticket_field_options, and
+// category from the taxonomy, so a rule's option list is whatever the admin
+// actually configured rather than a second hardcoded copy of it.
+const STATUS_OPTIONS = ['open', 'pending_approval', 'in_progress', 'on_hold', 'resolved', 'closed'];
 
 // Every field's base (unfiltered) option list for a type -- built-in enums,
 // Field Manager's select/multiselect custom fields, and (Request only) the
 // live Service Catalog. This is what set_options/remove_options work against
 // when no earlier action already narrowed a field's options.
 export function buildFieldOptionsMap(workspaceId, ticketType) {
-  const map = { ...ENUM_OPTIONS };
+  const map = {
+    status: [...STATUS_OPTIONS],
+    priority: fieldOptionValues(workspaceId, 'priority'),
+    impact: fieldOptionValues(workspaceId, 'impact'),
+    risk: fieldOptionValues(workspaceId, 'risk'),
+    category: categoryNames(workspaceId),
+  };
   const customFields = db.prepare(
     'SELECT field_key, field_type, options FROM ticket_custom_fields WHERE workspace_id = ? AND ticket_type = ?'
   ).all(workspaceId, ticketType);

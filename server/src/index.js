@@ -62,8 +62,15 @@ import directoryRoutes from './routes/directory.js';
 import emailSettingsRoutes from './routes/emailSettings.js';
 import emailTemplateRoutes from './routes/emailTemplates.js';
 import cannedResponseRoutes from './routes/cannedResponses.js';
+import oncallRoutes from './routes/oncall.js';
+import assignmentRoutes from './routes/assignment.js';
+import alertRoutes from './routes/alerts.js';
+import alertWebhookRoutes from './routes/alertWebhooks.js';
+import ticketCategoryRoutes from './routes/ticketCategories.js';
+import ticketFieldRoutes from './routes/ticketFields.js';
 import { startDirectorySyncScheduler } from './services/directorySyncScheduler.js';
 import { startInboundEmailScheduler } from './services/inboundEmailScheduler.js';
+import { startAlertScheduler } from './services/alertScheduler.js';
 import { logError } from './services/errorLog.js';
 
 const app = express();
@@ -200,6 +207,14 @@ app.use('/api/directory', directoryRoutes);
 app.use('/api/email-settings', emailSettingsRoutes);
 app.use('/api/email-templates', emailTemplateRoutes);
 app.use('/api/canned-responses', cannedResponseRoutes);
+app.use('/api/oncall', oncallRoutes);
+app.use('/api/assignment', assignmentRoutes);
+app.use('/api/alerts', alertRoutes);
+app.use('/api/ticket-categories', ticketCategoryRoutes);
+app.use('/api/ticket-fields', ticketFieldRoutes);
+// Unauthenticated by necessity -- authenticated per-source by webhook
+// secret, like /api/webhooks/external-sync above.
+app.use('/api/webhooks/alerts', alertWebhookRoutes);
 
 // Serves the built frontend (web/dist) from this same process -- one
 // deployable service instead of two, and no cross-origin auth to configure
@@ -254,3 +269,4 @@ app.listen(PORT, () => {
 // started once here, unref'd, so it never keeps the process alive on its own.
 startDirectorySyncScheduler();
 startInboundEmailScheduler();
+startAlertScheduler();

@@ -5,9 +5,10 @@ import {
   ArrowLeft, ArrowRight, Sparkles, Loader2, Send, Wand2, Tags, Lock, ShieldCheck, Check, X, Boxes, Star, Paperclip,
   Download, Trash2, UserCircle2, Radar, Milestone, Save, MessageSquare, ChevronDown, ChevronUp,
   UserPlus, CheckCircle2, MoreHorizontal, Ban, Link2, ShieldAlert, Pencil, GitMerge, RotateCcw, XCircle,
-  Tag, Search, BookmarkPlus, ListChecks, Plus, Clock, CircleAlert, UserRoundCheck,
+  Tag, Search, BookmarkPlus, ListChecks, Plus, Clock, CircleAlert, UserRoundCheck, History,
 } from 'lucide-react';
 import { api, getStoredToken } from '../lib/api.js';
+import { fmtDateTime, fmtRelative, dateValue } from '../lib/dates.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { PriorityBadge, StatusBadge, TypeBadge } from '../components/Badge.jsx';
 import { useBusinessRules } from '../hooks/useBusinessRules.js';
@@ -21,8 +22,11 @@ import AddTicketTaskForm from '../components/tickets/AddTicketTaskForm.jsx';
 import { usePageTitle } from '../hooks/usePageTitle.js';
 
 const STATUSES = ['open', 'in_progress', 'on_hold', 'resolved', 'closed'];
+// Fallbacks only, used while /ticket-fields is in flight. The real option
+// lists come from Field Manager -- see builtinOptions() below.
 const PRIORITIES = ['low', 'medium', 'high', 'critical'];
 const RISKS = ['low', 'medium', 'high'];
+const IMPACTS = ['low', 'medium', 'high'];
 const TYPES = ['incident', 'request', 'problem', 'change'];
 
 // Renders into document.body instead of inline -- `.card`'s backdrop-blur
@@ -306,7 +310,11 @@ export default function TicketDetail() {
   const [mergedInto, setMergedInto] = useState(null);
   const [majorIncident, setMajorIncident] = useState(null);
   const [relatedMajorIncidents, setRelatedMajorIncidents] = useState([]);
-  const [activityOpen, setActivityOpen] = useState(false);
+  // History (the audit trail) stays collapsed by default. The conversation is
+  // no longer part of it -- see the two separate panels further down.
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [taxonomy, setTaxonomy] = useState([]);
+  const [fieldMeta, setFieldMeta] = useState(null);
 
   // Every field edit below is staged here, not sent to the server, until the
   // agent explicitly clicks Update -- one PATCH applies everything at once
@@ -438,6 +446,23 @@ export default function TicketDetail() {
     api.get(`/custom-fields?ticket_type=${ticket.type}`).then(({ fields }) => setCustomFieldDefs(fields)).catch(() => setCustomFieldDefs([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticket?.type, isAgent]);
+
+  // The built-in field registry: option lists and labels for priority,
+  // impact and risk as configured in Field Manager, plus the category
+  // taxonomy. Keyed on ticket type because risk and the change window only
+  // exist on changes. Readable by requesters too -- they see the category
+  // and priority on their own ticket, so those labels must resolve for them.
+  useEffect(() => {
+    if (!ticket?.type) return;
+    api.get(`/ticket-fields/${ticket.type}`)
+      .then((data) => {
+        setFieldMeta(data);
+        const category = data.builtin.find((f) => f.key === 'category');
+        setTaxonomy(category?.taxonomy || []);
+      })
+      .catch(() => { setFieldMeta(null); setTaxonomy([]); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ticket?.type]);
 
   const setDraftField = (field, value) => setDraft((d) => ({ ...d, [field]: value }));
   const setDraftCustomField = (key, value) => setDraftCustom((d) => ({ ...d, [key]: value }));
@@ -589,10 +614,8 @@ export default function TicketDetail() {
     try {
       await api.post(`/tickets/${id}/comments`, { body: comment, is_private: isAgent && replyMode === 'note' });
       setComment('');
-      // Activity is collapsed by default -- without this, a just-posted
-      // reply/note lands in the feed with no visible confirmation it
-      // actually went through.
-      setActivityOpen(true);
+      // The conversation panel is always visible now, so a posted reply
+      // appears without needing to expand anything.
       await load();
     } finally {
       setPosting(false);
@@ -687,6 +710,7 @@ export default function TicketDetail() {
   const showStatus = fieldRules.isVisible('status', true);
   const showPriority = fieldRules.isVisible('priority', true);
   const showCategory = fieldRules.isVisible('category', true);
+  const showImpact = fieldRules.isVisible('impact', true);
   const showTeam = fieldRules.isVisible('team', true);
   const showRisk = fieldRules.isVisible('risk', isChange);
   const showPlannedStart = fieldRules.isVisible('planned_start', isChange);
@@ -696,13 +720,46 @@ export default function TicketDetail() {
   const pendingApproval = approvals.find((a) => a.status === 'pending');
   const statusOptions = ticket.status === 'pending_approval' ? ['pending_approval', ...STATUSES] : STATUSES;
 
-  // One merged, chronological feed -- Freshservice-style "conversation" +
-  // activity log combined into a single timeline instead of two separate
-  // panels, collapsed by default and expanded only via the Activity button.
-  const activityFeed = [
-    ...comments.map((c) => ({ ...c, kind: 'comment' })),
-    ...history.map((h) => ({ ...h, kind: 'history' })),
-  ].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+  // Conversation and audit history are deliberately two separate panels.
+  // They were previously merged into one collapsed "Activity" feed, which
+  // buried the thing people actually come to a ticket to read -- the replies
+  // -- underneath field-change noise, behind a click. The conversation is
+  // primary content and is always visible; the audit trail is supporting
+  // detail and stays collapsible.
+  //
+  // Sorted with dateValue() rather than `new Date()`: these timestamps come
+  // from SQLite's datetime('now'), which has no zone marker and is otherwise
+  // parsed as local time (see web/src/lib/dates.js).
+  const conversation = [...comments].sort((a, b) => dateValue(a.created_at) - dateValue(b.created_at));
+  const auditTrail = [...history].sort((a, b) => dateValue(b.created_at) - dateValue(a.created_at));
+
+  // Subcategory is multi-value. It is stored as a comma-separated list in the
+  // single `tickets.subcategory` column rather than JSON, because SLA
+  // matching, business rules, the public API and the report builder all
+  // already read that column as a plain string -- see
+  // server/src/services/ticketCategories.js for the full reasoning.
+  const selectedSubcategories = String(val('subcategory') || '')
+    .split(',').map((s) => s.trim()).filter(Boolean);
+  const activeCategory = taxonomy.find((c) => c.name === val('category'));
+  const subcategoryOptions = (activeCategory?.subcategories || []).map((s) => s.name);
+  const orphanSubcategories = selectedSubcategories.filter((s) => !subcategoryOptions.includes(s));
+
+  // Option lists for the built-in enums, as configured in Field Manager.
+  // Falls back to the module constants only while the registry is still in
+  // flight, so the control never renders empty. A value that has since been
+  // hidden is appended so an existing ticket still shows what it holds
+  // rather than reading as blank.
+  const builtinOptions = (key, fallback) => {
+    const configured = fieldMeta?.builtin?.find((f) => f.key === key)?.options;
+    const base = configured?.length
+      ? configured.map((o) => ({ value: o.value, label: o.label }))
+      : fallback.map((v) => ({ value: v, label: v }));
+    const current = val(key);
+    if (current && !base.some((o) => o.value === current)) {
+      base.push({ value: current, label: `${current} (hidden)` });
+    }
+    return base;
+  };
 
   const canAssignToMe = isAgent && val('assignee_id') !== user.id;
   const canResolveNow = isAgent && !lifecycle && !['resolved', 'closed'].includes(val('status')) && !ticket.is_spam;
@@ -712,7 +769,7 @@ export default function TicketDetail() {
   const canRequesterEdit = user.id === ticket.requester_id && !['resolved', 'closed'].includes(ticket.status);
   const workBrief = (() => {
     const now = Date.now();
-    const dueAt = ticket.sla_due_at ? new Date(ticket.sla_due_at).getTime() : null;
+    const dueAt = ticket.sla_due_at ? dateValue(ticket.sla_due_at) || null : null;
     const remainingMinutes = dueAt ? Math.round((dueAt - now) / 60000) : null;
     const isClosed = ['resolved', 'closed'].includes(ticket.status);
     const slaLabel = !dueAt ? 'No SLA target' : remainingMinutes < 0 ? `Breached ${Math.abs(remainingMinutes)}m ago` : remainingMinutes < 60 ? `Due in ${remainingMinutes}m` : `Due in ${Math.ceil(remainingMinutes / 60)}h`;
@@ -773,10 +830,10 @@ export default function TicketDetail() {
             </button>
           )}
 
-          <button onClick={() => setActivityOpen((o) => !o)} className="btn-secondary">
-            <MessageSquare size={14} /> Activity
-            <span className="badge bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400 ml-0.5">{activityFeed.length}</span>
-            {activityOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+          <button onClick={() => setHistoryOpen((o) => !o)} className="btn-secondary">
+            <History size={14} /> History
+            <span className="badge bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400 ml-0.5">{history.length}</span>
+            {historyOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
           </button>
 
           {isAgent && (
@@ -1052,7 +1109,7 @@ export default function TicketDetail() {
                     <label className="label">Risk</label>
                     <Select
                       disabled={!isAgent} value={val('risk') || ''} onChange={(v) => setDraftField('risk', v)}
-                      options={[{ value: '', label: 'Not set' }, ...RISKS]}
+                      options={[{ value: '', label: 'Not set' }, ...builtinOptions('risk', RISKS)]}
                     />
                   </div>
                 )}
@@ -1092,47 +1149,65 @@ export default function TicketDetail() {
             </div>
           )}
 
+          {/* Conversation -- always visible, never collapsed. */}
           <div className="card p-4">
-            <button type="button" onClick={() => setActivityOpen((o) => !o)} className="w-full flex items-center justify-between text-left">
+            <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3 flex items-center gap-1.5">
+              <MessageSquare size={14} /> Conversation
+              <span className="badge bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400">{conversation.length}</span>
+            </h3>
+
+            {conversation.length === 0 ? (
+              <p className="text-sm text-slate-400 py-2">
+                No replies yet. {isAgent ? 'Use the reply box above to respond to the requester.' : 'Anything you or the team posts will appear here.'}
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {conversation.map((item) => (
+                  <div
+                    key={item.id}
+                    className={`rounded-lg p-3 text-sm ${
+                      item.is_private
+                        ? 'bg-amber-50 dark:bg-amber-500/10 border border-amber-100 dark:border-amber-900'
+                        : item.is_ai ? 'bg-brand-50 dark:bg-brand-500/10' : 'bg-slate-50 dark:bg-slate-800/60'
+                    }`}
+                  >
+                    <div className="flex items-center flex-wrap gap-2 mb-1 text-xs text-slate-500">
+                      <span className="font-medium text-slate-700 dark:text-slate-200">{item.author_name || 'Unknown'}</span>
+                      {!!item.is_ai && <span className="badge bg-brand-100 text-brand-700 dark:bg-brand-500/20 dark:text-brand-400"><Sparkles size={10} /> AI</span>}
+                      {item.is_private ? (
+                        <span className="badge bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400"><Lock size={10} /> Private note — agents only</span>
+                      ) : (
+                        <span className="badge bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400"><Send size={10} /> Reply</span>
+                      )}
+                      <span title={fmtDateTime(item.created_at)}>· {fmtRelative(item.created_at)}</span>
+                    </div>
+                    <p className="text-slate-700 dark:text-slate-200 whitespace-pre-line">{item.body}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Audit trail -- supporting detail, collapsed by default. */}
+          <div className="card p-4">
+            <button type="button" onClick={() => setHistoryOpen((o) => !o)} className="w-full flex items-center justify-between text-left">
               <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
-                <MessageSquare size={14} /> Activity
-                <span className="badge bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400">{activityFeed.length}</span>
+                <History size={14} /> History
+                <span className="badge bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400">{auditTrail.length}</span>
               </h3>
-              {activityOpen ? <ChevronUp size={16} className="text-slate-400" /> : <ChevronDown size={16} className="text-slate-400" />}
+              {historyOpen ? <ChevronUp size={16} className="text-slate-400" /> : <ChevronDown size={16} className="text-slate-400" />}
             </button>
 
-            {activityOpen && (
-              <div className="mt-3 animate-fade-in">
-                <div className="space-y-3 mb-4 max-h-96 overflow-y-auto pr-1">
-                  {activityFeed.length === 0 && <p className="text-sm text-slate-400">No activity yet.</p>}
-                  {activityFeed.map((item) => item.kind === 'comment' ? (
-                    <div
-                      key={`c-${item.id}`}
-                      className={`rounded-lg p-3 text-sm ${
-                        item.is_private
-                          ? 'bg-amber-50 dark:bg-amber-500/10 border border-amber-100 dark:border-amber-900'
-                          : item.is_ai ? 'bg-brand-50 dark:bg-brand-500/10' : 'bg-slate-50 dark:bg-slate-800/60'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2 mb-1 text-xs text-slate-500">
-                        <span className="font-medium text-slate-700 dark:text-slate-200">{item.author_name || 'Unknown'}</span>
-                        {!!item.is_ai && <span className="badge bg-brand-100 text-brand-700 dark:bg-brand-500/20 dark:text-brand-400"><Sparkles size={10} /> AI</span>}
-                        {!!item.is_private ? (
-                          <span className="badge bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400"><Lock size={10} /> Private note — agents only</span>
-                        ) : (
-                          <span className="badge bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400"><Send size={10} /> Reply</span>
-                        )}
-                        <span>· {new Date(item.created_at).toLocaleString()}</span>
-                      </div>
-                      <p className="text-slate-700 dark:text-slate-200 whitespace-pre-line">{item.body}</p>
-                    </div>
-                  ) : (
-                    <div key={`h-${item.id}`} className="text-xs text-slate-500 border-l-2 border-slate-200 dark:border-slate-700 pl-2 py-0.5">
-                      <span className="text-slate-700 dark:text-slate-200 font-medium">{item.event}</span> — {item.detail}
-                      <div className="text-[10px] text-slate-400">{new Date(item.created_at).toLocaleString()}</div>
-                    </div>
-                  ))}
-                </div>
+            {historyOpen && (
+              <div className="mt-3 animate-fade-in space-y-1.5 max-h-96 overflow-y-auto pr-1">
+                {auditTrail.length === 0 && <p className="text-sm text-slate-400">Nothing recorded yet.</p>}
+                {auditTrail.map((item) => (
+                  <div key={item.id} className="text-xs text-slate-500 border-l-2 border-slate-200 dark:border-slate-700 pl-2 py-0.5">
+                    <span className="text-slate-700 dark:text-slate-200 font-medium capitalize">{String(item.event || '').replace(/_/g, ' ')}</span>
+                    {item.detail ? ` — ${item.detail}` : ''}
+                    <div className="text-[10px] text-slate-400" title={fmtDateTime(item.created_at)}>{fmtDateTime(item.created_at)}</div>
+                  </div>
+                ))}
               </div>
             )}
           </div>
@@ -1232,14 +1307,80 @@ export default function TicketDetail() {
                   <label className="label">Priority</label>
                   <Select
                     disabled={!isAgent} value={val('priority')} onChange={(v) => setDraftField('priority', v)}
-                    options={fieldRules.getOptions('priority', PRIORITIES)}
+                    options={fieldRules.getOptions('priority', null) || builtinOptions('priority', PRIORITIES)}
                   />
                 </div>
               )}
               {showCategory && (
+                <>
+                  <div>
+                    <label className="label">Category</label>
+                    <Select
+                      disabled={!isAgent}
+                      value={val('category') || ''}
+                      onChange={(v) => {
+                        setDraftField('category', v);
+                        // Subcategories belong to their category, so changing
+                        // the category clears any that no longer apply. The
+                        // server enforces the same rule (see PATCH /tickets/:id)
+                        // -- this just keeps the form honest before it is sent.
+                        setDraftField('subcategory', '');
+                      }}
+                      options={[
+                        { value: '', label: 'Uncategorised' },
+                        ...fieldRules.getOptions('category', taxonomy.map((c) => c.name)),
+                        // A legacy free-text value, or one whose category has
+                        // since been deactivated, must still be shown rather
+                        // than silently reading as blank.
+                        ...(val('category') && !taxonomy.some((c) => c.name === val('category'))
+                          ? [{ value: val('category'), label: `${val('category')} (not in taxonomy)` }] : []),
+                      ]}
+                    />
+                  </div>
+                  {subcategoryOptions.length > 0 && (
+                    <div>
+                      <label className="label">
+                        Subcategory
+                        {selectedSubcategories.length > 0 && (
+                          <span className="ml-1 text-slate-400">({selectedSubcategories.length} selected)</span>
+                        )}
+                      </label>
+                      <Select
+                        multiple
+                        disabled={!isAgent}
+                        value={selectedSubcategories}
+                        onChange={(next) => setDraftField('subcategory', next.join(', '))}
+                        options={subcategoryOptions}
+                        placeholder="Choose one or more…"
+                      />
+                    </div>
+                  )}
+                  {/* A stored subcategory whose category no longer offers it
+                      (renamed, deactivated, or typed in before the taxonomy
+                      existed) would otherwise vanish from the UI without ever
+                      being shown. */}
+                  {orphanSubcategories.length > 0 && (
+                    <div>
+                      <label className="label">Subcategory (no longer in this category)</label>
+                      <div className="flex flex-wrap gap-1.5">
+                        {orphanSubcategories.map((name) => (
+                          <span key={name} className="badge bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">{name}</span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+              {/* Impact was captured at creation but had no control here, so
+                  an agent could never correct it once the ticket existed --
+                  even though Business Rules and SLA matching both read it. */}
+              {showImpact && (
                 <div>
-                  <label className="label">Category</label>
-                  <input className="input" disabled={!isAgent} value={val('category') || ''} onChange={(e) => setDraftField('category', e.target.value)} />
+                  <label className="label">Impact</label>
+                  <Select
+                    disabled={!isAgent} value={val('impact') || ''} onChange={(v) => setDraftField('impact', v)}
+                    options={[{ value: '', label: 'Not set' }, ...builtinOptions('impact', IMPACTS)]}
+                  />
                 </div>
               )}
               {showTeam && (
@@ -1332,8 +1473,8 @@ export default function TicketDetail() {
 
           <div className="card p-4 space-y-2 text-sm">
             <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-1">SLA</h3>
-            <div className="flex justify-between text-slate-500"><span>Response due</span><span className="text-slate-700 dark:text-slate-200">{ticket.response_due_at ? new Date(ticket.response_due_at).toLocaleString() : '—'}</span></div>
-            <div className="flex justify-between text-slate-500"><span>Resolution due</span><span className="text-slate-700 dark:text-slate-200">{ticket.sla_due_at ? new Date(ticket.sla_due_at).toLocaleString() : '—'}</span></div>
+            <div className="flex justify-between text-slate-500"><span>Response due</span><span className="text-slate-700 dark:text-slate-200">{fmtDateTime(ticket.response_due_at)}</span></div>
+            <div className="flex justify-between text-slate-500"><span>Resolution due</span><span className="text-slate-700 dark:text-slate-200">{fmtDateTime(ticket.sla_due_at)}</span></div>
             <div className="flex justify-between text-slate-500"><span>Source</span><span className="text-slate-700 dark:text-slate-200 capitalize">{ticket.source}</span></div>
             {ticket.ai_sentiment && (
               <div className="flex justify-between text-slate-500"><span>AI sentiment</span><span className="text-slate-700 dark:text-slate-200 capitalize">{ticket.ai_sentiment}</span></div>

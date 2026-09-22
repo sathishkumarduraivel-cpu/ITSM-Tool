@@ -11,8 +11,14 @@ import { Check, ChevronDown, Search } from 'lucide-react';
 //
 // `options`: array of strings, or {value, label, icon?} objects.
 // `searchable`: defaults to auto (on once there are more than 8 options).
+// `multiple`: `value` becomes an array and `onChange` receives an array. The
+//   panel stays open while picking, each row gets a checkbox, and the trigger
+//   summarizes the selection. Used for genuinely multi-value fields like a
+//   ticket's subcategory -- everything else keeps the single-select behavior
+//   unchanged, so this prop is purely additive.
 export default function Select({
   value, onChange, options, placeholder = 'Select…', className = '', disabled = false, searchable, size = 'md', align = 'left', variant = 'default', title,
+  multiple = false, maxSummary = 2,
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -27,7 +33,20 @@ export default function Select({
   const filtered = shouldSearch && query.trim()
     ? normalized.filter((o) => o.label.toLowerCase().includes(query.trim().toLowerCase()))
     : normalized;
-  const selected = normalized.find((o) => o.value === value);
+  const selectedValues = multiple ? (Array.isArray(value) ? value : []) : [];
+  const isPicked = (optValue) => (multiple ? selectedValues.includes(optValue) : optValue === value);
+  const selected = multiple ? null : normalized.find((o) => o.value === value);
+
+  // Trigger text for multi-select: names while they fit, then a count, so a
+  // long selection never blows out the control's width.
+  const multiLabel = (() => {
+    if (!multiple) return null;
+    const labels = selectedValues
+      .map((v) => normalized.find((o) => o.value === v)?.label ?? v);
+    if (!labels.length) return null;
+    if (labels.length <= maxSummary) return labels.join(', ');
+    return `${labels.slice(0, maxSummary).join(', ')} +${labels.length - maxSummary}`;
+  })();
 
   useEffect(() => {
     if (!open) return undefined;
@@ -65,6 +84,15 @@ export default function Select({
 
   const commit = (opt) => {
     if (opt.disabled) return;
+    if (multiple) {
+      // Emitted in the options' own order rather than click order, so two
+      // people picking the same set produce the same stored value.
+      const next = selectedValues.includes(opt.value)
+        ? selectedValues.filter((v) => v !== opt.value)
+        : normalized.filter((o) => o.value === opt.value || selectedValues.includes(o.value)).map((o) => o.value);
+      onChange(next);
+      return; // panel stays open -- picking several is the whole point
+    }
     onChange(opt.value);
     setOpen(false);
     triggerRef.current?.focus();
@@ -98,9 +126,9 @@ export default function Select({
         onKeyDown={onKeyDown}
         className={`${isBadge ? 'badge border-none cursor-pointer' : `input ${sizeCls}`} flex items-center justify-between ${isBadge ? 'gap-1' : 'gap-2'} text-left disabled:opacity-50 disabled:cursor-not-allowed ${className}`}
       >
-        <span className={`truncate flex items-center gap-1.5 min-w-0 ${!isBadge && !selected ? 'text-slate-400' : ''}`}>
+        <span className={`truncate flex items-center gap-1.5 min-w-0 ${!isBadge && !(multiple ? multiLabel : selected) ? 'text-slate-400' : ''}`}>
           {selected?.icon && <selected.icon size={13} className="shrink-0" />}
-          {selected ? selected.label : placeholder}
+          {multiple ? (multiLabel || placeholder) : (selected ? selected.label : placeholder)}
         </span>
         <ChevronDown size={isBadge ? 10 : 14} className={`shrink-0 ${isBadge ? '' : 'text-slate-400'} transition-transform duration-200 ${open ? 'rotate-180' : ''}`} />
       </button>
@@ -149,9 +177,18 @@ export default function Select({
                       transition={{ type: 'spring', stiffness: 500, damping: 36 }}
                     />
                   )}
+                  {multiple && (
+                    <span className={`relative grid h-4 w-4 shrink-0 place-items-center rounded border transition-colors ${
+                      isPicked(o.value)
+                        ? 'border-brand-600 bg-brand-600 text-white'
+                        : 'border-slate-300 dark:border-slate-600'
+                    }`}>
+                      {isPicked(o.value) && <Check size={11} />}
+                    </span>
+                  )}
                   {o.icon && <o.icon size={14} className="relative shrink-0 text-slate-400" />}
                   <span className="relative truncate flex-1">{o.label}</span>
-                  {o.value === value && <Check size={13} className="relative text-brand-600 dark:text-brand-400 shrink-0" />}
+                  {!multiple && isPicked(o.value) && <Check size={13} className="relative text-brand-600 dark:text-brand-400 shrink-0" />}
                 </button>
               ))}
             </motion.div>

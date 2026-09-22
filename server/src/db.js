@@ -1070,6 +1070,357 @@ CREATE TABLE IF NOT EXISTS error_log (
   created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_error_log_created ON error_log(created_at DESC);
+
+-- ---- Editable options for built-in enum fields --------------------------
+-- Impact, Risk and Priority were hardcoded arrays in several files at once
+-- (services/businessRules.js's ENUM_OPTIONS, RISKS in two frontend files,
+-- plus badge colour maps), so an admin could not add "Site-wide" to Impact
+-- without a code change. These rows make them real data.
+--
+-- What is editable differs per field, and that constraint lives in
+-- services/ticketFields.js's registry rather than being scattered here:
+-- Impact and Risk are fully editable, while Priority's *value set* is fixed
+-- because SLA fallback targets, the escalation engine's PRIORITY_RANK and
+-- major-incident promotion all key off exactly low/medium/high/critical.
+-- Its label and colour are still editable.
+--
+-- Seeded lazily per workspace, same approach as email_templates and the
+-- category taxonomy below.
+CREATE TABLE IF NOT EXISTS ticket_field_options (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  field_key TEXT NOT NULL,     -- priority | impact | risk
+  value TEXT NOT NULL,         -- the stored value; immutable for locked fields
+  label TEXT NOT NULL,         -- what agents see
+  color TEXT,                  -- a token from services/ticketFields.js's COLORS
+  sort_order INTEGER DEFAULT 0,
+  active INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(workspace_id, field_key, value)
+);
+
+CREATE INDEX IF NOT EXISTS idx_field_options_key ON ticket_field_options(workspace_id, field_key, sort_order);
+
+-- ---- Ticket category taxonomy -------------------------------------------
+-- tickets.category / tickets.subcategory were free-text columns, which meant
+-- the picker in the ticket view, the AI classifier's own hardcoded category
+-- list (services/aiClient.js categorizeTicket) and whatever an agent typed
+-- could all disagree -- and every typo fragmented reporting. This makes the
+-- taxonomy real, admin-owned data, and the AI classifier now reads its
+-- allowed categories from here instead of a literal in its prompt.
+--
+-- Seeded lazily per workspace by services/ticketCategories.js's
+-- ensureDefaultTaxonomy(), the same approach email_templates uses above, so
+-- a workspace created before this shipped still gets the full set with no
+-- migration script.
+CREATE TABLE IF NOT EXISTS ticket_categories (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  sort_order INTEGER DEFAULT 0,
+  active INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(workspace_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS ticket_subcategories (
+  id TEXT PRIMARY KEY,
+  category_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  sort_order INTEGER DEFAULT 0,
+  active INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(category_id, name),
+  FOREIGN KEY (category_id) REFERENCES ticket_categories(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_ticket_subcategories_cat ON ticket_subcategories(category_id, sort_order);
+
+-- ---- On-Call Scheduling -------------------------------------------------
+-- Deliberately stores rotation *rules*, never materialized shift rows: who
+-- is on call at any instant is computed from (start_date, rotation_length,
+-- member order) by services/oncallEngine.js, the same read-time-computation
+-- philosophy as escalations and SLA due dates. A shift table would have to
+-- be generated ahead of time and would silently drift the moment anyone
+-- edited the member list or rotation length.
+--
+-- The timezone column is an IANA name and lives on the schedule rather than
+-- being inherited from business_hours (global and timezone-less) because
+-- a follow-the-sun rotation is precisely a case where two schedules in one
+-- workspace need different zones. Handoffs are computed in this zone so a
+-- DST transition never moves a handoff by an hour.
+CREATE TABLE IF NOT EXISTS oncall_schedules (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT,
+  timezone TEXT NOT NULL DEFAULT 'UTC',
+  team TEXT,               -- optional: the group this schedule covers
+  enabled INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Stacked layers, highest layer_order wins where several are active at once
+-- (PagerDuty's model): e.g. layer 1 = 24x7 weekly primary, layer 2 = a
+-- business-hours-only day shift that takes precedence while it applies.
+-- The restriction column is JSON, null = always active:
+--   { days: [1,2,3,4,5], start_time: '09:00', end_time: '17:00' }
+CREATE TABLE IF NOT EXISTS oncall_layers (
+  id TEXT PRIMARY KEY,
+  schedule_id TEXT NOT NULL,
+  layer_order INTEGER NOT NULL DEFAULT 1,
+  name TEXT NOT NULL,
+  rotation_type TEXT NOT NULL DEFAULT 'weekly', -- daily | weekly | custom
+  rotation_length_days INTEGER NOT NULL DEFAULT 7,
+  handoff_time TEXT NOT NULL DEFAULT '09:00',   -- 'HH:MM' in the schedule's timezone
+  start_date TEXT NOT NULL,                     -- 'YYYY-MM-DD', rotation epoch
+  restriction TEXT,
+  enabled INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (schedule_id) REFERENCES oncall_schedules(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS oncall_layer_members (
+  id TEXT PRIMARY KEY,
+  layer_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  member_order INTEGER NOT NULL DEFAULT 1,
+  FOREIGN KEY (layer_id) REFERENCES oncall_layers(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- A manual override beats every computed layer for its window -- the escape
+-- hatch for "Priya is covering Tuesday night". The only stored (rather than
+-- computed) piece of on-call state, which is why it can't drift: it has no
+-- rotation to fall out of step with.
+CREATE TABLE IF NOT EXISTS oncall_overrides (
+  id TEXT PRIMARY KEY,
+  schedule_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  start_at TEXT NOT NULL,
+  end_at TEXT NOT NULL,
+  reason TEXT,
+  created_by TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (schedule_id) REFERENCES oncall_schedules(id) ON DELETE CASCADE
+);
+
+-- Who gets paged, in order, when an alert on this schedule goes
+-- unacknowledged. delay_minutes is measured from the alert's creation, not
+-- from the previous step, so reordering steps can't accidentally compound
+-- the total time to reach the last one.
+CREATE TABLE IF NOT EXISTS oncall_escalation_steps (
+  id TEXT PRIMARY KEY,
+  schedule_id TEXT NOT NULL,
+  step_order INTEGER NOT NULL DEFAULT 1,
+  target_type TEXT NOT NULL DEFAULT 'oncall_layer', -- oncall_layer | user | group | role
+  target_id TEXT,
+  delay_minutes INTEGER NOT NULL DEFAULT 5,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (schedule_id) REFERENCES oncall_schedules(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_oncall_layers_schedule ON oncall_layers(schedule_id, layer_order);
+CREATE INDEX IF NOT EXISTS idx_oncall_members_layer ON oncall_layer_members(layer_id, member_order);
+CREATE INDEX IF NOT EXISTS idx_oncall_overrides_window ON oncall_overrides(schedule_id, start_at, end_at);
+
+-- ---- Agent availability -------------------------------------------------
+-- Per-workspace, like workspace_members and for the same reason: the same
+-- physical person can be a full-time agent here and an occasional one
+-- elsewhere, so capacity and status describe the membership, not the user.
+-- A row is created lazily on first edit; its absence means "default
+-- available with the policy's default cap", so this table never needs
+-- backfilling for existing members.
+CREATE TABLE IF NOT EXISTS agent_availability (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'available', -- available | busy | dnd
+  status_message TEXT,
+  max_concurrent_tickets INTEGER NOT NULL DEFAULT 10,
+  skills TEXT,             -- JSON array of free-text skill tags, fed to Sona
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(workspace_id, user_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS agent_time_off (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  start_at TEXT NOT NULL,
+  end_at TEXT NOT NULL,
+  reason TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_time_off_window ON agent_time_off(workspace_id, user_id, start_at, end_at);
+
+-- ---- Assignment policies ------------------------------------------------
+-- Matched to a ticket by the same most-specific-wins scoring as
+-- sla_policies and escalation_policies (see findAssignmentPolicy in
+-- services/assignmentEngine.js).
+--
+-- The four respect_* flags are separate columns rather than one JSON blob
+-- because each is a hard eliminator with its own semantics, and admins
+-- toggle them individually -- e.g. "respect capacity but ignore presence"
+-- is a sensible config for an email-driven team that doesn't sit in the UI.
+CREATE TABLE IF NOT EXISTS assignment_policies (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  enabled INTEGER DEFAULT 1,
+  match_type TEXT,      -- null = any ticket type
+  match_priority TEXT,
+  match_team TEXT,
+  match_category TEXT,
+  strategy TEXT NOT NULL DEFAULT 'least_loaded', -- least_loaded | round_robin | oncall_first | ai_sona
+  candidate_source TEXT NOT NULL DEFAULT 'group', -- group | oncall_schedule | explicit_list
+  candidate_group_id TEXT,
+  candidate_schedule_id TEXT,
+  respect_presence INTEGER DEFAULT 0,
+  respect_oncall INTEGER DEFAULT 0,
+  respect_status INTEGER DEFAULT 1,
+  respect_capacity INTEGER DEFAULT 1,
+  ai_enabled INTEGER DEFAULT 0,
+  fallback_strategy TEXT NOT NULL DEFAULT 'least_loaded', -- used when AI is off/unavailable
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS assignment_policy_candidates (
+  id TEXT PRIMARY KEY,
+  policy_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  FOREIGN KEY (policy_id) REFERENCES assignment_policies(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- Every auto-assignment decision, including the ones that assigned nobody.
+-- The candidates column is the full scored set at decision time, so a "why
+-- did it pick them?" question is answerable months later without re-deriving
+-- state that has since changed. ai_used distinguishes a Sona decision from
+-- the deterministic fallback that ran because Sona was unavailable.
+CREATE TABLE IF NOT EXISTS assignment_log (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  ticket_id TEXT,
+  policy_id TEXT,
+  assigned_user_id TEXT,
+  strategy_used TEXT,
+  ai_used INTEGER DEFAULT 0,
+  candidates TEXT,
+  rationale TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_assignment_log_ticket ON assignment_log(ticket_id);
+CREATE INDEX IF NOT EXISTS idx_assignment_log_created ON assignment_log(workspace_id, created_at DESC);
+
+-- ---- Alert Management ---------------------------------------------------
+-- One row per monitoring integration. webhook_secret authenticates the
+-- unauthenticated ingestion route (routes/alertWebhooks.js) the same way
+-- external_connections.webhook_secret does for ticket sync -- a monitoring
+-- tool can't send our JWT.
+--
+-- field_map is JSON mapping our canonical fields to dotted paths in the
+-- source's own payload shape, e.g. {"title":"alert.name","entity":"host"}.
+-- That's what lets one generic receiver absorb Datadog, Grafana, Prometheus
+-- and a bespoke script without a code change per vendor.
+CREATE TABLE IF NOT EXISTS alert_sources (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  source_type TEXT NOT NULL DEFAULT 'generic', -- generic | datadog | prometheus | grafana | nagios | zabbix | internal
+  webhook_secret TEXT,
+  field_map TEXT,
+  default_severity TEXT NOT NULL DEFAULT 'medium',
+  dedupe_window_minutes INTEGER NOT NULL DEFAULT 60,
+  max_per_minute INTEGER NOT NULL DEFAULT 60,   -- flood cap; 0 = unlimited
+  enabled INTEGER DEFAULT 1,
+  last_received_at TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- dedupe_key is the heart of alert management: a repeated alert for the same
+-- entity inside the source's dedupe window bumps occurrence_count instead of
+-- creating another row, which is what stops a flapping check from opening
+-- 400 incidents overnight.
+CREATE TABLE IF NOT EXISTS alerts (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  source_id TEXT,
+  dedupe_key TEXT NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT,
+  severity TEXT NOT NULL DEFAULT 'medium',  -- critical | high | medium | low | info
+  status TEXT NOT NULL DEFAULT 'open',      -- open | acknowledged | resolved | suppressed
+  entity TEXT,
+  monitor_id TEXT,                          -- set when raised by an internal monitor
+  occurrence_count INTEGER NOT NULL DEFAULT 1,
+  first_seen_at TEXT DEFAULT (datetime('now')),
+  last_seen_at TEXT DEFAULT (datetime('now')),
+  acknowledged_at TEXT,
+  acknowledged_by TEXT,
+  resolved_at TEXT,
+  ticket_id TEXT,                           -- the incident this became, if any
+  escalation_step INTEGER DEFAULT 0,        -- how far up oncall_escalation_steps we've paged
+  raw_payload TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_alerts_dedupe ON alerts(workspace_id, dedupe_key, status);
+CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(workspace_id, status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS alert_rules (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  enabled INTEGER DEFAULT 1,
+  rule_order INTEGER NOT NULL DEFAULT 1,
+  match_severity TEXT,   -- null = any
+  match_source_id TEXT,
+  match_title_contains TEXT,
+  match_entity_contains TEXT,
+  action_create_incident INTEGER DEFAULT 1,
+  action_incident_priority TEXT,
+  action_suppress INTEGER DEFAULT 0,
+  action_notify_schedule_id TEXT,
+  action_promote_major INTEGER DEFAULT 0,
+  action_assignment_policy_id TEXT,
+  stop_processing INTEGER DEFAULT 1,  -- first matching rule wins unless cleared
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS alert_events (
+  id TEXT PRIMARY KEY,
+  alert_id TEXT NOT NULL,
+  event TEXT NOT NULL,   -- received | deduped | suppressed | acknowledged | resolved | incident_created | escalated | rule_matched
+  detail TEXT,
+  actor_id TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (alert_id) REFERENCES alerts(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_alert_events_alert ON alert_events(alert_id, created_at DESC);
+
+-- Alerts raised from our own data rather than an external tool. Evaluated on
+-- the alertScheduler tick because nothing "reads" an SLA breach into
+-- existence -- the same justification directorySyncScheduler.js documents
+-- for being one of the few real background jobs in this app.
+CREATE TABLE IF NOT EXISTS internal_alert_monitors (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  monitor_type TEXT NOT NULL, -- sla_at_risk | sla_breached | unassigned_critical | queue_depth | reopen_rate
+  threshold REAL NOT NULL DEFAULT 1,
+  window_minutes INTEGER NOT NULL DEFAULT 60,
+  severity TEXT NOT NULL DEFAULT 'high',
+  enabled INTEGER DEFAULT 1,
+  last_evaluated_at TEXT,
+  last_triggered_at TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
 `);
 
 // Additive migrations for columns introduced after the initial tickets table

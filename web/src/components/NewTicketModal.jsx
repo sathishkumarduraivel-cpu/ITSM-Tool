@@ -49,22 +49,26 @@ function Required() {
 // impact/risk) -- replaces a plain <select> with something that reads at a
 // glance and is far more inviting to tap than a dropdown, while still being
 // driven entirely by the same Field Manager-computed option list.
+// Accepts plain strings or {value,label} objects, so option lists configured
+// in Field Manager can carry their own label while a Business Rule's
+// set_options (still a string array) keeps working unchanged.
 function PillGroup({ options, value, onChange, toneFor, disabled }) {
+  const normalized = (options || []).map((o) => (typeof o === 'string' ? { value: o, label: o } : o));
   return (
     <div className="flex flex-wrap gap-1.5">
-      {options.map((opt) => {
-        const active = value === opt;
+      {normalized.map((opt) => {
+        const active = value === opt.value;
         return (
           <button
-            key={opt}
+            key={opt.value}
             type="button"
             disabled={disabled}
-            onClick={() => onChange(opt)}
-            className={`rounded-lg border px-3 py-1.5 text-sm font-medium capitalize transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed ${
-              active ? `${toneFor(opt)} shadow-sm` : PILL_IDLE
+            onClick={() => onChange(opt.value)}
+            className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed ${
+              active ? `${toneFor(opt.value)} shadow-sm` : PILL_IDLE
             }`}
           >
-            {opt}
+            {opt.label}
           </button>
         );
       })}
@@ -82,6 +86,8 @@ export default function NewTicketModal({ onClose, onCreated, availableTypes }) {
   const [groups, setGroups] = useState([]);
   const [customFields, setCustomFields] = useState([]);
   const [catalogItems, setCatalogItems] = useState([]);
+  const [taxonomy, setTaxonomy] = useState([]);
+  const [fieldMeta, setFieldMeta] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [files, setFiles] = useState([]);
@@ -107,6 +113,21 @@ export default function NewTicketModal({ onClose, onCreated, availableTypes }) {
   const fieldRules = useBusinessRules(form.type, liveValues);
 
   useEffect(() => { api.get('/groups').then(({ groups }) => setGroups(groups)).catch(() => setGroups([])); }, []);
+  // Option lists and the category taxonomy for the selected ticket type,
+  // re-fetched when the type changes since risk only exists on changes.
+  useEffect(() => {
+    api.get(`/ticket-fields/${form.type}`)
+      .then((data) => {
+        setFieldMeta(data);
+        setTaxonomy(data.builtin.find((f) => f.key === 'category')?.taxonomy || []);
+      })
+      .catch(() => { setFieldMeta(null); setTaxonomy([]); });
+  }, [form.type]);
+
+  // Subcategory is multi-value, stored as a comma-separated list -- see
+  // server/src/services/ticketCategories.js for why that shape rather than JSON.
+  const selectedSubcategories = String(form.subcategory || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const subcategoryOptions = (taxonomy.find((c) => c.name === form.category)?.subcategories || []).map((s) => s.name);
   useEffect(() => {
     api.get(`/custom-fields?ticket_type=${form.type}`).then(({ fields }) => setCustomFields(fields)).catch(() => setCustomFields([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -155,9 +176,16 @@ export default function NewTicketModal({ onClose, onCreated, availableTypes }) {
   const showRollbackPlan = fieldRules.isVisible('rollback_plan', isChange);
   const showChangeSection = showRisk || showPlannedStart || showPlannedEnd || showRollbackPlan;
 
-  const priorityOptions = fieldRules.getOptions('priority', PRIORITIES);
-  const impactOptions = fieldRules.getOptions('impact', RISKS);
-  const riskOptions = fieldRules.getOptions('risk', RISKS);
+  // A Business Rule's set_options wins if one applies; otherwise the options
+  // an admin configured in Field Manager; the module constants are only a
+  // fallback for the moment before /ticket-fields resolves.
+  const configured = (key, fallback) => {
+    const opts = fieldMeta?.builtin?.find((f) => f.key === key)?.options;
+    return opts?.length ? opts.map((o) => ({ value: o.value, label: o.label })) : fallback;
+  };
+  const priorityOptions = fieldRules.getOptions('priority', null) || configured('priority', PRIORITIES);
+  const impactOptions = fieldRules.getOptions('impact', null) || configured('impact', RISKS);
+  const riskOptions = fieldRules.getOptions('risk', null) || configured('risk', RISKS);
   const teamOptions = fieldRules.getOptions('team', groups.map((g) => g.name));
 
   const ALL_RULED_FIELDS = ['priority', 'category', 'subcategory', 'team', 'impact', 'risk', 'planned_start', 'planned_end', 'rollback_plan'];
@@ -345,14 +373,33 @@ export default function NewTicketModal({ onClose, onCreated, availableTypes }) {
               {showCategory && (
                 <div>
                   <label className="label">Category{fieldRules.isRequired('category') && <Required />}</label>
-                  <input className="input" required={fieldRules.isRequired('category')} value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} placeholder="Optional" />
+                  <Select
+                    value={form.category}
+                    // Changing category drops subcategories that belonged to
+                    // the old one, matching the server's own rule in
+                    // PATCH /tickets/:id.
+                    onChange={(v) => setForm({ ...form, category: v, subcategory: '' })}
+                    options={[
+                      { value: '', label: fieldRules.isRequired('category') ? 'Choose a category…' : 'Uncategorised' },
+                      ...fieldRules.getOptions('category', taxonomy.map((c) => c.name)),
+                    ]}
+                  />
                   {fieldRules.getError('category') && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('category')}</p>}
                 </div>
               )}
-              {showSubcategory && (
+              {showSubcategory && subcategoryOptions.length > 0 && (
                 <div>
-                  <label className="label">Subcategory{fieldRules.isRequired('subcategory') && <Required />}</label>
-                  <input className="input" required={fieldRules.isRequired('subcategory')} value={form.subcategory} onChange={(e) => setForm({ ...form, subcategory: e.target.value })} placeholder="Optional" />
+                  <label className="label">
+                    Subcategory{fieldRules.isRequired('subcategory') && <Required />}
+                    {selectedSubcategories.length > 0 && <span className="ml-1 text-slate-400">({selectedSubcategories.length})</span>}
+                  </label>
+                  <Select
+                    multiple
+                    value={selectedSubcategories}
+                    onChange={(next) => setForm((cur) => ({ ...cur, subcategory: next.join(', ') }))}
+                    options={subcategoryOptions}
+                    placeholder="Choose one or more…"
+                  />
                   {fieldRules.getError('subcategory') && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('subcategory')}</p>}
                 </div>
               )}

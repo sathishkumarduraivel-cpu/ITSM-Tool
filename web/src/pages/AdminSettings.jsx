@@ -7,7 +7,7 @@ import {
   AlertTriangle, Inbox, Search, GitBranch, Pencil, ShieldCheck, ShieldOff,
   Milestone, ToggleLeft, ToggleRight, RefreshCw, ArrowUp, ArrowDown, FileStack, Hash, KeyRound,
   History, Download, Filter, LogIn, Copy, Check, Webhook, AlertOctagon, UserCog, Server, Mail,
-  DatabaseBackup, FileJson, HardDrive, Bug,
+  DatabaseBackup, FileJson, HardDrive, Bug, Siren, CalendarClock, Target, Radar,
 } from 'lucide-react';
 import { api, getStoredToken } from '../lib/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -20,6 +20,10 @@ import Select from '../components/Select.jsx';
 import Automations from './Automations.jsx';
 import HrCaseTemplatesTab from '../components/hr-cases/HrCaseTemplatesTab.jsx';
 import EmailConfigTab from '../components/admin/EmailConfigTab.jsx';
+import AlertManagementTab from '../components/admin/AlertManagementTab.jsx';
+import OnCallScheduleTab from '../components/admin/OnCallScheduleTab.jsx';
+import AssignmentPolicyTab from '../components/admin/AssignmentPolicyTab.jsx';
+import TicketFieldManagerTab from '../components/admin/TicketFieldManagerTab.jsx';
 
 // A section with no `permission` is admin-only and never delegable — user
 // management, workspace management, HR templates, and role definition itself
@@ -35,10 +39,13 @@ const SECTIONS = [
   { key: 'emailConfig', label: 'Email Configuration', description: 'SMTP settings, requester/agent/admin/approval email templates, canned responses and delivery log', icon: Mail, permission: 'notifications.manage' },
   { key: 'businessRules', label: 'Business Rules', description: 'Conditional visibility, required and validation logic per ticket type', icon: ShieldCheck, permission: 'business_rules.manage' },
   { key: 'lifecycles', label: 'Lifecycles', description: 'Stage-by-stage workflows per ticket type, with role-restricted and condition-gated transitions enforced server-side', icon: Milestone, permission: 'lifecycles.manage' },
-  { key: 'fieldManager', label: 'Field Manager', description: 'Create custom fields — text, paragraph, dropdown, multi-select — separately for each ticket type', icon: ListChecks, permission: 'custom_fields.manage' },
+  { key: 'fieldManager', label: 'Field Manager', description: 'Every field on a ticket form, built-in and custom — categories, subcategories, priority, impact, risk and your own fields, with editable options, labels and colours', icon: ListChecks, permission: 'custom_fields.manage' },
   { key: 'workspaces', label: 'Workspaces', description: 'Add, rename or remove workspaces you belong to', icon: Layers },
   { key: 'ticketNumbering', label: 'Ticket Numbering', description: 'Customize the id prefix each ticket type gets — INC, REQ, PRB, CHG, or your own', icon: Hash, permission: 'ticket_numbering.manage' },
   { key: 'hrCaseTemplates', label: 'Onboarding/Offboarding Templates', description: 'Reusable department checklists for the Onboarding & Offboarding module', icon: FileStack },
+  { key: 'alertManagement', label: 'Alert Management', description: 'Take in alerts from monitoring tools and your own service desk data, collapse repeats, and turn the ones that matter into incidents', icon: Siren, permission: 'alerts.manage' },
+  { key: 'onCallSchedules', label: 'On-Call Schedules', description: 'Rotations with stacked layers, overrides and escalation steps — so "who is responsible at 3am" is always answerable', icon: CalendarClock, permission: 'oncall.manage' },
+  { key: 'assignmentPolicies', label: 'Assignment Policies', description: 'Route tickets to a genuinely available agent by on-call, capacity, time off and presence — with Sona picking the best fit', icon: Target, permission: 'assignment.manage' },
   { key: 'auditLog', label: 'Audit Log', description: 'Every administrative change in this workspace — who did what, when — with CSV export for compliance reporting', icon: History, permission: 'audit_log.view' },
   { key: 'apiKeys', label: 'API Keys', description: 'Issue scoped credentials so other company systems can connect directly to the public developer API', icon: Webhook },
   { key: 'backups', label: 'Backups & Export', description: 'Download a full copy of your workspace data, or (super-admin) the entire underlying database', icon: DatabaseBackup },
@@ -71,6 +78,11 @@ const SECTION_GROUPS = [
     key: 'modules', label: 'Modules', icon: FileStack, accent: 'from-teal-400 to-teal-600',
     description: 'Configuration for optional, feature-specific modules',
     sectionKeys: ['hrCaseTemplates'],
+  },
+  {
+    key: 'operations', label: 'Operations & Routing', icon: Radar, accent: 'from-red-400 to-red-600',
+    description: 'Who gets told when something breaks, who is on the hook out of hours, and who the work lands on',
+    sectionKeys: ['alertManagement', 'onCallSchedules', 'assignmentPolicies'],
   },
   {
     key: 'security', label: 'Security & Compliance', icon: ShieldCheck, accent: 'from-rose-400 to-rose-600',
@@ -2252,221 +2264,12 @@ const TYPE_META = {
 };
 const builtinCatalog = (type) => [...UNIVERSAL_FIELDS, ...TYPE_FIELD_CATALOG[type]].map((key) => ({ key, label: FIELD_META[key].label }));
 
-// ============================== Field Manager ==============================
-// Creates the fields themselves (text / paragraph / dropdown / multi-select),
-// separately for each ticket type. Distinct from Business Rules below, which
-// only governs behavior of fields that already exist here or in the schema.
-
-const CUSTOM_FIELD_TYPES = [
-  { value: 'text', label: 'Text' },
-  { value: 'textarea', label: 'Paragraph' },
-  { value: 'select', label: 'Dropdown' },
-  { value: 'multiselect', label: 'Multi-select dropdown' },
-];
-
-function CustomFieldModal({ type, field, onClose, onSaved }) {
-  const [label, setLabel] = useState(field?.label || '');
-  const [fieldType, setFieldType] = useState(field?.field_type || 'text');
-  const [options, setOptions] = useState(field?.options?.length ? field.options : ['']);
-  const [required, setRequired] = useState(field ? !!field.required : false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-  const isDropdown = fieldType === 'select' || fieldType === 'multiselect';
-
-  const setOption = (i, val) => setOptions(options.map((o, idx) => (idx === i ? val : o)));
-  const addOption = () => setOptions([...options, '']);
-  const removeOption = (i) => setOptions(options.filter((_, idx) => idx !== i));
-
-  const save = async () => {
-    setError('');
-    if (!label.trim()) { setError('Label is required.'); return; }
-    const cleanOptions = options.map((o) => o.trim()).filter(Boolean);
-    if (isDropdown && cleanOptions.length === 0) { setError('Add at least one option.'); return; }
-    setSaving(true);
-    try {
-      const payload = { label: label.trim(), field_type: fieldType, options: cleanOptions, required };
-      if (field) {
-        await api.patch(`/custom-fields/${field.id}`, payload);
-      } else {
-        await api.post('/custom-fields', { ticket_type: type, ...payload });
-      }
-      onSaved();
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Modal title={field ? `Edit field — ${field.label}` : `Add field — ${TYPE_META[type].label}`} onClose={onClose}>
-      <div className="space-y-4">
-        {error && <div className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 rounded-lg px-3 py-2">{error}</div>}
-        <div>
-          <label className="label">Label</label>
-          <input className="input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. Affected system" />
-        </div>
-        <div>
-          <label className="label">Field type</label>
-          <Select value={fieldType} onChange={setFieldType} options={CUSTOM_FIELD_TYPES} />
-        </div>
-        {isDropdown && (
-          <div>
-            <label className="label">Options</label>
-            <div className="space-y-2">
-              {options.map((o, i) => (
-                <div key={i} className="flex items-center gap-2">
-                  <input className="input" value={o} onChange={(e) => setOption(i, e.target.value)} placeholder={`Option ${i + 1}`} />
-                  {options.length > 1 && (
-                    <button type="button" onClick={() => removeOption(i)} className="text-slate-400 hover:text-red-500 p-1.5"><X size={14} /></button>
-                  )}
-                </div>
-              ))}
-              <button type="button" onClick={addOption} className="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline flex items-center gap-0.5">
-                <Plus size={13} /> Add option
-              </button>
-            </div>
-          </div>
-        )}
-        <label className="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-300">
-          <input type="checkbox" checked={required} onChange={(e) => setRequired(e.target.checked)} /> Always required
-        </label>
-        <div className="flex justify-end gap-2 pt-2">
-          <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
-          <button type="button" disabled={saving} onClick={save} className="btn-primary">
-            {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Save field
-          </button>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
-function TypeFieldDesigner({ type, onBack }) {
-  const [fields, setFields] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [modalField, setModalField] = useState(undefined); // undefined = closed, null = add new, object = edit existing
-  const [deleting, setDeleting] = useState(null);
-  const meta = TYPE_META[type];
-
-  const load = async () => {
-    setLoading(true);
-    try {
-      const { fields } = await api.get(`/custom-fields?ticket_type=${type}`);
-      setFields(fields);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => { load(); }, [type]);
-
-  const remove = async (field) => {
-    if (!confirm(`Delete "${field.label}"? Any Business Rule referencing it will be removed too.`)) return;
-    setDeleting(field.id);
-    await api.del(`/custom-fields/${field.id}`);
-    setDeleting(null);
-    load();
-  };
-
-  return (
-    <div className="space-y-4">
-      <button onClick={onBack} className="text-xs text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 flex items-center gap-1">
-        <ArrowLeft size={13} /> All field managers
-      </button>
-
-      <PageHeader
-        title={`${meta.label} field manager`}
-        description={`Built-in fields (${builtinCatalog(type).map((f) => f.label).join(', ')}) always exist. Add custom fields below — they'll appear on the ${meta.label.toLowerCase()} form right away.`}
-        actions={<button onClick={() => setModalField(null)} className="btn-primary"><Plus size={14} /> Add field</button>}
-      />
-
-      {loading ? (
-        <div className="text-slate-400 text-sm py-10 text-center">Loading…</div>
-      ) : fields.length === 0 ? (
-        <EmptyState title="No custom fields yet" description={`Add a field to collect more detail on ${meta.label.toLowerCase()} tickets.`} />
-      ) : (
-        <div className="card divide-y divide-slate-100 dark:divide-slate-800">
-          {fields.map((f) => (
-            <div key={f.id} className="flex items-center gap-3 px-4 py-3">
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium text-slate-700 dark:text-slate-200 flex items-center gap-1.5 flex-wrap">
-                  {f.label}
-                  <span className="badge bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
-                    {CUSTOM_FIELD_TYPES.find((t) => t.value === f.field_type)?.label}
-                  </span>
-                  {!!f.required && <span className="badge bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400">Required</span>}
-                </div>
-                {f.options?.length > 0 && <div className="text-xs text-slate-400 mt-0.5">{f.options.join(', ')}</div>}
-              </div>
-              <button type="button" onClick={() => setModalField(f)} className="text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors" title="Edit field">
-                <Pencil size={14} />
-              </button>
-              <button type="button" disabled={deleting === f.id} onClick={() => remove(f)} className="text-slate-400 hover:text-red-500 p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors" title="Delete field">
-                {deleting === f.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {modalField !== undefined && (
-        <CustomFieldModal type={type} field={modalField} onClose={() => setModalField(undefined)} onSaved={() => { setModalField(undefined); load(); }} />
-      )}
-    </div>
-  );
-}
-
-function FieldManagerHub() {
-  const [activeType, setActiveType] = useState(null);
-  const [counts, setCounts] = useState({});
-  const [loadingCounts, setLoadingCounts] = useState(true);
-
-  useEffect(() => {
-    if (activeType) return;
-    setLoadingCounts(true);
-    Promise.all(TICKET_TYPES.map((t) => api.get(`/custom-fields?ticket_type=${t}`).then((r) => [t, r.fields.length]).catch(() => [t, 0])))
-      .then((pairs) => setCounts(Object.fromEntries(pairs)))
-      .finally(() => setLoadingCounts(false));
-  }, [activeType]);
-
-  if (activeType) {
-    return <TypeFieldDesigner type={activeType} onBack={() => setActiveType(null)} />;
-  }
-
-  return (
-    <div className="space-y-4">
-      <PageHeader
-        title="Field Manager"
-        description="A separate field manager for each ticket type — add text, paragraph, dropdown or multi-select fields that show up right on that type's ticket form."
-      />
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        {TICKET_TYPES.map((type) => {
-          const meta = TYPE_META[type];
-          const Icon = meta.icon;
-          const count = counts[type] || 0;
-          return (
-            <button key={type} onClick={() => setActiveType(type)} className="card p-4 flex items-start gap-3 text-left hover:shadow-card-hover dark:hover:shadow-card-hover-dark transition-shadow group">
-              <div className={`icon-tile w-11 h-11 rounded-xl bg-gradient-to-b ${meta.tile} text-white shrink-0`}>
-                <Icon size={18} />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <div className="font-medium text-slate-800 dark:text-slate-100">{meta.label} field manager</div>
-                  {!loadingCounts && (
-                    <span className="badge bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">{count} custom field{count === 1 ? '' : 's'}</span>
-                  )}
-                </div>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Built-in: {builtinCatalog(type).map((f) => f.label).join(', ')}</p>
-              </div>
-              <ChevronRight size={16} className="text-slate-300 dark:text-slate-600 shrink-0 mt-1 group-hover:translate-x-0.5 transition-transform" />
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
+// The Field Manager UI now lives in
+// components/admin/TicketFieldManagerTab.jsx -- it grew to cover built-in
+// fields (their options, labels and colours) and the category taxonomy
+// alongside custom fields, which was too much for this already-large file.
+// builtinCatalog/FIELD_META above stay here: Business Rules and Lifecycles
+// below still use them to enumerate targetable fields.
 
 // ============================== Business Rules ==============================
 // Business Rule Logic Engine: named IF/THEN rules with AND/OR-combined
@@ -3496,7 +3299,7 @@ export default function AdminSettings() {
           {section === 'workspaces' && <WorkspacesTab />}
           {section === 'workflows' && <Automations />}
           {section === 'emailConfig' && <EmailConfigTab />}
-          {section === 'fieldManager' && <FieldManagerHub />}
+          {section === 'fieldManager' && <TicketFieldManagerTab />}
           {section === 'businessRules' && <BusinessRulesHub />}
           {section === 'lifecycles' && <LifecycleHub />}
           {section === 'hrCaseTemplates' && <HrCaseTemplatesTab />}
@@ -3508,6 +3311,9 @@ export default function AdminSettings() {
           {section === 'apiKeys' && <ApiKeysTab />}
           {section === 'backups' && <BackupTab />}
           {section === 'errorMonitoring' && <ErrorMonitoringTab />}
+          {section === 'alertManagement' && <AlertManagementTab />}
+          {section === 'onCallSchedules' && <OnCallScheduleTab />}
+          {section === 'assignmentPolicies' && <AssignmentPolicyTab />}
         </>
       )}
     </div>

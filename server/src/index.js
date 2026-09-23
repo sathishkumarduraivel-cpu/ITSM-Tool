@@ -68,6 +68,9 @@ import alertRoutes from './routes/alerts.js';
 import alertWebhookRoutes from './routes/alertWebhooks.js';
 import ticketCategoryRoutes from './routes/ticketCategories.js';
 import ticketFieldRoutes from './routes/ticketFields.js';
+import changeRoutes from './routes/changes.js';
+import cabRoutes from './routes/cab.js';
+import changeConfigRoutes from './routes/changeConfig.js';
 import { startDirectorySyncScheduler } from './services/directorySyncScheduler.js';
 import { startInboundEmailScheduler } from './services/inboundEmailScheduler.js';
 import { startAlertScheduler } from './services/alertScheduler.js';
@@ -212,6 +215,9 @@ app.use('/api/assignment', assignmentRoutes);
 app.use('/api/alerts', alertRoutes);
 app.use('/api/ticket-categories', ticketCategoryRoutes);
 app.use('/api/ticket-fields', ticketFieldRoutes);
+app.use('/api/changes', changeRoutes);
+app.use('/api/cab', cabRoutes);
+app.use('/api/change-config', changeConfigRoutes);
 // Unauthenticated by necessity -- authenticated per-source by webhook
 // secret, like /api/webhooks/external-sync above.
 app.use('/api/webhooks/alerts', alertWebhookRoutes);

@@ -24,6 +24,7 @@ import AlertManagementTab from '../components/admin/AlertManagementTab.jsx';
 import OnCallScheduleTab from '../components/admin/OnCallScheduleTab.jsx';
 import AssignmentPolicyTab from '../components/admin/AssignmentPolicyTab.jsx';
 import TicketFieldManagerTab from '../components/admin/TicketFieldManagerTab.jsx';
+import ChangeConfigTab from '../components/admin/ChangeConfigTab.jsx';
 
 // A section with no `permission` is admin-only and never delegable — user
 // management, workspace management, HR templates, and role definition itself
@@ -41,6 +42,7 @@ const SECTIONS = [
   { key: 'lifecycles', label: 'Lifecycles', description: 'Stage-by-stage workflows per ticket type, with role-restricted and condition-gated transitions enforced server-side', icon: Milestone, permission: 'lifecycles.manage' },
   { key: 'fieldManager', label: 'Field Manager', description: 'Every field on a ticket form, built-in and custom — categories, subcategories, priority, impact, risk and your own fields, with editable options, labels and colours', icon: ListChecks, permission: 'custom_fields.manage' },
   { key: 'workspaces', label: 'Workspaces', description: 'Add, rename or remove workspaces you belong to', icon: Layers },
+  { key: 'changeConfig', label: 'Change Management', description: 'Change types, standard templates, risk scoring, freeze windows and CAB approval routing', icon: GitBranch, permission: 'change.manage' },
   { key: 'ticketNumbering', label: 'Ticket Numbering', description: 'Customize the id prefix each ticket type gets — INC, REQ, PRB, CHG, or your own', icon: Hash, permission: 'ticket_numbering.manage' },
   { key: 'hrCaseTemplates', label: 'Onboarding/Offboarding Templates', description: 'Reusable department checklists for the Onboarding & Offboarding module', icon: FileStack },
   { key: 'alertManagement', label: 'Alert Management', description: 'Take in alerts from monitoring tools and your own service desk data, collapse repeats, and turn the ones that matter into incidents', icon: Siren, permission: 'alerts.manage' },
@@ -67,7 +69,7 @@ const SECTION_GROUPS = [
   {
     key: 'automation', label: 'Process & Automation', icon: Workflow, accent: 'from-violet-400 to-violet-600',
     description: 'How tickets behave — workflows, conditional logic, stage gates and custom fields',
-    sectionKeys: ['workflows', 'emailConfig', 'businessRules', 'lifecycles', 'fieldManager'],
+    sectionKeys: ['workflows', 'emailConfig', 'businessRules', 'lifecycles', 'fieldManager', 'changeConfig'],
   },
   {
     key: 'workspace', label: 'Workspace Settings', icon: Layers, accent: 'from-amber-400 to-amber-600',
@@ -3300,6 +3302,7 @@ export default function AdminSettings() {
           {section === 'workflows' && <Automations />}
           {section === 'emailConfig' && <EmailConfigTab />}
           {section === 'fieldManager' && <TicketFieldManagerTab />}
+          {section === 'changeConfig' && <ChangeConfigTab />}
           {section === 'businessRules' && <BusinessRulesHub />}
           {section === 'lifecycles' && <LifecycleHub />}
           {section === 'hrCaseTemplates' && <HrCaseTemplatesTab />}

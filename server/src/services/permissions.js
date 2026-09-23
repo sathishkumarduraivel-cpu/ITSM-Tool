@@ -44,7 +44,7 @@ export const PERMISSIONS = [
   { key: 'ticket_categories.manage', group: 'Tickets', label: 'Manage ticket categories & subcategories' },
   { key: 'incident.manage', group: 'Tickets', label: 'Incident Manager — process ownership for incidents' },
   { key: 'problem.manage', group: 'Tickets', label: 'Problem Manager — process ownership for problems' },
-  { key: 'change.manage', group: 'Tickets', label: 'Change Manager — process ownership for changes' },
+  { key: 'change.manage', group: 'Tickets', label: 'Change Manager — process ownership, closure approval & change configuration' },
   { key: 'kb.manage', group: 'Knowledge', label: 'Author, publish & retire knowledge articles' },
   { key: 'users.impersonate', group: 'People', label: 'Log in as another user (audited)' },
 ];

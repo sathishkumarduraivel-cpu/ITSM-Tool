@@ -1071,6 +1071,275 @@ CREATE TABLE IF NOT EXISTS error_log (
 );
 CREATE INDEX IF NOT EXISTS idx_error_log_created ON error_log(created_at DESC);
 
+-- ---- Change Management & CAB --------------------------------------------
+-- A full ITIL change pipeline. Before this, "change management" was one
+-- tickets.cab_status column plus a single approvals row -- no change types,
+-- no risk scoring, no calendar, no freeze windows, no ECAB, no
+-- implementation tracking, no PIR.
+--
+-- The ten-state lifecycle lives in tickets.change_state and is driven by
+-- services/changeWorkflow.js, which also writes tickets.status to the
+-- matching bucket on every transition. That keeps every existing
+-- status-based query, filter and report working untouched, the same way
+-- lifecycleEngine.js already derives status from a stage's bucket -- but the
+-- guards here (cannot start without BOTH approval and a reserved slot,
+-- cannot close without a required PIR) are change-specific and cannot be
+-- expressed in the generic lifecycle engine.
+
+-- The four change types from the flow diagram, as configuration rather than
+-- a hardcoded enum: approval route, SLA, and which plans are mandatory all
+-- differ per type and are exactly what an admin needs to tune.
+-- pir_required_bands and mandatory_fields are JSON arrays.
+CREATE TABLE IF NOT EXISTS change_types (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  key TEXT NOT NULL,                    -- standard | normal | emergency | expedite
+  label TEXT NOT NULL,
+  description TEXT,
+  approval_mode TEXT NOT NULL,          -- auto_template | cab | ecab | expedite
+  approval_sla_hours REAL,              -- null = no SLA clock
+  requires_backout INTEGER DEFAULT 1,
+  requires_test_plan INTEGER DEFAULT 0,
+  requires_implementation_plan INTEGER DEFAULT 1,
+  pir_required_bands TEXT,
+  mandatory_fields TEXT,
+  allow_freeze_override INTEGER DEFAULT 0,
+  lead_time_hours REAL DEFAULT 0,       -- minimum notice before the planned window
+  sort_order INTEGER DEFAULT 0,
+  enabled INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(workspace_id, key)
+);
+
+-- Pre-approved recipes. A change whose fields match one skips CAB entirely
+-- (the diagram's Standard "Match?" branch); no match routes it as Normal.
+CREATE TABLE IF NOT EXISTS standard_change_templates (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT,
+  match_category TEXT,                  -- null = matches any
+  match_subcategory TEXT,
+  match_asset_type TEXT,
+  match_title_contains TEXT,
+  implementation_plan TEXT,
+  backout_plan TEXT,
+  test_plan TEXT,
+  default_risk_band TEXT DEFAULT 'low',
+  auto_approve INTEGER DEFAULT 1,
+  max_duration_minutes INTEGER,
+  usage_count INTEGER DEFAULT 0,
+  enabled INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Weighted risk scoring. Deliberately additive points over named signals
+-- rather than a formula in code, because risk drives approval routing and an
+-- admin has to be able to see and change why a change scored what it did.
+-- Signals are resolved in services/changeRisk.js -- including ones the flow
+-- diagram does not mention but this app can answer from its CMDB:
+-- blast_radius and open_incidents_on_ci.
+CREATE TABLE IF NOT EXISTS change_risk_rules (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  signal TEXT NOT NULL,                 -- see SIGNALS in services/changeRisk.js
+  operator TEXT NOT NULL,               -- equals | gte | lte | contains | is_empty | is_not_empty
+  value TEXT,
+  points INTEGER NOT NULL DEFAULT 0,
+  enabled INTEGER DEFAULT 1,
+  sort_order INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Score thresholds. A score lands in the highest band whose min_score it
+-- reaches, so the bands stay editable without touching the rules.
+CREATE TABLE IF NOT EXISTS change_risk_bands (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  band TEXT NOT NULL,                   -- low | medium | high | critical
+  min_score INTEGER NOT NULL,
+  color TEXT,
+  sort_order INTEGER DEFAULT 0,
+  UNIQUE(workspace_id, band)
+);
+
+-- The computed assessment for one change, kept whole rather than just its
+-- number: contributions explains the score to the CAB, and advisory holds
+-- Sona's plan review, which is shown to approvers but never feeds the score.
+CREATE TABLE IF NOT EXISTS change_risk_assessments (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  ticket_id TEXT NOT NULL,
+  score INTEGER NOT NULL DEFAULT 0,
+  band TEXT NOT NULL DEFAULT 'low',
+  contributions TEXT,
+  advisory TEXT,
+  ai_used INTEGER DEFAULT 0,
+  assessed_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(ticket_id),
+  FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE
+);
+
+-- Blackout periods. allow_emergency is what makes a freeze a policy rather
+-- than a wall: an Emergency change may pierce it, but only with a recorded
+-- reason (tickets.freeze_override_reason), which then shows up in metrics as
+-- a freeze violation instead of passing silently.
+CREATE TABLE IF NOT EXISTS change_freeze_windows (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  reason TEXT,
+  start_at TEXT NOT NULL,
+  end_at TEXT NOT NULL,
+  scope TEXT NOT NULL DEFAULT 'all',    -- all | category | asset
+  scope_value TEXT,
+  allow_emergency INTEGER DEFAULT 1,
+  enabled INTEGER DEFAULT 1,
+  created_by TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Reserved implementation windows -- the basis for conflict detection. Kept
+-- separate from tickets.scheduled_start/end so a released reservation leaves
+-- a trace and a change can be re-scheduled without losing its history.
+CREATE TABLE IF NOT EXISTS change_calendar_slots (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  ticket_id TEXT NOT NULL,
+  start_at TEXT NOT NULL,
+  end_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'reserved',  -- reserved | released
+  created_by TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_change_slots_window ON change_calendar_slots(workspace_id, status, start_at, end_at);
+
+-- Approval routing, matched on change type + risk band by the same
+-- most-specific-wins scoring as SLA and assignment policies.
+CREATE TABLE IF NOT EXISTS change_approval_routes (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  match_change_type TEXT,               -- null = any type
+  match_risk_band TEXT,                 -- null = any band
+  enabled INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- quorum lets a group step need N approvals rather than just the first --
+-- a real CAB does not pass on one member clicking approve.
+CREATE TABLE IF NOT EXISTS change_approval_route_steps (
+  id TEXT PRIMARY KEY,
+  route_id TEXT NOT NULL,
+  step_order INTEGER NOT NULL DEFAULT 1,
+  approver_type TEXT NOT NULL,          -- cab_group | ecab_group | group | role | user | requester_manager
+  approver_id TEXT,
+  sla_hours REAL,
+  quorum INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (route_id) REFERENCES change_approval_routes(id) ON DELETE CASCADE
+);
+
+-- Real CAB sittings, so "submit to CAB as per schedule" means something. An
+-- ECAB meeting is the same shape with kind='ecab' and no waiting.
+CREATE TABLE IF NOT EXISTS cab_meetings (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'cab',     -- cab | ecab
+  start_at TEXT NOT NULL,
+  end_at TEXT NOT NULL,
+  chair_id TEXT,
+  quorum INTEGER DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'scheduled', -- scheduled | in_session | closed | cancelled
+  minutes TEXT,
+  created_by TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS cab_agenda_items (
+  id TEXT PRIMARY KEY,
+  meeting_id TEXT NOT NULL,
+  ticket_id TEXT NOT NULL,
+  sort_order INTEGER DEFAULT 0,
+  decision TEXT,                        -- approved | rejected | approved_with_conditions | deferred
+  conditions TEXT,
+  notes TEXT,
+  decided_by TEXT,
+  decided_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(meeting_id, ticket_id),
+  FOREIGN KEY (meeting_id) REFERENCES cab_meetings(id) ON DELETE CASCADE,
+  FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS cab_attendance (
+  id TEXT PRIMARY KEY,
+  meeting_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  present INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(meeting_id, user_id),
+  FOREIGN KEY (meeting_id) REFERENCES cab_meetings(id) ON DELETE CASCADE
+);
+
+-- Post Implementation Review. One per change, created when the type's
+-- pir_required_bands covers the change's risk band.
+CREATE TABLE IF NOT EXISTS change_pir (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  ticket_id TEXT NOT NULL,
+  outcome TEXT,                         -- successful | successful_with_issues | failed | rolled_back
+  met_objectives INTEGER,
+  caused_incident INTEGER DEFAULT 0,
+  incident_ticket_id TEXT,
+  lessons_learned TEXT,
+  follow_up_actions TEXT,
+  reviewed_by TEXT,
+  completed_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(ticket_id),
+  FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE
+);
+
+-- The audit table the flow diagram's developer notes ask for. Written by the
+-- single transition() entry point in services/changeWorkflow.js, so no call
+-- site can move a change without leaving a row. guards holds the evaluated
+-- guard results, which is what makes a refusal explainable after the fact.
+CREATE TABLE IF NOT EXISTS change_state_transitions (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  ticket_id TEXT NOT NULL,
+  from_state TEXT,
+  to_state TEXT NOT NULL,
+  actor_id TEXT,
+  actor_name TEXT,
+  reason TEXT,
+  guards TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_change_transitions_ticket ON change_state_transitions(ticket_id, created_at DESC);
+
+-- Idempotency for the change API, another explicit developer note. A repeated
+-- POST with the same Idempotency-Key replays the stored response instead of
+-- re-running the action -- which matters most for "execute backout", where a
+-- retried request must not run the backout twice.
+CREATE TABLE IF NOT EXISTS request_keys (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  route TEXT NOT NULL,
+  status_code INTEGER,
+  response_json TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(workspace_id, route, idempotency_key)
+);
+
 -- ---- Editable options for built-in enum fields --------------------------
 -- Impact, Risk and Priority were hardcoded arrays in several files at once
 -- (services/businessRules.js's ENUM_OPTIONS, RISKS in two frontend files,
@@ -1426,6 +1695,39 @@ CREATE TABLE IF NOT EXISTS internal_alert_monitors (
 // Additive migrations for columns introduced after the initial tickets table
 // (safe no-ops if the column already exists).
 const ticketColumnMigrations = [
+  // Change Management. change_state drives the ten-state lifecycle from the
+  // flow diagram and is authoritative for a change; tickets.status is kept in
+  // sync with its bucket by services/changeWorkflow.js so nothing that
+  // queries status has to learn about change states.
+  //
+  // rollback_plan (added further down, for the original CAB feature) is the
+  // backout plan -- not renamed, because business rules, the public API and
+  // existing tickets all reference that column name already.
+  "ALTER TABLE tickets ADD COLUMN change_type TEXT",              // standard | normal | emergency | expedite
+  "ALTER TABLE tickets ADD COLUMN change_state TEXT",             // see CHANGE_STATES in services/changeWorkflow.js
+  "ALTER TABLE tickets ADD COLUMN risk_score INTEGER",
+  "ALTER TABLE tickets ADD COLUMN risk_band TEXT",                // low | medium | high | critical
+  "ALTER TABLE tickets ADD COLUMN implementation_plan TEXT",
+  "ALTER TABLE tickets ADD COLUMN test_plan TEXT",
+  "ALTER TABLE tickets ADD COLUMN scheduled_start TEXT",
+  "ALTER TABLE tickets ADD COLUMN scheduled_end TEXT",
+  "ALTER TABLE tickets ADD COLUMN actual_start TEXT",
+  "ALTER TABLE tickets ADD COLUMN actual_end TEXT",
+  "ALTER TABLE tickets ADD COLUMN standard_template_id TEXT",
+  "ALTER TABLE tickets ADD COLUMN freeze_override_reason TEXT",
+  "ALTER TABLE tickets ADD COLUMN closure_approved_by TEXT",
+  "ALTER TABLE tickets ADD COLUMN closure_approved_at TEXT",
+  "ALTER TABLE tickets ADD COLUMN pir_required INTEGER DEFAULT 0",
+  // Evidence captured during implementation is an attachment with a marker,
+  // rather than a second attachment table with its own upload path.
+  "ALTER TABLE attachments ADD COLUMN kind TEXT DEFAULT 'general'", // general | evidence
+  // Group steps in an approval route need to know which step a row belongs
+  // to and how many approvals that step still needs.
+  "ALTER TABLE approvals ADD COLUMN approver_type TEXT",
+  "ALTER TABLE approvals ADD COLUMN route_step_id TEXT",
+  "ALTER TABLE approvals ADD COLUMN sla_due_at TEXT",
+  "ALTER TABLE approvals ADD COLUMN sla_breached INTEGER DEFAULT 0",
+  "ALTER TABLE approvals ADD COLUMN conditions TEXT",
   // Test mode lets an automation evaluate against real ticket events without
   // executing its actions — it logs what it would have done instead. Kept as
   // a column on automations itself (not a separate enabled-like flag) so an

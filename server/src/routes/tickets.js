@@ -328,7 +328,7 @@ router.post('/', async (req, res) => {
 
   const {
     description, priority = 'medium', category, subcategory, team, impact, requester_id, source = 'portal',
-    risk, planned_start, planned_end, rollback_plan,
+    risk, planned_start, planned_end, rollback_plan, implementation_plan, test_plan, change_type,
   } = evalBody;
 
   const id = uid('tkt');
@@ -358,20 +358,20 @@ router.post('/', async (req, res) => {
   db.prepare('INSERT INTO ticket_history (id, ticket_id, event, detail) VALUES (?,?,?,?)').run(uid('h'), id, 'created', `Ticket created via ${source}`);
   if (Object.keys(customValues).length) saveCustomValues(id, customDefs, customValues);
 
+  // A change starts in the state machine's first state and carries no
+  // approvals yet.
+  //
+  // This used to insert a pending 'admin' approval and email every admin the
+  // moment a change was raised. That predates the change module and is now
+  // actively wrong: approval routing belongs to
+  // services/changeApproval.js's createApprovalQueue, which runs at
+  // POST /changes/:id/submit-for-approval once the change has actually been
+  // classified and risk-scored. Seeding a phantom approval here left every
+  // change with a pending row nobody was assigned and nothing would ever
+  // decide -- which then blocked the state machine's own approval guard.
   if (isChange) {
-    db.prepare('INSERT INTO approvals (id, ticket_id, approver_role, step_order, status) VALUES (?,?,?,?,?)').run(
-      uid('apr'), id, 'admin', 1, 'pending'
-    );
-    const cabMembers = db.prepare(
-      `SELECT u.id, u.name, u.email FROM workspace_members wm JOIN users u ON u.id = wm.user_id WHERE wm.workspace_id = ? AND wm.role = 'admin' AND wm.active = 1`
-    ).all(req.workspaceId);
-    const cabRequester = db.prepare('SELECT name FROM users WHERE id = ?').get(requester_id || req.user.id);
-    for (const m of cabMembers) {
-      notifyUser(m.id, 'CAB approval requested', `${number} — ${title}`, `/tickets/${id}`, req.workspaceId);
-      sendTemplatedEmail(req.workspaceId, 'cab_approval_requested', m.email, {
-        'approver.name': m.name, 'requester.name': cabRequester?.name || req.user.name, 'ticket.number': number, 'ticket.title': title, 'ticket.link': ticketLink(req, id),
-      }).catch((e) => console.error('cab approval email error', e));
-    }
+    db.prepare("UPDATE tickets SET change_state = 'new', change_type = ?, cab_status = 'not_required', implementation_plan = ?, test_plan = ? WHERE id = ?")
+      .run(change_type || null, implementation_plan || null, test_plan || null, id);
   }
 
   const ticket = getTicket(id, req.workspaceId);
@@ -451,7 +451,12 @@ router.patch('/:id', (req, res) => {
     if (!(key in evalBody)) delete customValues[key];
   }
 
-  const allowed = ['title', 'description', 'status', 'type', 'priority', 'category', 'subcategory', 'assignee_id', 'team', 'impact', 'risk', 'planned_start', 'planned_end', 'rollback_plan'];
+  // implementation_plan and test_plan are editable here alongside
+  // rollback_plan (the backout plan) -- they are the plans a Normal change
+  // is required to carry. change_type and change_state are deliberately NOT
+  // in this list: those move through POST /changes/:id/classify and the
+  // guarded state machine, so a plain PATCH cannot skip a gate.
+  const allowed = ['title', 'description', 'status', 'type', 'priority', 'category', 'subcategory', 'assignee_id', 'team', 'impact', 'risk', 'planned_start', 'planned_end', 'rollback_plan', 'implementation_plan', 'test_plan'];
 
   // Subcategories only mean anything under their own category, so they are
   // normalized against the category this ticket will actually have once this

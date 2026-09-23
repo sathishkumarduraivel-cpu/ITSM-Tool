@@ -6,6 +6,16 @@ import Select from './Select.jsx';
 import { useBusinessRules } from '../hooks/useBusinessRules.js';
 
 const PRIORITIES = ['low', 'medium', 'high', 'critical'];
+
+// Shown only while /changes/meta is in flight, so the type picker is never
+// empty. The real list (with this workspace's own SLAs and plan rules) comes
+// from the server.
+const FALLBACK_CHANGE_TYPES = [
+  { key: 'standard', label: 'Standard', description: 'Pre-approved and repeatable. Auto-approves when it matches a template.' },
+  { key: 'normal', label: 'Normal', description: 'The default path. Reviewed by the CAB.' },
+  { key: 'emergency', label: 'Emergency', description: 'Restores service. Goes straight to the ECAB.' },
+  { key: 'expedite', label: 'Expedite', description: 'Urgent but not an outage. Short-SLA approval.' },
+];
 const RISKS = ['low', 'medium', 'high'];
 
 // Full literal class strings (not template fragments) so Tailwind's scanner
@@ -81,6 +91,7 @@ export default function NewTicketModal({ onClose, onCreated, availableTypes }) {
     title: '', description: '', type: availableTypes[0], priority: 'medium',
     category: '', subcategory: '', team: '', impact: 'medium',
     risk: 'medium', planned_start: '', planned_end: '', rollback_plan: '',
+    change_type: 'normal', implementation_plan: '', test_plan: '',
     catalog_item_id: '', custom: {},
   });
   const [groups, setGroups] = useState([]);
@@ -88,6 +99,7 @@ export default function NewTicketModal({ onClose, onCreated, availableTypes }) {
   const [catalogItems, setCatalogItems] = useState([]);
   const [taxonomy, setTaxonomy] = useState([]);
   const [fieldMeta, setFieldMeta] = useState(null);
+  const [changeTypes, setChangeTypes] = useState([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [files, setFiles] = useState([]);
@@ -113,6 +125,13 @@ export default function NewTicketModal({ onClose, onCreated, availableTypes }) {
   const fieldRules = useBusinessRules(form.type, liveValues);
 
   useEffect(() => { api.get('/groups').then(({ groups }) => setGroups(groups)).catch(() => setGroups([])); }, []);
+  // The configured change types, so the picker shows this workspace's own
+  // labels, SLAs and mandatory-plan rules rather than a hardcoded four.
+  useEffect(() => {
+    if (!availableTypes.includes('change')) return;
+    api.get('/changes/meta').then((d) => setChangeTypes(d.change_types || [])).catch(() => setChangeTypes([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // Option lists and the category taxonomy for the selected ticket type,
   // re-fetched when the type changes since risk only exists on changes.
   useEffect(() => {
@@ -174,6 +193,7 @@ export default function NewTicketModal({ onClose, onCreated, availableTypes }) {
   const showPlannedStart = fieldRules.isVisible('planned_start', isChange);
   const showPlannedEnd = fieldRules.isVisible('planned_end', isChange);
   const showRollbackPlan = fieldRules.isVisible('rollback_plan', isChange);
+  const selectedChangeType = changeTypes.find((t) => t.key === form.change_type) || null;
   const showChangeSection = showRisk || showPlannedStart || showPlannedEnd || showRollbackPlan;
 
   // A Business Rule's set_options wins if one applies; otherwise the options
@@ -474,39 +494,107 @@ export default function NewTicketModal({ onClose, onCreated, availableTypes }) {
             <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-teal-700 dark:text-teal-400">
               <GitBranch size={13} /> Change details
             </div>
-            <p className="text-xs text-slate-500 dark:text-slate-400 -mt-2">Change requests go through Change Advisory Board approval before they can move to in-progress.</p>
-            {showRisk && (
+            <p className="text-xs text-slate-500 dark:text-slate-400 -mt-2">
+              Pick the change type and fill in the plans. Risk is scored automatically once the change is raised — from the CIs it touches, their blast radius, and how complete these plans are.
+            </p>
+
+            {/* Change type drives everything downstream: which approvals
+                apply, which plans are mandatory, and whether a freeze can be
+                overridden. It was missing from this form entirely, so every
+                change arrived unclassified. */}
+            <div>
+              <label className="label">Change type<Required /></label>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {(changeTypes.length ? changeTypes : FALLBACK_CHANGE_TYPES).map((t) => {
+                  const active = form.change_type === t.key;
+                  return (
+                    <button
+                      key={t.key} type="button"
+                      onClick={() => setForm({ ...form, change_type: t.key })}
+                      className={`rounded-xl border p-2.5 text-left transition-colors ${
+                        active
+                          ? 'border-teal-500 bg-white shadow-sm dark:border-teal-400 dark:bg-slate-900'
+                          : 'border-slate-200 hover:bg-white/60 dark:border-white/10 dark:hover:bg-slate-900/40'
+                      }`}
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <span className={`h-2 w-2 rounded-full ${
+                          t.key === 'emergency' ? 'bg-red-500' : t.key === 'expedite' ? 'bg-violet-500'
+                            : t.key === 'standard' ? 'bg-emerald-500' : 'bg-sky-500'
+                        }`} />
+                        <span className="text-sm font-medium text-slate-800 dark:text-slate-100">{t.label}</span>
+                        {t.approval_sla_hours ? (
+                          <span className="badge bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400">{t.approval_sla_hours}h SLA</span>
+                        ) : null}
+                      </span>
+                      <span className="mt-0.5 block text-[11px] leading-snug text-slate-500 dark:text-slate-400">{t.description}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div>
+              <label className="label">
+                Implementation plan{selectedChangeType?.requires_implementation_plan && <Required />}
+              </label>
+              <textarea
+                className="input" rows={4}
+                value={form.implementation_plan}
+                onChange={(e) => setForm({ ...form, implementation_plan: e.target.value })}
+                placeholder={'1. Fail over to the replica.\n2. Apply the patch.\n3. Fail back and verify.'}
+              />
+            </div>
+
+            {showRollbackPlan && (
               <div>
-                <label className="label">Risk{fieldRules.isRequired('risk') && <Required />}</label>
-                <PillGroup options={riskOptions} value={form.risk} onChange={(v) => setForm({ ...form, risk: v })} toneFor={toneForSeverity} />
-                {fieldRules.getError('risk') && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('risk')}</p>}
+                <label className="label">
+                  Backout plan{(selectedChangeType?.requires_backout ?? fieldRules.isRequired('rollback_plan')) && <Required />}
+                </label>
+                <textarea
+                  className="input" rows={3}
+                  value={form.rollback_plan}
+                  onChange={(e) => setForm({ ...form, rollback_plan: e.target.value })}
+                  placeholder="How this change is reversed if it fails."
+                />
+                {fieldRules.getError('rollback_plan') && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('rollback_plan')}</p>}
+                <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                  Implementation cannot start without one on a {form.change_type || 'normal'} change.
+                </p>
               </div>
             )}
+
+            <div>
+              <label className="label">Test plan{selectedChangeType?.requires_test_plan && <Required />}</label>
+              <textarea
+                className="input" rows={2}
+                value={form.test_plan}
+                onChange={(e) => setForm({ ...form, test_plan: e.target.value })}
+                placeholder="How you will confirm the change worked."
+              />
+            </div>
+
             {(showPlannedStart || showPlannedEnd) && (
               <div className="grid sm:grid-cols-2 gap-3">
                 {showPlannedStart && (
                   <div>
-                    <label className="label">Planned start{fieldRules.isRequired('planned_start') && <Required />}</label>
+                    <label className="label">Requested start{fieldRules.isRequired('planned_start') && <Required />}</label>
                     <input type="datetime-local" className="input" required={fieldRules.isRequired('planned_start')} value={form.planned_start} onChange={(e) => setForm({ ...form, planned_start: e.target.value })} />
                     {fieldRules.getError('planned_start') && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('planned_start')}</p>}
                   </div>
                 )}
                 {showPlannedEnd && (
                   <div>
-                    <label className="label">Planned end{fieldRules.isRequired('planned_end') && <Required />}</label>
+                    <label className="label">Requested end{fieldRules.isRequired('planned_end') && <Required />}</label>
                     <input type="datetime-local" className="input" required={fieldRules.isRequired('planned_end')} value={form.planned_end} onChange={(e) => setForm({ ...form, planned_end: e.target.value })} />
                     {fieldRules.getError('planned_end') && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('planned_end')}</p>}
                   </div>
                 )}
               </div>
             )}
-            {showRollbackPlan && (
-              <div>
-                <label className="label">Rollback plan{fieldRules.isRequired('rollback_plan') && <Required />}</label>
-                <textarea className="input" rows={2} required={fieldRules.isRequired('rollback_plan')} value={form.rollback_plan} onChange={(e) => setForm({ ...form, rollback_plan: e.target.value })} />
-                {fieldRules.getError('rollback_plan') && <p className="text-xs text-red-600 mt-1">{fieldRules.getError('rollback_plan')}</p>}
-              </div>
-            )}
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              The window actually reserved on the change calendar is confirmed after approval, once it has been checked for conflicts and change freezes.
+            </p>
           </div>
         )}
       </form>

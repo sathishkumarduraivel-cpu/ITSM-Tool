@@ -14,6 +14,7 @@ import { PriorityBadge, StatusBadge, TypeBadge } from '../components/Badge.jsx';
 import { useBusinessRules } from '../hooks/useBusinessRules.js';
 import ExternalLinksPanel from '../components/ExternalLinksPanel.jsx';
 import MajorIncidentPanel from '../components/MajorIncidentPanel.jsx';
+import ChangeWorkflowPanel from '../components/changes/ChangeWorkflowPanel.jsx';
 import Modal from '../components/Modal.jsx';
 import { useRealtimeEvent } from '../context/RealtimeContext.jsx';
 import Select from '../components/Select.jsx';
@@ -22,6 +23,23 @@ import AddTicketTaskForm from '../components/tickets/AddTicketTaskForm.jsx';
 import { usePageTitle } from '../hooks/usePageTitle.js';
 
 const STATUSES = ['open', 'in_progress', 'on_hold', 'resolved', 'closed'];
+// Mirrors CHANGE_STATES in server/src/services/changeWorkflow.js. Kept as a
+// local label map rather than fetched, so the Properties panel can name a
+// change's state without a second request -- the ChangeWorkflowPanel below
+// fetches the authoritative record for everything it actually acts on.
+const CHANGE_STATE_LABELS = {
+  new: 'New',
+  in_review: 'In Review',
+  pending_approval: 'Pending Approval',
+  approved: 'Approved',
+  scheduled: 'Scheduled',
+  in_progress: 'In Progress',
+  implemented: 'Implemented',
+  rolled_back: 'Rolled Back',
+  closed: 'Closed',
+  reopened: 'Reopened',
+};
+
 // Fallbacks only, used while /ticket-fields is in flight. The real option
 // lists come from Field Manager -- see builtinOptions() below.
 const PRIORITIES = ['low', 'medium', 'high', 'critical'];
@@ -315,6 +333,7 @@ export default function TicketDetail() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [taxonomy, setTaxonomy] = useState([]);
   const [fieldMeta, setFieldMeta] = useState(null);
+  const [changeMeta, setChangeMeta] = useState(null);
 
   // Every field edit below is staged here, not sent to the server, until the
   // agent explicitly clicks Update -- one PATCH applies everything at once
@@ -462,6 +481,13 @@ export default function TicketDetail() {
       })
       .catch(() => { setFieldMeta(null); setTaxonomy([]); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ticket?.type]);
+
+  // Change-type policy (which plans are mandatory, SLAs, PIR bands). Only
+  // fetched for change tickets, since nothing else uses it.
+  useEffect(() => {
+    if (ticket?.type !== 'change') { setChangeMeta(null); return; }
+    api.get('/changes/meta').then(setChangeMeta).catch(() => setChangeMeta(null));
   }, [ticket?.type]);
 
   const setDraftField = (field, value) => setDraft((d) => ({ ...d, [field]: value }));
@@ -711,6 +737,12 @@ export default function TicketDetail() {
   const showPriority = fieldRules.isVisible('priority', true);
   const showCategory = fieldRules.isVisible('category', true);
   const showImpact = fieldRules.isVisible('impact', true);
+  const changeStateLabel = isChange ? CHANGE_STATE_LABELS[ticket.change_state] || null : null;
+  // Which plans this change type actually demands, so the required markers
+  // match the configured policy rather than being hardcoded.
+  const changeTypeMeta = isChange
+    ? (changeMeta?.change_types || []).find((t) => t.key === ticket.change_type) || null
+    : null;
   const showTeam = fieldRules.isVisible('team', true);
   const showRisk = fieldRules.isVisible('risk', isChange);
   const showPlannedStart = fieldRules.isVisible('planned_start', isChange);
@@ -1100,38 +1132,104 @@ export default function TicketDetail() {
             )}
           </div>
 
+          {/* The full change pipeline: state machine, approvals, schedule,
+              implementation, PIR and closure. Only for change tickets. */}
+          {isChange && <ChangeWorkflowPanel ticketId={id} isAgent={isAgent} onTicketChanged={load} />}
+
           {showChangeSection && (
             <div className="card p-4 space-y-3">
-              <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 flex items-center gap-1.5"><ShieldCheck size={14} /> Change details</h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {showRisk && (
-                  <div>
-                    <label className="label">Risk</label>
-                    <Select
-                      disabled={!isAgent} value={val('risk') || ''} onChange={(v) => setDraftField('risk', v)}
-                      options={[{ value: '', label: 'Not set' }, ...builtinOptions('risk', RISKS)]}
-                    />
-                  </div>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+                  <ShieldCheck size={14} /> Change details
+                </h3>
+                {/* Risk is computed by the change module from CI blast radius,
+                    priority, plan completeness and more -- there is no manual
+                    risk dropdown any more, because two risk fields on one
+                    change is ambiguous for agents and for SLA matching.
+                    The breakdown lives in the Change workflow panel above. */}
+                {ticket.risk_band && (
+                  <span className={`badge ${
+                    ticket.risk_band === 'critical' ? 'bg-red-50 text-red-700 dark:bg-red-500/10 dark:text-red-300'
+                      : ticket.risk_band === 'high' ? 'bg-orange-50 text-orange-700 dark:bg-orange-500/10 dark:text-orange-300'
+                        : ticket.risk_band === 'medium' ? 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300'
+                          : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300'
+                  }`}>
+                    {ticket.risk_band} risk · {ticket.risk_score}
+                  </span>
                 )}
+              </div>
+
+              {!ticket.change_type && (
+                <p className="rounded-lg bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">
+                  Not classified yet — use <strong>Classify</strong> in the Change workflow panel to set the change type and score its risk.
+                </p>
+              )}
+
+              {/* The plans. These are what the change type's mandatory-field
+                  rules and the workflow guards actually check, so they have to
+                  be editable here -- previously the backout plan was the only
+                  one with an input, while validation demanded all three. */}
+              <div>
+                <label className="label">
+                  Implementation plan
+                  {changeTypeMeta?.requires_implementation_plan && <span className="text-red-500">*</span>}
+                </label>
+                <textarea
+                  className="input" rows={4} disabled={!isAgent}
+                  value={val('implementation_plan') || ''}
+                  onChange={(e) => setDraftField('implementation_plan', e.target.value)}
+                  placeholder={'1. Fail over to the replica.\n2. Apply the patch.\n3. Fail back and verify.'}
+                />
+              </div>
+
+              {showRollbackPlan && (
+                <div>
+                  <label className="label">
+                    Backout plan
+                    {changeTypeMeta?.requires_backout && <span className="text-red-500">*</span>}
+                  </label>
+                  <textarea
+                    className="input" rows={3} disabled={!isAgent}
+                    value={val('rollback_plan') || ''}
+                    onChange={(e) => setDraftField('rollback_plan', e.target.value)}
+                    placeholder="How this change is reversed if it fails."
+                  />
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    Required before implementation can start on a {ticket.change_type || 'normal'} change.
+                  </p>
+                </div>
+              )}
+
+              <div>
+                <label className="label">
+                  Test plan
+                  {changeTypeMeta?.requires_test_plan && <span className="text-red-500">*</span>}
+                </label>
+                <textarea
+                  className="input" rows={2} disabled={!isAgent}
+                  value={val('test_plan') || ''}
+                  onChange={(e) => setDraftField('test_plan', e.target.value)}
+                  placeholder="How you will confirm the change worked."
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {showPlannedStart && (
                   <div>
-                    <label className="label">Planned start</label>
+                    <label className="label">Requested start</label>
                     <input type="datetime-local" className="input" disabled={!isAgent} value={(val('planned_start') || '').slice(0, 16)} onChange={(e) => setDraftField('planned_start', e.target.value)} />
                   </div>
                 )}
                 {showPlannedEnd && (
                   <div>
-                    <label className="label">Planned end</label>
+                    <label className="label">Requested end</label>
                     <input type="datetime-local" className="input" disabled={!isAgent} value={(val('planned_end') || '').slice(0, 16)} onChange={(e) => setDraftField('planned_end', e.target.value)} />
                   </div>
                 )}
               </div>
-              {showRollbackPlan && (
-                <div>
-                  <label className="label">Rollback plan</label>
-                  <textarea className="input" rows={2} disabled={!isAgent} value={val('rollback_plan') || ''} onChange={(e) => setDraftField('rollback_plan', e.target.value)} />
-                </div>
-              )}
+              <p className="text-[11px] text-slate-400">
+                This is the window you are asking for. The window actually reserved on the change calendar is set in the Change workflow panel, which checks it for conflicts and freezes first.
+              </p>
             </div>
           )}
 
@@ -1292,7 +1390,21 @@ export default function TicketDetail() {
               {showStatus && (
                 <div className="pt-2">
                   <label className="label">Status</label>
-                  {lifecycle ? (
+                  {/* A change's status is derived from its change state by the
+                      workflow engine, so this is read-only here. Offering an
+                      editable status alongside the workflow panel showed two
+                      different words for the same thing, and editing it
+                      would have desynced the state machine from the ticket. */}
+                  {isChange ? (
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 dark:border-white/10 dark:bg-slate-800/50">
+                      <div className="text-sm font-medium capitalize text-slate-800 dark:text-slate-100">
+                        {changeStateLabel || String(val('status') || '').replace(/_/g, ' ')}
+                      </div>
+                      <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+                        Driven by the change workflow — use the actions in the Change workflow panel to move it.
+                      </p>
+                    </div>
+                  ) : lifecycle ? (
                     <LifecycleStageControl ticketId={id} lifecycle={lifecycle} isAgent={isAgent} onTransitioned={load} />
                   ) : (
                     <Select

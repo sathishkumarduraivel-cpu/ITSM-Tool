@@ -22,6 +22,7 @@ import { db } from '../db.js';
 import { evaluateAllMonitors } from './internalMonitors.js';
 import { escalateUnacknowledged } from './alertRules.js';
 import { logAlertEvent } from './alertIngest.js';
+import { sweepApprovalSlaBreaches } from './changeApproval.js';
 
 // A minute is the coarsest tick that still feels immediate for paging, and
 // the work per tick is a handful of indexed counts -- monitors dedupe on a
@@ -79,6 +80,18 @@ async function tick() {
     }
   } catch (e) {
     console.error('[alerts] tick error', e);
+  }
+
+  // Change approval SLAs ride this tick rather than getting a timer of their
+  // own. A missed approval deadline is the absence of an event, which no
+  // request can trigger -- the same justification this module already
+  // documents for existing at all -- and its cadence (a minute) is fine for
+  // an SLA measured in hours.
+  try {
+    const breached = sweepApprovalSlaBreaches();
+    if (breached) console.log(`[changes] tick: ${breached} approval SLA breach(es) flagged`);
+  } catch (e) {
+    console.error('[changes] approval SLA sweep error', e);
   }
 }
 

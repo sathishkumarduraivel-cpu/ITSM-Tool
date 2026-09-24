@@ -138,7 +138,12 @@ router.get('/assets', requireApiKey('assets:read'), (req, res) => {
 // ---- Knowledge base ----
 router.get('/kb', requireApiKey('kb:read'), (req, res) => {
   const { q, limit = 20 } = req.query;
-  let sql = 'SELECT id, title, category, body, tags, views FROM kb_articles WHERE workspace_id = ?';
+  // An API key is not a person, so there is no "own drafts" case: this is the
+  // external surface and it sees what a customer would -- published,
+  // portal-visible articles. It previously returned drafts and internal
+  // runbooks to anything holding a kb:read key.
+  let sql = `SELECT id, title, category, body, tags, views FROM kb_articles
+             WHERE workspace_id = ? AND status = 'published' AND visibility = 'portal'`;
   const params = [req.workspaceId];
   if (q) { sql += ' AND (title LIKE ? OR body LIKE ?)'; params.push(`%${q}%`, `%${q}%`); }
   sql += ' ORDER BY updated_at DESC LIMIT ?';

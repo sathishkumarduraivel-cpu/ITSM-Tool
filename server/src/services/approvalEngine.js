@@ -2,6 +2,7 @@
 // both the manual decide endpoint (routes/approvals.js) and the auto_approve
 // automation action (services/automationEngine.js) so they can't drift apart.
 import { db, uid } from '../db.js';
+import { createFulfilmentTasks } from './catalogItems.js';
 import { notifyUser, renderTemplate } from './notifications.js';
 import { stageForBucket } from './lifecycleEngine.js';
 import { sendTemplatedEmail, absoluteUrl } from './emailService.js';
@@ -32,6 +33,31 @@ export function resolveTicketAfterApprovalChange(ticketId, workspaceId) {
     }
   }
   db.prepare('INSERT INTO ticket_history (id, ticket_id, event, detail) VALUES (?,?,?,?)').run(uid('h'), ticket.id, 'approved', 'All approvals granted');
+
+  // A catalog request that has cleared every approval is now work somebody
+  // has to do, so the item's fulfilment tasks land on the ticket here. This
+  // is the only moment it can happen: at submit time the request might still
+  // be refused, and doing it then would have teams starting on things that
+  // were never approved.
+  //
+  // Wrapped so it can never fail the approval itself -- the same
+  // fire-and-forget rule the notifications below already follow.
+  if (ticket.source === 'catalog' && ticket.catalog_item_id) {
+    try {
+      const item = db.prepare('SELECT * FROM catalog_items WHERE id = ?').get(ticket.catalog_item_id);
+      const already = db.prepare('SELECT COUNT(*) c FROM ticket_tasks WHERE ticket_id = ?').get(ticket.id).c;
+      if (item && !already) {
+        let values = {};
+        try { values = JSON.parse(ticket.catalog_form_data || '{}'); } catch { values = {}; }
+        createFulfilmentTasks(workspaceId, ticket.id, item, {
+          values,
+          requester: { id: ticket.requester_id },
+        });
+      }
+    } catch (err) {
+      console.error('[approval] could not create fulfilment tasks', err);
+    }
+  }
   const tpl = renderTemplate('change_approved', { number: ticket.number, title: ticket.title }, workspaceId);
   notifyUser(ticket.requester_id, tpl?.subject || 'Request approved', tpl?.body || `${ticket.number} — ${ticket.title} was approved.`, `/tickets/${ticket.id}`, workspaceId);
   const approvedRequester = db.prepare('SELECT name, email FROM users WHERE id = ?').get(ticket.requester_id);

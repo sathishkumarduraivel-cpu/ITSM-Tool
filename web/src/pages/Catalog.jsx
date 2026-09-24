@@ -1,429 +1,377 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Plus, Loader2, ShoppingBag, Settings, Trash2, CheckCircle2, Pencil, Paperclip, X } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
+import {
+  Plus, Search, Loader2, Package, X, BarChart3, ShoppingCart, Pencil, Trash2,
+  Clock, Wallet, ShieldCheck, Lock, AlertTriangle, TrendingDown, CheckCircle2,
+} from 'lucide-react';
 import { api } from '../lib/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
-import { hasPermission } from '../lib/permissions.js';
-import Modal from '../components/Modal.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import EmptyState from '../components/EmptyState.jsx';
-import { SkeletonRows } from '../components/Skeleton.jsx';
 import Select from '../components/Select.jsx';
+import Modal from '../components/Modal.jsx';
+import RequestModal, { RequestSubmitted } from '../components/catalog/RequestModal.jsx';
+import ItemBuilder from '../components/catalog/ItemBuilder.jsx';
 
-const FIELD_TYPES = ['text', 'textarea', 'select', 'number', 'date'];
-const SHOW_IF_OPS = [
-  { value: 'equals', label: 'equals' },
-  { value: 'not_equals', label: 'does not equal' },
-  { value: 'contains', label: 'contains' },
-  { value: 'in', label: 'is one of (comma list)' },
-];
+const money = (n, currency = 'USD') => new Intl.NumberFormat(undefined, {
+  style: 'currency', currency, maximumFractionDigits: 0,
+}).format(n || 0);
 
-// Same 4-op vocabulary as routes/catalog.js's server-side re-check (and
-// Business Rules / the automation engine's condition nodes) -- one condition
-// language everywhere in the app, and this is what the server re-evaluates
-// on submit too, so a field hidden here can never sneak a value through.
-function matchShowIf(actual, op, expected) {
-  const a = actual === undefined || actual === null ? '' : actual;
-  switch (op) {
-    case 'equals': return String(a) === String(expected ?? '');
-    case 'not_equals': return String(a) !== String(expected ?? '');
-    case 'contains': return String(a).toLowerCase().includes(String(expected || '').toLowerCase());
-    case 'in': return String(expected || '').split(',').map((s) => s.trim().toLowerCase()).includes(String(a).toLowerCase());
-    default: return true;
-  }
-}
-function fieldVisible(f, formData) {
-  if (!f.show_if) return true;
-  return matchShowIf(formData[f.show_if.field], f.show_if.op, f.show_if.value);
-}
-
-function RequestModal({ item, onClose, onSubmitted }) {
-  const [formData, setFormData] = useState({});
-  const [files, setFiles] = useState([]);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-  const schema = item.form_schema || [];
-  const visibleSchema = schema.filter((f) => fieldVisible(f, formData));
-  const showAttachments = item.allow_attachments ?? true;
-
-  const submit = async (e) => {
-    e.preventDefault();
-    setError('');
-    // The dropdown field below is a custom component, not a native <select>,
-    // so it can't rely on the browser's own HTML5 `required` validation the
-    // way the plain text/textarea/number/date fields on this same form
-    // still do -- checked explicitly here instead so a required dropdown
-    // can't silently be skipped. Only a currently-VISIBLE field can block
-    // submission -- one hidden by its own show_if can't legitimately be
-    // required right now (routes/catalog.js strips its value either way).
-    const missingField = visibleSchema.find((f) => f.required && f.type === 'select' && !formData[f.key]);
-    if (missingField) {
-      setError(`${missingField.label} is required.`);
-      return;
-    }
-    if (showAttachments && item.require_attachment && files.length === 0) {
-      setError('At least one attachment is required for this item.');
-      return;
-    }
-    setSaving(true);
-    try {
-      const { ticket } = await api.post(`/catalog/items/${item.id}/request`, { form_data: formData });
-      if (files.length) {
-        const uploadData = new FormData();
-        for (const f of files) uploadData.append('files', f);
-        await api.upload(`/tickets/${ticket.id}/attachments`, uploadData).catch(() => {});
-      }
-      onSubmitted(ticket);
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Modal title={item.name} onClose={onClose}>
-      <form onSubmit={submit} className="space-y-3">
-        <p className="text-sm text-slate-500">{item.description}</p>
-        {error && <div className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 rounded-lg px-3 py-2">{error}</div>}
-        {visibleSchema.map((f) => (
-          <div key={f.key}>
-            <label className="label">{f.label}{f.required && ' *'}</label>
-            {f.type === 'textarea' ? (
-              <textarea className="input" rows={3} required={f.required} onChange={(e) => setFormData({ ...formData, [f.key]: e.target.value })} />
-            ) : f.type === 'select' ? (
-              <Select
-                placeholder="Select…" value={formData[f.key] || ''} onChange={(v) => setFormData({ ...formData, [f.key]: v })}
-                options={(f.options || '').split(',').map((o) => o.trim()).filter(Boolean)}
-              />
-            ) : (
-              <input className="input" type={f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : 'text'} required={f.required} onChange={(e) => setFormData({ ...formData, [f.key]: e.target.value })} />
-            )}
-          </div>
-        ))}
-        {showAttachments && (
-          <div>
-            <label className="label">Attachments{item.require_attachment && ' *'}</label>
-            <div className="space-y-1.5">
-              {files.map((f, i) => (
-                <div key={`${f.name}-${i}`} className="flex items-center justify-between gap-2 text-sm bg-slate-50 dark:bg-slate-800/60 rounded-lg px-3 py-2">
-                  <span className="flex items-center gap-2 min-w-0"><Paperclip size={13} className="shrink-0 text-slate-400" /><span className="truncate">{f.name}</span></span>
-                  <button type="button" onClick={() => setFiles((fs) => fs.filter((_, idx) => idx !== i))} className="text-slate-400 hover:text-red-500 shrink-0"><X size={14} /></button>
-                </div>
-              ))}
-              <label className="btn-secondary text-xs cursor-pointer inline-flex">
-                <Paperclip size={13} /> Attach files
-                <input type="file" multiple className="hidden" onChange={(e) => setFiles((fs) => [...fs, ...Array.from(e.target.files || [])])} />
-              </label>
-            </div>
-          </div>
-        )}
-        {item.approval_required ? (
-          <p className="text-xs text-amber-600 bg-amber-50 dark:bg-amber-500/10 rounded-lg px-3 py-2">This request requires manager approval before work begins.</p>
-        ) : (
-          <p className="text-xs text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 rounded-lg px-3 py-2">No approval needed — this goes straight to the queue.</p>
-        )}
-        <div className="flex justify-end gap-2 pt-2">
-          <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
-          <button type="submit" disabled={saving} className="btn-primary">
-            {saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Submit request
-          </button>
-        </div>
-      </form>
-    </Modal>
-  );
-}
-
-function CategoryModal({ initial, onClose, onSaved }) {
-  const [name, setName] = useState(initial?.name || '');
-  const submit = async (e) => {
-    e.preventDefault();
-    if (initial?.id) await api.patch(`/catalog/categories/${initial.id}`, { name });
-    else await api.post('/catalog/categories', { name });
-    onSaved();
-  };
-  return (
-    <Modal title={initial?.id ? 'Edit category' : 'New category'} onClose={onClose} maxWidth="max-w-sm">
-      <form onSubmit={submit} className="space-y-3">
-        <input className="input" required placeholder="e.g. Hardware" value={name} onChange={(e) => setName(e.target.value)} />
-        <div className="flex justify-end gap-2"><button type="button" onClick={onClose} className="btn-secondary">Cancel</button><button className="btn-primary">Save</button></div>
-      </form>
-    </Modal>
-  );
-}
-
-function ItemModal({ initial, categories, groups, agents, onClose, onSaved }) {
-  const [form, setForm] = useState({
-    category_id: initial?.category_id || categories[0]?.id || '',
-    name: initial?.name || '',
-    description: initial?.description || '',
-    approval_required: initial ? !!initial.approval_required : true,
-    approver_type: initial?.approver_type || 'role',
-    approver_role: initial?.approver_role || 'admin',
-    approver_id: initial?.approver_id || '',
-    approver_group_id: initial?.approver_group_id || '',
-    default_priority: initial?.default_priority || 'medium',
-    allow_attachments: initial ? (initial.allow_attachments ?? true) : true,
-    require_attachment: initial ? !!initial.require_attachment : false,
-  });
-  const [fields, setFields] = useState(initial?.form_schema?.length ? initial.form_schema : [{ key: 'reason', label: 'Reason', type: 'text', required: true, options: '' }]);
-  const [error, setError] = useState('');
-  const [saving, setSaving] = useState(false);
-
-  const addField = () => setFields([...fields, { key: '', label: '', type: 'text', required: false, options: '' }]);
-  const updateField = (i, patch) => setFields(fields.map((f, idx) => (idx === i ? { ...f, ...patch } : f)));
-  const removeField = (i) => setFields(fields.filter((_, idx) => idx !== i));
-
-  const submit = async (e) => {
-    e.preventDefault();
-    setSaving(true);
-    setError('');
-    try {
-      const payload = { ...form, form_schema: fields.filter((f) => f.key) };
-      if (initial?.id) await api.patch(`/catalog/items/${initial.id}`, payload);
-      else await api.post('/catalog/items', payload);
-      onSaved();
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Modal title={initial?.id ? 'Edit catalog item' : 'New catalog item'} onClose={onClose}>
-      <form onSubmit={submit} className="space-y-3">
-        {error && <div className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 rounded-lg px-3 py-2">{error}</div>}
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="label">Category</label>
-            <Select value={form.category_id} onChange={(v) => setForm({ ...form, category_id: v })} options={categories.map((c) => ({ value: c.id, label: c.name }))} />
-          </div>
-          <div>
-            <label className="label">Name</label>
-            <input className="input" required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-          </div>
-        </div>
-        <div>
-          <label className="label">Description</label>
-          <textarea className="input" rows={2} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="label">Default priority</label>
-            <Select value={form.default_priority} onChange={(v) => setForm({ ...form, default_priority: v })} options={['low', 'medium', 'high', 'critical']} />
-          </div>
-          <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300 mt-6">
-            <input type="checkbox" checked={form.approval_required} onChange={(e) => setForm({ ...form, approval_required: e.target.checked })} />
-            Requires approval
-          </label>
-        </div>
-
-        {form.approval_required && (
-          <div className="grid grid-cols-2 gap-3 rounded-xl border border-slate-200 dark:border-slate-700 p-3">
-            <div>
-              <label className="label">Approver</label>
-              <Select
-                value={form.approver_type} onChange={(v) => setForm({ ...form, approver_type: v })}
-                options={[
-                  { value: 'role', label: 'Anyone with a role' },
-                  { value: 'user', label: 'A specific person' },
-                  { value: 'group_manager', label: "A group's manager" },
-                ]}
-              />
-            </div>
-            <div>
-              <label className="label">&nbsp;</label>
-              {form.approver_type === 'role' && (
-                <Select value={form.approver_role} onChange={(v) => setForm({ ...form, approver_role: v })} options={[{ value: 'admin', label: 'Admin' }, { value: 'agent', label: 'Agent' }]} />
-              )}
-              {form.approver_type === 'user' && (
-                <Select placeholder="Select person…" value={form.approver_id} onChange={(v) => setForm({ ...form, approver_id: v })} options={agents.map((a) => ({ value: a.id, label: a.name }))} />
-              )}
-              {form.approver_type === 'group_manager' && (
-                <Select placeholder="Select group…" value={form.approver_group_id} onChange={(v) => setForm({ ...form, approver_group_id: v })} options={groups.map((g) => ({ value: g.id, label: g.name }))} />
-              )}
-            </div>
-          </div>
-        )}
-
-        <div className="flex items-center gap-4 -mt-1">
-          <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
-            <input
-              type="checkbox"
-              checked={form.allow_attachments}
-              onChange={(e) => setForm({ ...form, allow_attachments: e.target.checked, require_attachment: e.target.checked ? form.require_attachment : false })}
-            />
-            <Paperclip size={13} className="text-slate-400" /> Allow attachments
-          </label>
-          <label className={`flex items-center gap-2 text-sm ${form.allow_attachments ? 'text-slate-600 dark:text-slate-300' : 'text-slate-300 dark:text-slate-600'}`}>
-            <input type="checkbox" disabled={!form.allow_attachments} checked={form.require_attachment} onChange={(e) => setForm({ ...form, require_attachment: e.target.checked })} />
-            Require at least one
-          </label>
-        </div>
-
-        <div>
-          <div className="flex items-center justify-between mb-1.5">
-            <label className="label mb-0">Request form fields</label>
-            <button type="button" onClick={addField} className="text-xs text-brand-600 font-medium">+ Add field</button>
-          </div>
-          <div className="space-y-2">
-            {fields.map((f, i) => {
-              const otherFields = fields.filter((of, oi) => oi !== i && of.key);
-              return (
-                <div key={i} className="border border-slate-200 dark:border-slate-700 rounded-lg p-2 space-y-1.5">
-                  <div className="flex gap-2 items-center">
-                    <input className="input" placeholder="key" value={f.key} onChange={(e) => updateField(i, { key: e.target.value })} />
-                    <input className="input" placeholder="Label" value={f.label} onChange={(e) => updateField(i, { label: e.target.value })} />
-                    <Select className="w-auto" value={f.type} onChange={(v) => updateField(i, { type: v })} options={FIELD_TYPES} />
-                    {f.type === 'select' && (
-                      <input className="input" placeholder="opt1,opt2" value={f.options} onChange={(e) => updateField(i, { options: e.target.value })} />
-                    )}
-                    <button type="button" onClick={() => removeField(i)} className="text-slate-400 hover:text-red-500 shrink-0"><Trash2 size={15} /></button>
-                  </div>
-                  {f.show_if ? (
-                    <div className="flex gap-1.5 items-center pl-1">
-                      <span className="text-[11px] text-slate-400 shrink-0">Only show if</span>
-                      <Select
-                        size="xs" value={f.show_if.field} onChange={(v) => updateField(i, { show_if: { ...f.show_if, field: v } })}
-                        options={otherFields.map((of) => ({ value: of.key, label: of.label || of.key }))}
-                      />
-                      <Select size="xs" className="w-auto" value={f.show_if.op} onChange={(v) => updateField(i, { show_if: { ...f.show_if, op: v } })} options={SHOW_IF_OPS} />
-                      <input className="input py-1 text-xs" placeholder="value" value={f.show_if.value} onChange={(e) => updateField(i, { show_if: { ...f.show_if, value: e.target.value } })} />
-                      <button type="button" onClick={() => updateField(i, { show_if: null })} className="text-slate-400 hover:text-red-500 shrink-0" title="Remove condition"><X size={13} /></button>
-                    </div>
-                  ) : otherFields.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => updateField(i, { show_if: { field: otherFields[0].key, op: 'equals', value: '' } })}
-                      className="text-[11px] text-brand-600 hover:text-brand-700 font-medium pl-1"
-                    >
-                      + Only show conditionally
-                    </button>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        <div className="flex justify-end gap-2 pt-2">
-          <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
-          <button type="submit" disabled={saving} className="btn-primary">
-            {saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} {initial?.id ? 'Save changes' : 'Save item'}
-          </button>
-        </div>
-      </form>
-    </Modal>
-  );
-}
+const STATUS_STYLE = {
+  draft: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300',
+  published: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300',
+  retired: 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400',
+};
 
 export default function Catalog() {
   const { user } = useAuth();
-  const navigate = useNavigate();
+  const [params, setParams] = useSearchParams();
+  const [meta, setMeta] = useState(null);
+  const [tab, setTab] = useState(params.get('tab') || 'browse');
+  const [refresh, setRefresh] = useState(0);
   const [categories, setCategories] = useState([]);
-  const [items, setItems] = useState([]);
-  const [groups, setGroups] = useState([]);
-  const [agents, setAgents] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [requestItem, setRequestItem] = useState(null);
-  const [manageMode, setManageMode] = useState(false);
-  const [categoryModal, setCategoryModal] = useState(null); // null | 'new' | category
-  const [itemModal, setItemModal] = useState(null); // null | 'new' | item
-  const [submitted, setSubmitted] = useState(null);
 
-  const load = async () => {
-    setLoading(true);
-    try {
-      const [cats, itms] = await Promise.all([api.get('/catalog/categories'), api.get('/catalog/items')]);
-      setCategories(cats.categories);
-      setItems(itms.items);
-    } finally {
-      // Without this, a failed request left `loading` stuck true forever --
-      // the catalog page permanently stuck on its skeleton with no error.
-      setLoading(false);
-    }
-  };
-
-  // Only needed by the manage-mode item editor (approver_type pickers) --
-  // fetched once up front rather than gated behind manageMode so toggling
-  // "Manage" on doesn't have a loading flicker the first time.
   useEffect(() => {
-    if (!hasPermission(user, 'catalog.manage')) return;
-    api.get('/groups').then((r) => setGroups(r.groups)).catch(() => {});
-    api.get('/auth/users').then((r) => setAgents(r.users.filter((u) => u.role === 'agent' || u.role === 'admin'))).catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    api.get('/catalog/meta').then(setMeta).catch(() => setMeta(null));
+    api.get('/catalog/categories').then((d) => setCategories(d.categories || [])).catch(() => {});
+  }, [refresh]);
 
-  useEffect(() => { load(); }, []);
-
-  const removeItem = async (id) => {
-    if (!confirm('Remove this catalog item?')) return;
-    await api.del(`/catalog/items/${id}`);
-    load();
+  const canManage = !!meta?.can_manage;
+  const go = (next) => {
+    setTab(next);
+    const p = new URLSearchParams(params);
+    p.set('tab', next);
+    setParams(p, { replace: true });
   };
 
   return (
     <div className="space-y-4">
       <PageHeader
         title="Service Catalog"
-        description="Request hardware, software & access — approvals routed automatically"
-        actions={hasPermission(user, 'catalog.manage') && (
-          <>
-            <button onClick={() => setManageMode((m) => !m)} className="btn-secondary"><Settings size={14} /> {manageMode ? 'Done' : 'Manage'}</button>
-            {manageMode && <button onClick={() => setCategoryModal('new')} className="btn-secondary"><Plus size={14} /> Category</button>}
-            {manageMode && <button onClick={() => setItemModal('new')} className="btn-primary"><Plus size={14} /> Item</button>}
-          </>
-        )}
+        description="What people can ask for, what it costs, who signs it off, and what happens once they do."
       />
 
-      {submitted && (
-        <div className="card p-4 bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-800 flex items-center justify-between">
-          <span className="text-sm text-emerald-700 dark:text-emerald-400 flex items-center gap-2"><CheckCircle2 size={16} /> Request {submitted.number} submitted — {submitted.status === 'pending_approval' ? 'awaiting approval.' : 'now in the queue.'}</span>
-          <button onClick={() => navigate(`/tickets/${submitted.id}`)} className="text-sm font-medium text-emerald-700 dark:text-emerald-400 hover:underline">View ticket</button>
-        </div>
-      )}
-
-      {manageMode && categories.length > 0 && (
-        <div className="flex flex-wrap gap-2">
-          {categories.map((c) => (
-            <button key={c.id} onClick={() => setCategoryModal(c)} className="badge bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700">
-              <Pencil size={11} /> {c.name}
+      {canManage && (
+        <div className="flex flex-wrap gap-1.5 border-b border-slate-200 pb-2 dark:border-white/10">
+          {[['browse', 'Browse', ShoppingCart], ['manage', 'Manage', Package], ['insights', 'Insights', BarChart3]].map(([key, label, Icon]) => (
+            <button key={key} onClick={() => go(key)}
+              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+                tab === key ? 'bg-brand-600 text-white' : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800'
+              }`}>
+              <Icon size={14} /> {label}
             </button>
           ))}
         </div>
       )}
 
-      {loading && <SkeletonRows count={3} />}
-
-      {!loading && items.length === 0 && (
-        <EmptyState icon={ShoppingBag} description="No catalog items yet." />
+      {tab === 'insights' && canManage && <Insights />}
+      {tab === 'manage' && canManage && (
+        <Manage key={refresh} meta={meta} categories={categories} onChanged={() => setRefresh((n) => n + 1)} />
       )}
+      {(tab === 'browse' || !canManage) && <Browse key={refresh} categories={categories} />}
+    </div>
+  );
+}
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        {items.map((item) => (
-          <div key={item.id} className="card p-4 flex flex-col">
-            <div className="w-9 h-9 rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-500/10 dark:text-brand-400 flex items-center justify-center mb-2"><ShoppingBag size={16} /></div>
-            <div className="font-medium text-slate-800 dark:text-slate-100">{item.name}</div>
-            <div className="text-sm text-slate-500 flex-1 mt-1">{item.description}</div>
-            <div className="flex items-center justify-between mt-3">
-              <button onClick={() => setRequestItem(item)} className="btn-primary text-xs">Request</button>
-              {manageMode && (
-                <div className="flex items-center gap-2">
-                  <button onClick={() => setItemModal(item)} className="text-slate-400 hover:text-brand-600"><Pencil size={15} /></button>
-                  <button onClick={() => removeItem(item.id)} className="text-slate-400 hover:text-red-500"><Trash2 size={15} /></button>
-                </div>
-              )}
-            </div>
-          </div>
-        ))}
+// ---------------------------------------------------------------- browse ---
+
+function Browse({ categories }) {
+  const [items, setItems] = useState(null);
+  const [q, setQ] = useState('');
+  const [categoryId, setCategoryId] = useState('');
+  const [ordering, setOrdering] = useState(null);
+  const [submitted, setSubmitted] = useState(null);
+  const [error, setError] = useState('');
+
+  const load = async () => {
+    setError('');
+    try {
+      const p = new URLSearchParams();
+      if (categoryId) p.set('category_id', categoryId);
+      if (q.trim()) p.set('q', q.trim());
+      setItems((await api.get(`/catalog/items?${p}`)).items);
+    } catch (e) { setError(e.message); setItems([]); }
+  };
+  useEffect(() => { load(); }, [categoryId]);
+  useEffect(() => { const t = setTimeout(load, 300); return () => clearTimeout(t); }, [q]);
+
+  const openItem = async (item) => {
+    // Re-fetched so the form schema is current even if an admin changed it
+    // while this page was open.
+    try { setOrdering((await api.get(`/catalog/items/${item.id}`)).item); } catch (e) { setError(e.message); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative min-w-[220px] flex-1">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input className="input pl-9" placeholder="Search the catalog…" value={q} onChange={(e) => setQ(e.target.value)} />
+          {q && <button onClick={() => setQ('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400"><X size={13} /></button>}
+        </div>
+        <Select className="w-auto min-w-[170px]" value={categoryId} onChange={setCategoryId} placeholder="All categories"
+          options={[{ value: '', label: 'All categories' }, ...categories.map((c) => ({ value: c.id, label: `${c.name} (${c.item_count})` }))]} />
       </div>
 
-      {requestItem && (
-        <RequestModal item={requestItem} onClose={() => setRequestItem(null)} onSubmitted={(ticket) => { setSubmitted(ticket); setRequestItem(null); }} />
+      {error && <div className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-300">{error}</div>}
+
+      {!items ? (
+        <p className="flex items-center justify-center gap-2 py-12 text-sm text-slate-400"><Loader2 size={16} className="animate-spin" /> Loading…</p>
+      ) : items.length === 0 ? (
+        <EmptyState icon={Package} title={q || categoryId ? 'Nothing matches' : 'Nothing in the catalog yet'}
+          description={q || categoryId ? 'Try different words or another category.' : 'Once items are published they appear here.'} />
+      ) : (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {items.map((item) => (
+            <button key={item.id} onClick={() => openItem(item)}
+              className="card p-4 text-left transition-colors hover:border-brand-300 dark:hover:border-brand-500/40">
+              <div className="flex items-start justify-between gap-2">
+                <h3 className="font-medium text-slate-800 dark:text-slate-100">{item.name}</h3>
+                {item.cost != null && (
+                  <span className="shrink-0 text-xs font-semibold text-slate-600 dark:text-slate-300">{money(item.cost, item.currency)}</span>
+                )}
+              </div>
+              <p className="mt-1 line-clamp-2 text-xs text-slate-500 dark:text-slate-400">
+                {item.short_description || item.description}
+              </p>
+              <div className="mt-2.5 flex flex-wrap gap-1.5 text-[11px]">
+                {item.category && <span className="badge bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">{item.category.name}</span>}
+                {item.delivery_days != null && (
+                  <span className="flex items-center gap-1 text-slate-400"><Clock size={10} /> {item.delivery_days}d</span>
+                )}
+                {!!item.approval_required && (
+                  <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400"><ShieldCheck size={10} /> approval</span>
+                )}
+              </div>
+            </button>
+          ))}
+        </div>
       )}
-      {categoryModal && <CategoryModal initial={categoryModal === 'new' ? null : categoryModal} onClose={() => setCategoryModal(null)} onSaved={() => { setCategoryModal(null); load(); }} />}
-      {itemModal && <ItemModal initial={itemModal === 'new' ? null : itemModal} categories={categories} groups={groups} agents={agents} onClose={() => setItemModal(null)} onSaved={() => { setItemModal(null); load(); }} />}
+
+      {ordering && (
+        <RequestModal
+          item={ordering}
+          onClose={() => setOrdering(null)}
+          onSubmitted={(ticket, chain) => { setOrdering(null); setSubmitted({ ticket, chain }); load(); }}
+        />
+      )}
+      {submitted && (
+        <RequestSubmitted ticket={submitted.ticket} chain={submitted.chain} onClose={() => setSubmitted(null)} />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- manage ---
+
+function Manage({ meta, categories, onChanged }) {
+  const [items, setItems] = useState(null);
+  const [editing, setEditing] = useState(null);
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [error, setError] = useState('');
+
+  const load = async () => {
+    try { setItems((await api.get('/catalog/items?all=1')).items); } catch (e) { setError(e.message); setItems([]); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const create = async () => {
+    setError('');
+    try {
+      const { item } = await api.post('/catalog/items', { name: newName });
+      setCreating(false); setNewName('');
+      await load(); onChanged?.();
+      setEditing(item.id);
+    } catch (e) { setError(e.message); }
+  };
+
+  const remove = async (item) => {
+    if (!confirm(`Delete "${item.name}"?`)) return;
+    setError('');
+    try { await api.del(`/catalog/items/${item.id}`); await load(); onChanged?.(); } catch (e) { setError(e.message); }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-slate-500 dark:text-slate-400">Drafts are only visible here until you publish them.</p>
+        <button onClick={() => setCreating(true)} className="btn-primary text-xs"><Plus size={13} /> New item</button>
+      </div>
+
+      {error && <div className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-300">{error}</div>}
+
+      {!items ? (
+        <p className="flex items-center justify-center gap-2 py-12 text-sm text-slate-400"><Loader2 size={16} className="animate-spin" /> Loading…</p>
+      ) : items.length === 0 ? (
+        <EmptyState icon={Package} title="No catalog items" description="Create one, then set its form, approval and fulfilment steps."
+          action={<button onClick={() => setCreating(true)} className="btn-primary text-xs"><Plus size={13} /> New item</button>} />
+      ) : (
+        <div className="card divide-y divide-slate-100 dark:divide-slate-800">
+          {items.map((item) => (
+            <div key={item.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
+              <button onClick={() => setEditing(item.id)} className="min-w-[180px] flex-1 text-left">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-medium text-slate-800 dark:text-slate-100">{item.name}</span>
+                  <span className={`badge ${STATUS_STYLE[item.status] || STATUS_STYLE.draft}`}>{item.status_meta?.label || item.status}</span>
+                </div>
+                <div className="text-[11px] text-slate-400">
+                  {item.category?.name || 'Unfiled'}
+                  {item.cost != null && ` · ${money(item.cost, item.currency)}`}
+                  {item.delivery_days != null && ` · ${item.delivery_days}d`}
+                  {item.request_count ? ` · ${item.request_count} requested` : ''}
+                </div>
+              </button>
+              <button onClick={() => setEditing(item.id)} className="rounded-lg p-1.5 text-slate-400 hover:text-brand-600"><Pencil size={13} /></button>
+              <button onClick={() => remove(item)} className="rounded-lg p-1.5 text-slate-400 hover:text-red-500"><Trash2 size={13} /></button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {creating && (
+        <Modal title="New catalog item" onClose={() => setCreating(false)}>
+          <div className="space-y-3">
+            <div>
+              <label className="label">Name<span className="text-red-500">*</span></label>
+              <input className="input" autoFocus value={newName} onChange={(e) => setNewName(e.target.value)} />
+              <p className="mt-1 text-[11px] text-slate-400">It starts as a draft so you can set it up before anyone can order it.</p>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setCreating(false)} className="btn-secondary">Cancel</button>
+              <button onClick={create} disabled={!newName.trim()} className="btn-primary disabled:opacity-40">Create</button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {editing && (
+        <ItemBuilder itemId={editing} meta={meta} categories={categories}
+          onClose={() => setEditing(null)} onSaved={() => { load(); onChanged?.(); }} />
+      )}
+    </div>
+  );
+}
+
+// -------------------------------------------------------------- insights ---
+
+function Insights() {
+  const [days, setDays] = useState(30);
+  const [overview, setOverview] = useState(null);
+  const [approvals, setApprovals] = useState(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    setOverview(null);
+    Promise.all([
+      api.get(`/catalog/analytics/overview?days=${days}`).then(setOverview),
+      api.get(`/catalog/analytics/approvals?days=${days}`).then(setApprovals),
+    ]).catch((e) => setError(e.message));
+  }, [days]);
+
+  if (error) return <div className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-300">{error}</div>;
+  if (!overview) return <p className="flex items-center justify-center gap-2 py-12 text-sm text-slate-400"><Loader2 size={16} className="animate-spin" /> Loading…</p>;
+
+  const d = overview.delivery;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="grid flex-1 grid-cols-2 gap-3 lg:grid-cols-4">
+          <Stat label="Requests" value={overview.requests.total} sub={`${overview.requests.completed} completed`} />
+          <Stat label="Awaiting approval" value={overview.requests.awaiting_approval}
+            tone={overview.requests.awaiting_approval ? 'warn' : 'ok'} />
+          <Stat label="Delivered on time" value={d.on_time_rate != null ? `${d.on_time_rate}%` : '—'}
+            sub={d.on_time_rate != null ? `${d.on_time} of ${d.on_time + d.late}` : d.note} />
+          <Stat label="Spend" value={money(overview.requests.total_cost)} />
+        </div>
+        <Select className="w-auto" value={String(days)} onChange={(v) => setDays(Number(v))}
+          options={[7, 30, 90, 180].map((n) => ({ value: String(n), label: `Last ${n} days` }))} />
+      </div>
+
+      {d.overdue_now > 0 && (
+        <div className="flex items-start gap-2 rounded-xl bg-red-50 px-3 py-2.5 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-300">
+          <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+          {d.overdue_now} request{d.overdue_now === 1 ? ' is' : 's are'} already past the delivery date the catalog promised.
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <Panel icon={ShoppingCart} title="Most requested" hint="What to automate first.">
+          {overview.most_requested.length === 0 ? <p className="text-xs text-slate-400">Nothing requested yet.</p> : (
+            <div className="space-y-1">
+              {overview.most_requested.map((i) => (
+                <div key={i.id} className="flex items-center justify-between rounded-md bg-slate-50 px-2 py-1.5 text-sm dark:bg-slate-800/60">
+                  <span className="text-slate-700 dark:text-slate-200">{i.name}</span>
+                  <span className="text-xs text-slate-400">{i.requests}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </Panel>
+
+        <Panel icon={TrendingDown} title="Published but never requested"
+          hint="Badly named, badly placed, or nobody needs it. All three are worth knowing.">
+          {overview.never_requested.length === 0 ? (
+            <p className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400"><CheckCircle2 size={11} /> Everything has been requested at least once.</p>
+          ) : (
+            <div className="space-y-1">
+              {overview.never_requested.map((i) => (
+                <div key={i.id} className="rounded-md bg-amber-50 px-2 py-1.5 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
+                  {i.name}
+                </div>
+              ))}
+            </div>
+          )}
+        </Panel>
+      </div>
+
+      {approvals && (
+        <Panel icon={ShieldCheck} title="Where requests are waiting"
+          hint="Almost always an approver rather than the fulfilment team — a completely different fix.">
+          <div className="mb-2 flex flex-wrap gap-3 text-xs text-slate-500 dark:text-slate-400">
+            <span>{approvals.pending_total} pending</span>
+            {approvals.avg_decision_hours != null && <span>· average decision {approvals.avg_decision_hours}h</span>}
+            <span>· {approvals.approved} approved, {approvals.rejected} rejected</span>
+          </div>
+          {approvals.by_approver.length === 0 ? (
+            <p className="text-xs text-slate-400">Nothing waiting.</p>
+          ) : (
+            <div className="space-y-1">
+              {approvals.by_approver.map((a) => (
+                <div key={a.approver} className="flex items-center justify-between rounded-md bg-slate-50 px-2 py-1.5 text-sm dark:bg-slate-800/60">
+                  <span className="text-slate-700 dark:text-slate-200">{a.approver}</span>
+                  <span className="text-xs text-slate-400">
+                    {a.pending} waiting · oldest {Math.round(a.oldest_hours)}h
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </Panel>
+      )}
+    </div>
+  );
+}
+
+function Panel({ icon: Icon, title, hint, children }) {
+  return (
+    <div className="card p-4">
+      <h3 className="flex items-center gap-1.5 text-sm font-semibold text-slate-800 dark:text-slate-100">
+        <Icon size={14} /> {title}
+      </h3>
+      {hint && <p className="mb-2 mt-0.5 text-[11px] text-slate-400">{hint}</p>}
+      {children}
+    </div>
+  );
+}
+
+function Stat({ label, value, sub, tone }) {
+  return (
+    <div className="card p-3">
+      <div className="text-[10px] uppercase tracking-wide text-slate-400">{label}</div>
+      <div className={`font-display text-xl font-bold ${tone === 'warn' ? 'text-amber-600 dark:text-amber-400' : 'text-slate-800 dark:text-slate-100'}`}>{value}</div>
+      {sub && <div className="text-[10px] text-slate-400">{sub}</div>}
     </div>
   );
 }

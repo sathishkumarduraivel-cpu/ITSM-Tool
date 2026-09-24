@@ -2021,6 +2021,207 @@ CREATE TABLE IF NOT EXISTS asset_lifecycle_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_asset_lifecycle_asset ON asset_lifecycle_events(asset_id, created_at);
+
+-- ---- Knowledge base: categories, lifecycle, versions, feedback ----
+-- Categories are a tree rather than the free-text string articles carried
+-- before. Free text meant "Network", "network" and "Networking" were three
+-- different categories, and nobody could browse anything.
+CREATE TABLE IF NOT EXISTS kb_categories (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  slug TEXT NOT NULL,
+  description TEXT,
+  parent_id TEXT,
+  icon TEXT,
+  sort_order INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(workspace_id, slug),
+  FOREIGN KEY (parent_id) REFERENCES kb_categories(id) ON DELETE SET NULL
+);
+
+-- A snapshot of an article each time it is published or restored. Knowledge
+-- is edited by many hands over years; without history nobody can answer "who
+-- changed this and what did it say before", and a bad edit to a runbook is
+-- unrecoverable.
+CREATE TABLE IF NOT EXISTS kb_article_versions (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  article_id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  summary TEXT,
+  body TEXT NOT NULL,
+  tags TEXT,
+  change_note TEXT,
+  author_id TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(article_id, version),
+  FOREIGN KEY (article_id) REFERENCES kb_articles(id) ON DELETE CASCADE
+);
+
+-- Was this article any use. One row per person per article, so a reader can
+-- change their mind without inflating the count, and so "who found this
+-- unhelpful and why" is answerable rather than just a number going down.
+CREATE TABLE IF NOT EXISTS kb_feedback (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  article_id TEXT NOT NULL,
+  user_id TEXT,
+  helpful INTEGER NOT NULL,             -- 1 = yes, 0 = no
+  comment TEXT,
+  context TEXT DEFAULT 'kb',            -- kb | portal | self_service | ticket
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(article_id, user_id),
+  FOREIGN KEY (article_id) REFERENCES kb_articles(id) ON DELETE CASCADE
+);
+
+-- Every search, whether or not it found anything. Searches that return
+-- nothing are the single most actionable thing a knowledge base produces:
+-- they are a list, in the users own words, of the articles you have not
+-- written yet. Almost no tool surfaces it.
+CREATE TABLE IF NOT EXISTS kb_searches (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  query TEXT NOT NULL,
+  normalized TEXT NOT NULL,             -- lowercased and collapsed, so variants group
+  result_count INTEGER NOT NULL DEFAULT 0,
+  clicked_article_id TEXT,              -- set later if the searcher opened a result
+  user_id TEXT,
+  source TEXT DEFAULT 'kb',             -- kb | portal | self_service | global
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_kb_searches_norm ON kb_searches(workspace_id, normalized);
+CREATE INDEX IF NOT EXISTS idx_kb_searches_created ON kb_searches(workspace_id, created_at);
+
+-- An article recorded as having helped with a ticket. Two directions matter:
+-- an agent attaching the article they resolved with, and an article written
+-- out of a ticket in the first place.
+CREATE TABLE IF NOT EXISTS kb_article_tickets (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  article_id TEXT NOT NULL,
+  ticket_id TEXT NOT NULL,
+  relation TEXT NOT NULL DEFAULT 'resolved_with', -- resolved_with | source | related
+  created_by TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(article_id, ticket_id, relation),
+  FOREIGN KEY (article_id) REFERENCES kb_articles(id) ON DELETE CASCADE,
+  FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE
+);
+
+-- One row per view, so "views" can be reported over a period and by audience
+-- rather than only as a lifetime counter that can never go down.
+CREATE TABLE IF NOT EXISTS kb_article_views (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  article_id TEXT NOT NULL,
+  user_id TEXT,
+  source TEXT DEFAULT 'kb',
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (article_id) REFERENCES kb_articles(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_kb_views_article ON kb_article_views(article_id, created_at);
+
+-- Full-text index. Standalone rather than an external-content table: articles
+-- key on a TEXT id, and keeping a separate rowid mapping in sync is more ways
+-- to go wrong than the duplicated text is worth.
+--
+-- Kept current from services/kbArticles.js rather than by triggers, and it
+-- indexes EVERY article including drafts. Who may see what is decided at
+-- query time from status and visibility, because the answer differs per
+-- reader: an author must be able to find their own unpublished draft, and a
+-- requester must never see it. A trigger that only indexed published rows
+-- would make the first impossible.
+CREATE VIRTUAL TABLE IF NOT EXISTS kb_fts USING fts5(
+  article_id UNINDEXED,
+  workspace_id UNINDEXED,
+  title,
+  summary,
+  body,
+  tags,
+  tokenize = 'porter unicode61'
+);
+
+-- ---- Service catalog: entitlement, approval chains, fulfilment ----
+-- Who is allowed to see and request an item.
+--
+-- A catalog with no entitlement shows every employee the executive laptop,
+-- the elevated-access request and the building key -- and the only thing
+-- stopping them is that somebody will say no later. Filtering at the point of
+-- browsing is both kinder and safer. An item with NO rows here is open to
+-- everyone, so nothing that exists today changes behaviour.
+CREATE TABLE IF NOT EXISTS catalog_entitlements (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  item_id TEXT NOT NULL,
+  rule_type TEXT NOT NULL,              -- group | role | department
+  rule_value TEXT NOT NULL,             -- group id, role name, or department name
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(item_id, rule_type, rule_value),
+  FOREIGN KEY (item_id) REFERENCES catalog_items(id) ON DELETE CASCADE
+);
+
+-- An ordered approval chain per item, rather than the single hard-coded step
+-- the catalog used to insert.
+--
+-- The condition is what makes it worth having: "anything over 500 also needs
+-- the budget holder" is the rule every organisation actually has, and
+-- expressing it as a separate item is how catalogs end up with six near
+-- duplicates of the same laptop.
+CREATE TABLE IF NOT EXISTS catalog_approval_stages (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  item_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  step_order INTEGER NOT NULL DEFAULT 1,
+  approver_type TEXT NOT NULL DEFAULT 'role', -- role | user | group | requester_manager
+  approver_role TEXT,
+  approver_id TEXT,
+  approver_group_id TEXT,
+  -- Optional gate, evaluated against the submitted form plus the computed
+  -- cost. Null means the stage always applies.
+  condition_field TEXT,                 -- a form field key, or the literal _cost
+  condition_op TEXT,                    -- equals | not_equals | gt | lt | contains | is_empty | is_not_empty
+  condition_value TEXT,
+  enabled INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (item_id) REFERENCES catalog_items(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_catalog_stages_item ON catalog_approval_stages(item_id, step_order);
+
+-- What actually has to happen once a request is approved.
+--
+-- Without this a catalog request is a ticket with a form attached and no work
+-- attached to it: somebody reads it and improvises. These become real tasks
+-- on the ticket, assigned to the team that does each step.
+CREATE TABLE IF NOT EXISTS catalog_fulfilment_tasks (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  item_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  assignee_type TEXT NOT NULL DEFAULT 'group', -- group | user | requester_manager | unassigned
+  assignee_id TEXT,
+  assignee_group_id TEXT,
+  due_offset_days REAL,                 -- from the moment the task is created
+  -- Sequential tasks wait for the one before them; parallel ones all open at
+  -- once. Modelled per task so a workflow can be mostly sequential with two
+  -- steps that genuinely run together.
+  sequential INTEGER DEFAULT 1,
+  condition_field TEXT,
+  condition_op TEXT,
+  condition_value TEXT,
+  enabled INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (item_id) REFERENCES catalog_items(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_catalog_tasks_item ON catalog_fulfilment_tasks(item_id, sort_order);
 `);
 
 // Additive migrations for columns introduced after the initial tickets table
@@ -2097,6 +2298,28 @@ const ticketColumnMigrations = [
   "ALTER TABLE asset_relationships ADD COLUMN description TEXT",
   "ALTER TABLE asset_relationships ADD COLUMN source TEXT DEFAULT 'manual'",
   "ALTER TABLE kb_articles ADD COLUMN workspace_id TEXT",
+  // Knowledge base, brought up to the rest of the app. The article was a
+  // flat row with a free-text category and a helpful_count nothing ever
+  // incremented; these give it a lifecycle, an audience, and a reason to
+  // be revisited before it quietly goes stale.
+  "ALTER TABLE kb_articles ADD COLUMN status TEXT DEFAULT 'published'",   // draft | in_review | published | retired
+  "ALTER TABLE kb_articles ADD COLUMN visibility TEXT DEFAULT 'portal'", // internal | agents | portal
+  "ALTER TABLE kb_articles ADD COLUMN article_type TEXT DEFAULT 'how_to'",
+  "ALTER TABLE kb_articles ADD COLUMN category_id TEXT",
+  "ALTER TABLE kb_articles ADD COLUMN summary TEXT",
+  "ALTER TABLE kb_articles ADD COLUMN slug TEXT",
+  "ALTER TABLE kb_articles ADD COLUMN version INTEGER DEFAULT 1",
+  "ALTER TABLE kb_articles ADD COLUMN not_helpful_count INTEGER DEFAULT 0",
+  "ALTER TABLE kb_articles ADD COLUMN owner_id TEXT",
+  "ALTER TABLE kb_articles ADD COLUMN reviewer_id TEXT",
+  "ALTER TABLE kb_articles ADD COLUMN submitted_at TEXT",
+  "ALTER TABLE kb_articles ADD COLUMN published_at TEXT",
+  "ALTER TABLE kb_articles ADD COLUMN published_by TEXT",
+  "ALTER TABLE kb_articles ADD COLUMN retired_at TEXT",
+  "ALTER TABLE kb_articles ADD COLUMN review_interval_days INTEGER",
+  "ALTER TABLE kb_articles ADD COLUMN review_due_at TEXT",
+  "ALTER TABLE kb_articles ADD COLUMN last_reviewed_at TEXT",
+  "ALTER TABLE kb_articles ADD COLUMN problem_ticket_id TEXT",   // a known error points at its problem
   "ALTER TABLE automations ADD COLUMN workspace_id TEXT",
   "ALTER TABLE integrations ADD COLUMN workspace_id TEXT",
   "ALTER TABLE catalog_categories ADD COLUMN workspace_id TEXT",
@@ -2204,6 +2427,31 @@ const ticketColumnMigrations = [
   "ALTER TABLE catalog_items ADD COLUMN approver_type TEXT DEFAULT 'role'", // role | user | group_manager
   "ALTER TABLE catalog_items ADD COLUMN approver_id TEXT",
   "ALTER TABLE catalog_items ADD COLUMN approver_group_id TEXT",
+  // Service catalog, brought up to the rest of the app. The item was a name,
+  // a form blob and one approval flag; these give it a lifecycle, a delivery
+  // promise, a cost, and somewhere for the work to land.
+  "ALTER TABLE catalog_items ADD COLUMN status TEXT DEFAULT 'published'",  // draft | published | retired
+  "ALTER TABLE catalog_items ADD COLUMN short_description TEXT",
+  "ALTER TABLE catalog_items ADD COLUMN delivery_days REAL",            // the promise shown to the requester
+  "ALTER TABLE catalog_items ADD COLUMN cost REAL",
+  "ALTER TABLE catalog_items ADD COLUMN currency TEXT DEFAULT 'USD'",
+  "ALTER TABLE catalog_items ADD COLUMN cost_centre TEXT",
+  "ALTER TABLE catalog_items ADD COLUMN max_quantity INTEGER",
+  "ALTER TABLE catalog_items ADD COLUMN allow_on_behalf INTEGER DEFAULT 0",
+  "ALTER TABLE catalog_items ADD COLUMN fulfilment_group_id TEXT",
+  "ALTER TABLE catalog_items ADD COLUMN tags TEXT",
+  "ALTER TABLE catalog_items ADD COLUMN request_count INTEGER DEFAULT 0",
+  "ALTER TABLE catalog_items ADD COLUMN sort_order INTEGER DEFAULT 0",
+  // Categories become a tree, so a large catalog can be browsed rather than
+  // scrolled.
+  "ALTER TABLE catalog_categories ADD COLUMN parent_id TEXT",
+  "ALTER TABLE catalog_categories ADD COLUMN description TEXT",
+  // What was requested, kept on the ticket so a request can be reported on
+  // without re-reading the form blob.
+  "ALTER TABLE tickets ADD COLUMN catalog_quantity INTEGER DEFAULT 1",
+  "ALTER TABLE tickets ADD COLUMN catalog_cost REAL",
+  "ALTER TABLE tickets ADD COLUMN requested_for_id TEXT",
+  "ALTER TABLE tickets ADD COLUMN fulfilment_due_at TEXT",
   // Reversible soft-delete for tickets (tickets.delete permission, itil_admin
   // persona) -- consistent with this app's existing "never hard-delete a
   // ticket" pattern (merge closes and stamps merged_into_id rather than
@@ -2508,3 +2756,4 @@ for (const type of Object.keys(TYPE_PREFIX)) {
     db.prepare('INSERT INTO ticket_counters (workspace_id, type, seq) VALUES (?,?,?)').run(DEFAULT_WORKSPACE_ID, type, maxSeq);
   }
 }
+

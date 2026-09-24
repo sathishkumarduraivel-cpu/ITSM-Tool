@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { db } from '../db.js';
 import { requireAuth, requireWorkspace } from '../middleware/auth.js';
+import { readableClause as kbReadableClause } from '../services/kbArticles.js';
 
 const router = Router();
 router.use(requireAuth, requireWorkspace);
@@ -29,11 +30,16 @@ router.get('/', (req, res) => {
      ORDER BY created_at DESC LIMIT 5`
   ).all(req.workspaceId, like, like);
 
+  // Articles are filtered by the same visibility rule the knowledge base
+  // itself applies. Without this the global search box was a way round it: a
+  // requester typing "firewall" got internal runbooks and other people's
+  // drafts, because this query only scoped by workspace.
+  const { sql: kbReadable, params: kbReadableParams } = kbReadableClause(req.user);
   const kb = db.prepare(
     `SELECT id, title, category FROM kb_articles
-     WHERE workspace_id = ? AND (title LIKE ? OR body LIKE ? OR tags LIKE ?)
+     WHERE workspace_id = ? AND (title LIKE ? OR body LIKE ? OR tags LIKE ?) AND ${kbReadable}
      ORDER BY updated_at DESC LIMIT 5`
-  ).all(req.workspaceId, like, like, like);
+  ).all(req.workspaceId, like, like, like, ...kbReadableParams);
 
   // Catalog items so the Requester Portal's home search can span knowledge +
   // catalog from one box (see PortalHome.jsx) -- everyone can browse the

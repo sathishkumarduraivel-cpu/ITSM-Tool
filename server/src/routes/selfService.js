@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { db, uid } from '../db.js';
 import { requireAuth, requireWorkspace, requireRole } from '../middleware/auth.js';
+import { readableClause as kbReadableClause } from '../services/kbArticles.js';
 import { getProvider, selfServiceTriage } from '../services/aiClient.js';
 import { computeSlaDueDate, findSlaPolicy } from '../services/sla.js';
 import { nextTicketNumber } from '../services/ticketNumbering.js';
@@ -19,13 +20,20 @@ function extractKeywords(text) {
   )].slice(0, 6);
 }
 
-function findKbCandidates(workspaceId, text) {
+// The candidates fed to the AI, filtered by what the person chatting may
+// read. This is the most consequential of the three: article BODIES go into
+// the prompt, so an unfiltered query let the assistant paraphrase an internal
+// runbook back to a requester -- a leak with no obvious symptom.
+function findKbCandidates(workspaceId, text, user) {
   const keywords = extractKeywords(text);
   if (!keywords.length) return [];
   const clauses = keywords.map(() => '(title LIKE ? OR body LIKE ? OR tags LIKE ?)').join(' OR ');
   const params = keywords.flatMap((k) => [`%${k}%`, `%${k}%`, `%${k}%`]);
-  return db.prepare(`SELECT id, title, category, body, tags FROM kb_articles WHERE workspace_id = ? AND (${clauses}) LIMIT 8`)
-    .all(workspaceId, ...params);
+  const { sql: readable, params: readableParams } = kbReadableClause(user);
+  return db.prepare(
+    `SELECT id, title, category, body, tags FROM kb_articles
+     WHERE workspace_id = ? AND (${clauses}) AND ${readable} LIMIT 8`
+  ).all(workspaceId, ...params, ...readableParams);
 }
 
 function getOwnedSession(id, req) {
@@ -66,7 +74,7 @@ router.post('/sessions/:id/messages', async (req, res) => {
   try {
     const provider = getProvider(req.workspaceId);
     const history = db.prepare('SELECT role, content FROM chatbot_messages WHERE session_id = ? ORDER BY created_at DESC LIMIT 8').all(session.id).reverse();
-    const kbCandidates = findKbCandidates(req.workspaceId, trimmed);
+    const kbCandidates = findKbCandidates(req.workspaceId, trimmed, req.user);
     const result = await selfServiceTriage(provider, trimmed, { history, kbCandidates });
 
     db.prepare('INSERT INTO chatbot_messages (id, session_id, role, content, kb_article_ids) VALUES (?,?,?,?,?)').run(

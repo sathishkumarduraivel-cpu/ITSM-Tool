@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   Plus, Loader2, Boxes, Network, Briefcase, KeyRound, Wallet, HeartPulse,
-  Search, Upload, Download, Pencil, Trash2, Filter, X,
+  Search, Upload, Download, Pencil, Trash2, X, ArrowRight,
 } from 'lucide-react';
 import { api } from '../lib/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -18,14 +18,45 @@ import FinancialsView from '../components/cmdb/FinancialsView.jsx';
 import HealthView from '../components/cmdb/HealthView.jsx';
 import ImportWizard from '../components/cmdb/ImportWizard.jsx';
 
-const VIEWS = [
-  { key: 'inventory', label: 'Inventory', icon: Boxes },
-  { key: 'explorer', label: 'CI Explorer', icon: Network },
-  { key: 'services', label: 'Service Map', icon: Briefcase },
-  { key: 'licenses', label: 'Licences', icon: KeyRound },
-  { key: 'financials', label: 'Financials', icon: Wallet, adminOnly: true },
-  { key: 'health', label: 'Health', icon: HeartPulse },
-];
+// Two modules over one set of records.
+//
+// Asset management and the CMDB genuinely answer different questions -- what
+// do we own and what did it cost, versus what exists and what breaks if this
+// changes -- so they get their own menu entry, their own title and their own
+// views. What is NOT split is the underlying record: a laptop is one row seen
+// two ways. Keeping two rows for one laptop is how an asset register ends up
+// saying 900 while the CMDB says 1,100 and nobody can say which is right.
+//
+// The subset differs too. A business service is a CI nobody bought, so it has
+// no place in a register of things you own: the Assets module asks the server
+// for asset classes only, the CMDB module asks for everything.
+const MODULES = {
+  assets: {
+    title: 'Assets',
+    description: 'What the organisation owns: the register, what it cost, who holds it, and the software it is licensed for.',
+    assetOnly: true,
+    listLabel: 'Inventory',
+    views: ['inventory', 'licenses', 'financials'],
+    counterpart: { to: '/cmdb', label: 'CMDB' },
+  },
+  cmdb: {
+    title: 'CMDB',
+    description: 'What exists and what depends on what, so a change or an outage can be traced to the services it affects.',
+    assetOnly: false,
+    listLabel: 'Configuration Items',
+    views: ['inventory', 'explorer', 'services', 'health'],
+    counterpart: { to: '/assets', label: 'Assets' },
+  },
+};
+
+const VIEWS = {
+  inventory: { label: 'Inventory', icon: Boxes },
+  explorer: { label: 'CI Explorer', icon: Network },
+  services: { label: 'Service Map', icon: Briefcase },
+  licenses: { label: 'Licences', icon: KeyRound },
+  financials: { label: 'Financials', icon: Wallet, adminOnly: true },
+  health: { label: 'Health', icon: HeartPulse },
+};
 
 const STATUS_STYLES = {
   in_use: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400',
@@ -41,11 +72,20 @@ const STATUS_STYLES = {
 // asks. Splitting them means maintaining the laptop twice and having the two
 // copies disagree, which is the failure mode this whole module exists to
 // avoid. The views keep the questions separate without splitting the data.
-export default function Assets() {
+export default function Assets({ module = 'assets' }) {
   const { user } = useAuth();
+  const mod = MODULES[module] || MODULES.assets;
   const [params, setParams] = useSearchParams();
-  const view = params.get('view') || 'inventory';
   const isAdmin = user?.role === 'admin' || (user?.permissions || []).includes('cmdb.manage');
+
+  const visible = mod.views
+    .map((key) => ({ key, ...VIEWS[key] }))
+    .filter((v) => !v.adminOnly || isAdmin);
+
+  // A view carried over from the other module's URL, or one this user cannot
+  // see, falls back to the first tab rather than rendering nothing.
+  const requested = params.get('view');
+  const view = visible.some((v) => v.key === requested) ? requested : visible[0].key;
 
   const setView = (key) => {
     const next = new URLSearchParams(params);
@@ -57,13 +97,18 @@ export default function Assets() {
   const [refreshKey, setRefreshKey] = useState(0);
   const bump = () => setRefreshKey((k) => k + 1);
 
-  const visible = VIEWS.filter((v) => !v.adminOnly || isAdmin);
-
   return (
     <div className="space-y-4">
       <PageHeader
-        title="Assets & CMDB"
-        description="One record per thing you own or depend on — what it is, what it runs on, who has it, what it cost and whether the record can be trusted."
+        title={mod.title}
+        description={mod.description}
+        actions={(
+          // They are two views of the same records, so say so and keep the
+          // other one one click away rather than something to go and find.
+          <Link to={mod.counterpart.to} className="btn-secondary text-xs">
+            {mod.counterpart.label} <ArrowRight size={13} />
+          </Link>
+        )}
       />
 
       <div className="flex flex-wrap gap-1.5 border-b border-slate-200 pb-2 dark:border-white/10">
@@ -77,13 +122,15 @@ export default function Assets() {
                 view === v.key ? 'bg-brand-600 text-white' : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800'
               }`}
             >
-              <Icon size={14} /> {v.label}
+              <Icon size={14} /> {v.key === 'inventory' ? mod.listLabel : v.label}
             </button>
           );
         })}
       </div>
 
-      {view === 'inventory' && <InventoryView key={refreshKey} isAdmin={isAdmin} onOpenCi={setOpenCi} />}
+      {view === 'inventory' && (
+        <InventoryView key={module + '-' + refreshKey} module={mod} isAdmin={isAdmin} onOpenCi={setOpenCi} />
+      )}
       {view === 'explorer' && <CiExplorer onOpenCi={setOpenCi} />}
       {view === 'services' && <ServiceMapView onOpenCi={setOpenCi} />}
       {view === 'licenses' && <LicensesView isAdmin={isAdmin} />}
@@ -104,7 +151,7 @@ export default function Assets() {
 
 // ------------------------------------------------------------- inventory ---
 
-function InventoryView({ isAdmin, onOpenCi }) {
+function InventoryView({ module: mod, isAdmin, onOpenCi }) {
   const [assets, setAssets] = useState(null);
   const [summary, setSummary] = useState(null);
   const [classes, setClasses] = useState([]);
@@ -120,6 +167,8 @@ function InventoryView({ isAdmin, onOpenCi }) {
     try {
       const qs = new URLSearchParams();
       if (classId) qs.set('class_id', classId);
+      // The register lists what you own; the CMDB lists everything.
+      if (mod.assetOnly) qs.set('asset_only', '1');
       if (status) qs.set('status', status);
       if (q.trim()) qs.set('q', q.trim());
       const [a, s] = await Promise.all([
@@ -156,15 +205,26 @@ function InventoryView({ isAdmin, onOpenCi }) {
   };
 
   const withCounts = useMemo(
-    () => (summary?.by_class || []).filter((c) => c.count > 0),
-    [summary],
+    () => (summary?.by_class || [])
+      .filter((c) => c.count > 0)
+      // Chips follow the same rule the list does, so the counts add up to
+      // what is actually on screen.
+      .filter((c) => !mod.assetOnly || c.is_asset),
+    [summary, mod.assetOnly],
   );
 
   return (
     <div className="space-y-4">
       {summary && (
         <div className="flex flex-wrap items-center gap-2">
-          <Chip label="All CIs" count={summary.total} active={!classId} onClick={() => setClassId('')} />
+          <Chip
+            label={mod.assetOnly ? 'All assets' : 'All CIs'}
+            count={mod.assetOnly
+              ? withCounts.reduce((n, c) => n + c.count, 0) + summary.unclassified
+              : summary.total}
+            active={!classId}
+            onClick={() => setClassId('')}
+          />
           {withCounts.map((c) => (
             <Chip key={c.id} label={c.label} count={c.count} color={c.color} active={classId === c.id} onClick={() => setClassId(c.id)} />
           ))}
@@ -173,7 +233,11 @@ function InventoryView({ isAdmin, onOpenCi }) {
               {summary.unclassified} unclassified
             </span>
           )}
-          <span className="ml-auto text-xs text-slate-400">{summary.relationships} relationship{summary.relationships === 1 ? '' : 's'} mapped</span>
+          {!mod.assetOnly && (
+            <span className="ml-auto text-xs text-slate-400">
+              {summary.relationships} relationship{summary.relationships === 1 ? '' : 's'} mapped
+            </span>
+          )}
         </div>
       )}
 
@@ -209,7 +273,9 @@ function InventoryView({ isAdmin, onOpenCi }) {
       ) : assets.length === 0 ? (
         <EmptyState
           icon={Boxes}
-          title={classId || status || q ? 'Nothing matches those filters' : 'No configuration items yet'}
+          title={classId || status || q
+            ? 'Nothing matches those filters'
+            : mod.assetOnly ? 'No assets yet' : 'No configuration items yet'}
           description={classId || status || q
             ? 'Try clearing the filters.'
             : 'Add a CI, or import a spreadsheet. Pick the class that describes what it is and the form will ask for the right fields.'}

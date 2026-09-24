@@ -46,9 +46,23 @@ function decorateMany(workspaceId, assets) {
 }
 
 router.get('/', (req, res) => {
-  const { type, status, q, class_id: classId } = req.query;
+  const { type, status, q, class_id: classId, asset_only: assetOnly } = req.query;
   let sql = 'SELECT * FROM assets WHERE workspace_id = ?';
   const params = [req.workspaceId];
+
+  // The Assets register and the CMDB look at the same rows but not the same
+  // subset. A business service or a database instance is a CI nobody bought,
+  // so it has no place in a register of things you own -- is_asset on the
+  // class is what separates them. Rows with no class are included: they
+  // predate the model and were assets under the old one.
+  if (assetOnly === '1') {
+    const ids = listClasses(req.workspaceId, { includeDisabled: true })
+      .filter((c) => c.is_asset).map((c) => c.id);
+    sql += ids.length
+      ? ` AND (class_id IS NULL OR class_id IN (${ids.map(() => '?').join(',')}))`
+      : ' AND class_id IS NULL';
+    params.push(...ids);
+  }
 
   // Filtering by a class means "and everything under it" -- asking for
   // Hardware and being handed nothing because every row is a Server or an

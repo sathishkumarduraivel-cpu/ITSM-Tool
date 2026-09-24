@@ -100,7 +100,8 @@ export default function App() {
                 <Route path="/problems" element={<RequireRole roles={['admin', 'agent']}><ProblemManagement /></RequireRole>} />
                 <Route path="/major-incidents" element={<RequireRole roles={['admin', 'agent']}><MajorIncidents /></RequireRole>} />
                 <Route path="/major-incidents/:id" element={<RequireRole roles={['admin', 'agent']}><MajorIncidentDetail /></RequireRole>} />
-                <Route path="/assets" element={<Assets />} />
+                <Route path="/assets" element={<Assets module="assets" />} />
+                <Route path="/cmdb" element={<Assets module="cmdb" />} />
                 <Route path="/knowledge-base" element={<KnowledgeBase />} />
                 <Route path="/integrations" element={<Integrations />} />
                 <Route path="/external-connections" element={<RequireRole role="admin" permission="integrations.manage"><ExternalConnections /></RequireRole>} />

@@ -127,7 +127,14 @@ router.get('/summary', (req, res) => {
     unclassified,
     relationships,
     by_class: classes
-      .map((c) => ({ id: c.id, key: c.key, label: c.label, icon: c.icon, color: c.color, is_abstract: c.is_abstract, count: counts.get(c.id) || 0 }))
+      .map((c) => ({
+        id: c.id, key: c.key, label: c.label, icon: c.icon, color: c.color,
+        is_abstract: c.is_abstract,
+        // Lets the Assets register show only the classes it is about,
+        // without a second endpoint.
+        is_asset: c.is_asset,
+        count: counts.get(c.id) || 0,
+      }))
       .filter((c) => c.count > 0 || !c.is_abstract),
   });
 });

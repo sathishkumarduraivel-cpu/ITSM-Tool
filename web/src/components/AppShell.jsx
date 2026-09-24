@@ -29,6 +29,7 @@ import {
   Code2,
   UserCog,
   LogOut,
+  Network,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
 import { hasPermission, hasAnyPermission } from '../lib/permissions.js';
@@ -83,7 +84,8 @@ const AGENT_NAV_GROUPS = [
   {
     label: 'Assets & Procurement',
     items: [
-      { to: '/assets', label: 'Assets / CMDB', labelKey: 'nav.assetsCmdb', icon: Boxes },
+      { to: '/assets', label: 'Assets', labelKey: 'nav.assetsCmdb', icon: Boxes },
+      { to: '/cmdb', label: 'CMDB', labelKey: 'nav.cmdb', icon: Network },
       { to: '/procurement', label: 'Contracts & POs', labelKey: 'nav.contractsPOs', icon: FileText },
     ],
   },

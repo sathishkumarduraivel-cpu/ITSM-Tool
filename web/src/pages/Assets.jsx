@@ -1,142 +1,31 @@
-import { useEffect, useState } from 'react';
-import { Plus, X, Loader2, Boxes, Link2, Ticket as TicketIcon, Trash2, Pencil } from 'lucide-react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import {
+  Plus, Loader2, Boxes, Network, Briefcase, KeyRound, Wallet, HeartPulse,
+  Search, Upload, Download, Pencil, Trash2, Filter, X,
+} from 'lucide-react';
 import { api } from '../lib/api.js';
-import Modal from '../components/Modal.jsx';
+import { useAuth } from '../context/AuthContext.jsx';
 import PageHeader from '../components/PageHeader.jsx';
+import EmptyState from '../components/EmptyState.jsx';
 import Select from '../components/Select.jsx';
+import CiFormModal from '../components/cmdb/CiFormModal.jsx';
+import CiDetailModal from '../components/cmdb/CiDetailModal.jsx';
+import CiExplorer from '../components/cmdb/CiExplorer.jsx';
+import ServiceMapView from '../components/cmdb/ServiceMapView.jsx';
+import LicensesView from '../components/cmdb/LicensesView.jsx';
+import FinancialsView from '../components/cmdb/FinancialsView.jsx';
+import HealthView from '../components/cmdb/HealthView.jsx';
+import ImportWizard from '../components/cmdb/ImportWizard.jsx';
 
-const REL_TYPES = ['depends_on', 'hosted_on', 'connected_to'];
-
-function AssetDetailModal({ asset, allAssets, onClose, onChanged }) {
-  const [detail, setDetail] = useState(null);
-  const [loadError, setLoadError] = useState('');
-  const [relTarget, setRelTarget] = useState('');
-  const [relType, setRelType] = useState('depends_on');
-  const navigate = useNavigate();
-
-  const load = async () => {
-    setLoadError('');
-    try {
-      const data = await api.get(`/assets/${asset.id}/detail`);
-      setDetail(data);
-    } catch (e) {
-      // Without this catch, a failed fetch left `detail` null forever and
-      // the `if (!detail) return null` below rendered NOTHING at all --
-      // clicking an asset row silently did nothing, with no error, no
-      // spinner, and no way to dismiss it.
-      setLoadError(e.message);
-    }
-  };
-
-  useEffect(() => { load(); }, [asset.id]);
-
-  const addRelationship = async () => {
-    if (!relTarget) return;
-    await api.post(`/assets/${asset.id}/relationships`, { related_asset_id: relTarget, relationship_type: relType });
-    setRelTarget('');
-    load();
-    onChanged();
-  };
-
-  const removeRelationship = async (relId) => {
-    await api.del(`/assets/relationships/${relId}`);
-    load();
-    onChanged();
-  };
-
-  if (!detail) {
-    return (
-      <div className="fixed inset-0 bg-slate-900/40 dark:bg-slate-950/60 flex items-center justify-center z-50 px-4 py-8" onClick={onClose}>
-        <div className="card w-full max-w-sm p-5 text-center space-y-3" onClick={(e) => e.stopPropagation()}>
-          {loadError ? (
-            <>
-              <p className="text-sm text-red-600 dark:text-red-400">{loadError}</p>
-              <div className="flex items-center justify-center gap-2">
-                <button onClick={onClose} className="btn-secondary text-xs">Close</button>
-                <button onClick={load} className="btn-primary text-xs">Retry</button>
-              </div>
-            </>
-          ) : (
-            <p className="text-sm text-slate-400 flex items-center justify-center gap-2"><Loader2 size={14} className="animate-spin" /> Loading…</p>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="fixed inset-0 bg-slate-900/40 dark:bg-slate-950/60 flex items-center justify-center z-50 px-4 py-8 overflow-y-auto" onClick={onClose}>
-      <div className="card w-full max-w-2xl p-5 space-y-4 my-auto" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="font-semibold text-slate-800 dark:text-slate-100">{asset.name}</h2>
-            <span className="font-mono text-xs text-slate-400">{asset.tag}</span>
-          </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
-        </div>
-
-        <div>
-          <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2 flex items-center gap-1.5"><Link2 size={14} /> Depends on</h3>
-          <div className="space-y-1">
-            {detail.dependsOn.length === 0 && <p className="text-xs text-slate-400">No dependencies recorded.</p>}
-            {detail.dependsOn.map((r) => (
-              <div key={r.rel_id} className="flex items-center justify-between text-sm bg-slate-50 dark:bg-slate-800/60 rounded-md px-2 py-1.5">
-                <span>{r.name} <span className="text-xs text-slate-400">({r.relationship_type.replace('_', ' ')})</span></span>
-                <button onClick={() => removeRelationship(r.rel_id)} className="text-slate-400 hover:text-red-500"><Trash2 size={13} /></button>
-              </div>
-            ))}
-          </div>
-          <div className="flex gap-2 mt-2">
-            <Select
-              value={relTarget}
-              onChange={setRelTarget}
-              options={[
-                { value: '', label: 'Link to asset…' },
-                ...allAssets.filter((a) => a.id !== asset.id).map((a) => ({ value: a.id, label: `${a.name} (${a.tag})` })),
-              ]}
-            />
-            <Select
-              className="w-auto"
-              value={relType}
-              onChange={setRelType}
-              options={REL_TYPES.map((t) => ({ value: t, label: t.replace('_', ' ') }))}
-            />
-            <button onClick={addRelationship} className="btn-secondary shrink-0"><Plus size={14} /></button>
-          </div>
-        </div>
-
-        {detail.dependedOnBy.length > 0 && (
-          <div>
-            <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2">Impact — depended on by</h3>
-            <div className="space-y-1">
-              {detail.dependedOnBy.map((r) => (
-                <div key={r.rel_id} className="text-sm bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400 rounded-md px-2 py-1.5">
-                  {r.name} would be impacted ({r.relationship_type.replace('_', ' ')} this asset)
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <div>
-          <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2 flex items-center gap-1.5"><TicketIcon size={14} /> Linked tickets</h3>
-          {detail.linkedTickets.length === 0 && <p className="text-xs text-slate-400">No tickets linked to this asset.</p>}
-          <div className="space-y-1">
-            {detail.linkedTickets.map((t) => (
-              <button key={t.id} onClick={() => navigate(`/tickets/${t.id}`)} className="w-full text-left text-sm bg-slate-50 dark:bg-slate-800/60 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md px-2 py-1.5">
-                {t.number} — {t.title}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-const TYPES = ['hardware', 'software', 'license', 'service'];
-const STATUSES = ['in_use', 'in_stock', 'retired', 'maintenance'];
+const VIEWS = [
+  { key: 'inventory', label: 'Inventory', icon: Boxes },
+  { key: 'explorer', label: 'CI Explorer', icon: Network },
+  { key: 'services', label: 'Service Map', icon: Briefcase },
+  { key: 'licenses', label: 'Licences', icon: KeyRound },
+  { key: 'financials', label: 'Financials', icon: Wallet, adminOnly: true },
+  { key: 'health', label: 'Health', icon: HeartPulse },
+];
 
 const STATUS_STYLES = {
   in_use: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400',
@@ -145,146 +34,270 @@ const STATUS_STYLES = {
   maintenance: 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400',
 };
 
-function AssetModal({ initial, onClose, onSaved }) {
-  const [form, setForm] = useState({
-    tag: initial?.tag || '', name: initial?.name || '', type: initial?.type || 'hardware', status: initial?.status || 'in_stock',
-    vendor: initial?.vendor || '', location: initial?.location || '',
-  });
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-
-  const submit = async (e) => {
-    e.preventDefault();
-    setSaving(true);
-    setError('');
-    try {
-      if (initial?.id) await api.patch(`/assets/${initial.id}`, form);
-      else await api.post('/assets', form);
-      onSaved();
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Modal title={initial?.id ? 'Edit asset' : 'New asset'} onClose={onClose}>
-      <form onSubmit={submit} className="space-y-3">
-        {error && <div className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 rounded-lg px-3 py-2">{error}</div>}
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="label">Asset tag</label>
-            <input className="input" required value={form.tag} onChange={(e) => setForm({ ...form, tag: e.target.value })} placeholder="e.g. LAP-1099" />
-          </div>
-          <div>
-            <label className="label">Name</label>
-            <input className="input" required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-          </div>
-          <div>
-            <label className="label">Type</label>
-            <Select value={form.type} onChange={(v) => setForm({ ...form, type: v })} options={TYPES} />
-          </div>
-          <div>
-            <label className="label">Status</label>
-            <Select
-              value={form.status}
-              onChange={(v) => setForm({ ...form, status: v })}
-              options={STATUSES.map((s) => ({ value: s, label: s.replace('_', ' ') }))}
-            />
-          </div>
-          <div>
-            <label className="label">Vendor</label>
-            <input className="input" value={form.vendor} onChange={(e) => setForm({ ...form, vendor: e.target.value })} />
-          </div>
-          <div>
-            <label className="label">Location</label>
-            <input className="input" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} />
-          </div>
-        </div>
-        <div className="flex justify-end gap-2 pt-2">
-          <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
-          <button type="submit" disabled={saving} className="btn-primary">
-            {saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} {initial?.id ? 'Save changes' : 'Add asset'}
-          </button>
-        </div>
-      </form>
-    </Modal>
-  );
-}
-
+// Assets and CMDB, as one workspace with six views over the same estate.
+//
+// They are one module because they are one set of records seen from different
+// angles: a laptop is an asset when finance asks and a CI when an incident
+// asks. Splitting them means maintaining the laptop twice and having the two
+// copies disagree, which is the failure mode this whole module exists to
+// avoid. The views keep the questions separate without splitting the data.
 export default function Assets() {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const [assets, setAssets] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [modal, setModal] = useState(null); // null | 'new' | asset object
-  const [detailAsset, setDetailAsset] = useState(null);
+  const { user } = useAuth();
+  const [params, setParams] = useSearchParams();
+  const view = params.get('view') || 'inventory';
+  const isAdmin = user?.role === 'admin' || (user?.permissions || []).includes('cmdb.manage');
 
-  const load = async () => {
-    setLoading(true);
-    try {
-      const { assets } = await api.get('/assets');
-      setAssets(assets);
-      const selected = searchParams.get('selected');
-      if (selected) setDetailAsset(assets.find((asset) => asset.id === selected) || null);
-    } finally {
-      setLoading(false);
-    }
+  const setView = (key) => {
+    const next = new URLSearchParams(params);
+    next.set('view', key);
+    setParams(next, { replace: true });
   };
 
-  useEffect(() => { load(); }, []);
+  const [openCi, setOpenCi] = useState(params.get('ci') || null);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const bump = () => setRefreshKey((k) => k + 1);
+
+  const visible = VIEWS.filter((v) => !v.adminOnly || isAdmin);
 
   return (
     <div className="space-y-4">
       <PageHeader
-        title="Assets"
-        description="Hardware, software, licenses & services"
-        actions={<button onClick={() => setModal('new')} className="btn-primary"><Plus size={14} /> New asset</button>}
+        title="Assets & CMDB"
+        description="One record per thing you own or depend on — what it is, what it runs on, who has it, what it cost and whether the record can be trusted."
       />
 
-      <div className="card overflow-hidden overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wide">
-            <tr>
-              <th className="text-left px-4 py-2.5 font-medium">Tag</th>
-              <th className="text-left px-4 py-2.5 font-medium">Name</th>
-              <th className="text-left px-4 py-2.5 font-medium">Type</th>
-              <th className="text-left px-4 py-2.5 font-medium">Status</th>
-              <th className="text-left px-4 py-2.5 font-medium">Vendor</th>
-              <th className="text-left px-4 py-2.5 font-medium">Location</th>
-              <th className="text-left px-4 py-2.5 font-medium"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading && <tr><td colSpan={7} className="text-center py-10 text-slate-400">Loading…</td></tr>}
-            {!loading && assets.length === 0 && (
-              <tr><td colSpan={7} className="text-center py-10 text-slate-400">
-                <Boxes className="mx-auto mb-2 text-slate-300" size={28} /> No assets yet.
-              </td></tr>
-            )}
-            {!loading && assets.map((a) => (
-              <tr key={a.id} onClick={() => setDetailAsset(a)} className="border-t border-slate-100 dark:border-slate-800 row-interactive">
-                <td className="px-4 py-2.5 font-mono text-xs text-slate-600 dark:text-slate-300">{a.tag}</td>
-                <td className="px-4 py-2.5 font-medium text-slate-800 dark:text-slate-100">{a.name}</td>
-                <td className="px-4 py-2.5 capitalize text-slate-600 dark:text-slate-300">{a.type}</td>
-                <td className="px-4 py-2.5"><span className={`badge ${STATUS_STYLES[a.status]}`}>{a.status.replace('_', ' ')}</span></td>
-                <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">{a.vendor || '—'}</td>
-                <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">{a.location || '—'}</td>
-                <td className="px-4 py-2.5 text-right">
-                  <button onClick={(e) => { e.stopPropagation(); setModal(a); }} className="text-slate-400 hover:text-brand-600"><Pencil size={14} /></button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="flex flex-wrap gap-1.5 border-b border-slate-200 pb-2 dark:border-white/10">
+        {visible.map((v) => {
+          const Icon = v.icon;
+          return (
+            <button
+              key={v.key}
+              onClick={() => setView(v.key)}
+              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+                view === v.key ? 'bg-brand-600 text-white' : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800'
+              }`}
+            >
+              <Icon size={14} /> {v.label}
+            </button>
+          );
+        })}
       </div>
 
-      {modal && (
-        <AssetModal initial={modal === 'new' ? null : modal} onClose={() => setModal(null)} onSaved={() => { setModal(null); load(); }} />
-      )}
-      {detailAsset && (
-        <AssetDetailModal asset={detailAsset} allAssets={assets} onClose={() => { setDetailAsset(null); setSearchParams({}); }} onChanged={load} />
+      {view === 'inventory' && <InventoryView key={refreshKey} isAdmin={isAdmin} onOpenCi={setOpenCi} />}
+      {view === 'explorer' && <CiExplorer onOpenCi={setOpenCi} />}
+      {view === 'services' && <ServiceMapView onOpenCi={setOpenCi} />}
+      {view === 'licenses' && <LicensesView isAdmin={isAdmin} />}
+      {view === 'financials' && isAdmin && <FinancialsView />}
+      {view === 'health' && <HealthView onOpenCi={setOpenCi} />}
+
+      {openCi && (
+        <CiDetailModal
+          ciId={openCi}
+          isAdmin={isAdmin}
+          onClose={() => setOpenCi(null)}
+          onChanged={(nextId) => { bump(); if (typeof nextId === 'string') setOpenCi(nextId); }}
+        />
       )}
     </div>
+  );
+}
+
+// ------------------------------------------------------------- inventory ---
+
+function InventoryView({ isAdmin, onOpenCi }) {
+  const [assets, setAssets] = useState(null);
+  const [summary, setSummary] = useState(null);
+  const [classes, setClasses] = useState([]);
+  const [classId, setClassId] = useState('');
+  const [status, setStatus] = useState('');
+  const [q, setQ] = useState('');
+  const [editing, setEditing] = useState(undefined); // undefined closed, null new, object edit
+  const [importing, setImporting] = useState(false);
+  const [error, setError] = useState('');
+
+  const load = async () => {
+    setError('');
+    try {
+      const qs = new URLSearchParams();
+      if (classId) qs.set('class_id', classId);
+      if (status) qs.set('status', status);
+      if (q.trim()) qs.set('q', q.trim());
+      const [a, s] = await Promise.all([
+        api.get(`/assets${qs.toString() ? `?${qs}` : ''}`),
+        api.get('/cmdb/summary'),
+      ]);
+      setAssets(a.assets || []);
+      setSummary(s);
+    } catch (e) { setError(e.message); setAssets([]); }
+  };
+
+  useEffect(() => { api.get('/cmdb-config/classes').then((d) => setClasses(d.classes || [])).catch(() => {}); }, []);
+  useEffect(() => { load(); }, [classId, status]);
+  useEffect(() => {
+    // Debounced so typing does not fire a request per keystroke.
+    const t = setTimeout(load, 250);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  const remove = async (asset) => {
+    if (!confirm(`Delete ${asset.name}? Its relationships and attribute history go with it.`)) return;
+    await api.del(`/assets/${asset.id}`);
+    load();
+  };
+
+  const exportCsv = async () => {
+    const token = localStorage.getItem('itsm_token');
+    const resp = await fetch(`/api/itam/export/${classId}`, { headers: { authorization: `Bearer ${token}` } });
+    const text = await resp.text();
+    const url = URL.createObjectURL(new Blob([text], { type: 'text/csv' }));
+    const a = document.createElement('a');
+    a.href = url; a.download = 'cmdb-export.csv'; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const withCounts = useMemo(
+    () => (summary?.by_class || []).filter((c) => c.count > 0),
+    [summary],
+  );
+
+  return (
+    <div className="space-y-4">
+      {summary && (
+        <div className="flex flex-wrap items-center gap-2">
+          <Chip label="All CIs" count={summary.total} active={!classId} onClick={() => setClassId('')} />
+          {withCounts.map((c) => (
+            <Chip key={c.id} label={c.label} count={c.count} color={c.color} active={classId === c.id} onClick={() => setClassId(c.id)} />
+          ))}
+          {summary.unclassified > 0 && (
+            <span className="badge bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300" title="These predate the class model">
+              {summary.unclassified} unclassified
+            </span>
+          )}
+          <span className="ml-auto text-xs text-slate-400">{summary.relationships} relationship{summary.relationships === 1 ? '' : 's'} mapped</span>
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative min-w-[200px] flex-1">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input className="input pl-9" placeholder="Search by name or tag…" value={q} onChange={(e) => setQ(e.target.value)} />
+        </div>
+        <Select
+          className="w-auto min-w-[150px]" value={status} onChange={setStatus} placeholder="Any status"
+          options={[{ value: '', label: 'Any status' }, ...Object.keys(STATUS_STYLES).map((s) => ({ value: s, label: s.replace('_', ' ') }))]}
+        />
+        {(classId || status || q) && (
+          <button onClick={() => { setClassId(''); setStatus(''); setQ(''); }} className="btn-ghost text-xs">
+            <X size={12} /> Clear
+          </button>
+        )}
+        {isAdmin && (
+          <>
+            <button onClick={() => setImporting(true)} className="btn-secondary text-xs"><Upload size={13} /> Import</button>
+            <button onClick={exportCsv} disabled={!classId} className="btn-secondary text-xs disabled:opacity-40" title={classId ? 'Export this class' : 'Pick a class first'}>
+              <Download size={13} /> Export
+            </button>
+          </>
+        )}
+        <button onClick={() => setEditing(null)} className="btn-primary text-xs"><Plus size={13} /> New CI</button>
+      </div>
+
+      {error && <div className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-300">{error}</div>}
+
+      {!assets ? (
+        <p className="flex items-center justify-center gap-2 py-12 text-sm text-slate-400"><Loader2 size={16} className="animate-spin" /> Loading…</p>
+      ) : assets.length === 0 ? (
+        <EmptyState
+          icon={Boxes}
+          title={classId || status || q ? 'Nothing matches those filters' : 'No configuration items yet'}
+          description={classId || status || q
+            ? 'Try clearing the filters.'
+            : 'Add a CI, or import a spreadsheet. Pick the class that describes what it is and the form will ask for the right fields.'}
+          action={!classId && !status && !q && <button onClick={() => setEditing(null)} className="btn-primary text-xs"><Plus size={13} /> New CI</button>}
+        />
+      ) : (
+        <div className="card overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-800/60 dark:text-slate-400">
+              <tr>
+                <th className="px-4 py-2.5 font-medium">CI</th>
+                <th className="px-4 py-2.5 font-medium">Class</th>
+                <th className="px-4 py-2.5 font-medium">Status</th>
+                <th className="px-4 py-2.5 font-medium">Key detail</th>
+                <th className="px-4 py-2.5 font-medium">Location</th>
+                <th className="w-20 px-4 py-2.5" />
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+              {assets.map((a) => (
+                <tr key={a.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                  <td className="cursor-pointer px-4 py-2.5" onClick={() => onOpenCi(a.id)}>
+                    <div className="font-medium text-slate-800 dark:text-slate-100">{a.name}</div>
+                    <div className="font-mono text-[11px] text-slate-400">{a.tag}</div>
+                  </td>
+                  <td className="px-4 py-2.5">
+                    {a.ci_class ? (
+                      <span className="badge" style={{ backgroundColor: `${a.ci_class.color}1a`, color: a.ci_class.color }}>
+                        {a.ci_class.label}
+                      </span>
+                    ) : <span className="text-xs text-slate-400">—</span>}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <span className={`badge ${STATUS_STYLES[a.status] || 'bg-slate-100 text-slate-500'}`}>{String(a.status || '').replace('_', ' ')}</span>
+                  </td>
+                  {/* Whatever identifies this class of CI, rather than a
+                      column that is blank for most rows. */}
+                  <td className="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400">{keyDetail(a)}</td>
+                  <td className="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400">{a.location || '—'}</td>
+                  <td className="px-4 py-2.5">
+                    <div className="flex justify-end gap-1">
+                      <button onClick={() => setEditing(a)} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-brand-600 dark:hover:bg-slate-800"><Pencil size={13} /></button>
+                      {isAdmin && (
+                        <button onClick={() => remove(a)} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-red-500 dark:hover:bg-slate-800"><Trash2 size={13} /></button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {editing !== undefined && (
+        <CiFormModal initial={editing} onClose={() => setEditing(undefined)} onSaved={() => { setEditing(undefined); load(); }} />
+      )}
+      {importing && (
+        <ImportWizard classes={classes} onClose={() => setImporting(false)} onDone={load} />
+      )}
+    </div>
+  );
+}
+
+// The most informative attribute a CI happens to carry, so the table says
+// something useful for a Server and for a Business Service without needing a
+// different column set per class.
+function keyDetail(asset) {
+  const a = asset.attributes || {};
+  for (const key of ['hostname', 'instance_name', 'app_code', 'management_ip', 'ip_address', 'serial_number', 'resource_id', 'product_name', 'sla_tier', 'site_code']) {
+    if (a[key]) return `${key.replace(/_/g, ' ')}: ${a[key]}`;
+  }
+  return '—';
+}
+
+function Chip({ label, count, color, active, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors ${
+        active
+          ? 'border-brand-300 bg-brand-50 text-brand-700 dark:border-brand-500/40 dark:bg-brand-500/10 dark:text-brand-300'
+          : 'border-slate-200 text-slate-600 hover:bg-slate-50 dark:border-white/10 dark:text-slate-300 dark:hover:bg-slate-800'
+      }`}
+    >
+      {color && <span className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />}
+      {label}
+      <span className="font-semibold">{count}</span>
+    </button>
   );
 }

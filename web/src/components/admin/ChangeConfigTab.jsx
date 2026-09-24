@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import {
   Loader2, Plus, Trash2, Pencil, GitBranch, Snowflake, Gauge, FileText, Users,
-  ToggleLeft, ToggleRight, Check, X, AlertTriangle, Lock, ArrowUp, ArrowDown,
+  ToggleLeft, ToggleRight, Check, X, AlertTriangle, Lock, ArrowUp, ArrowDown, LockKeyhole, Save, RotateCcw,
 } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import { fmtDateTime } from '../../lib/dates.js';
@@ -15,6 +15,7 @@ const SUB_TABS = [
   { key: 'risk', label: 'Risk Scoring', icon: Gauge },
   { key: 'freezes', label: 'Freeze Windows', icon: Snowflake },
   { key: 'routes', label: 'Approval Routes', icon: Users },
+  { key: 'fieldAccess', label: 'Field Access', icon: LockKeyhole },
 ];
 
 const BAND_STYLES = {
@@ -504,6 +505,151 @@ function RoutesPane({ config, setError }) {
   );
 }
 
+// ---------------------------------------------------------- Field Access ---
+// Which fields stay editable at each point in a change's lifecycle.
+//
+// Rendered as a grid rather than a list of rules because the question an
+// admin actually has is comparative -- "what is still open once this is
+// approved?" -- and that is a column you read down, not ten rules you piece
+// together. Nothing is saved until Save is pressed, so a half-set matrix
+// never reaches the server.
+const ACCESS_CYCLE = ['editable', 'readonly', 'required'];
+const ACCESS_STYLE = {
+  editable: 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-500/10 dark:text-emerald-300 dark:hover:bg-emerald-500/20',
+  readonly: 'bg-slate-200 text-slate-600 hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600',
+  required: 'bg-amber-50 text-amber-700 hover:bg-amber-100 dark:bg-amber-500/10 dark:text-amber-300 dark:hover:bg-amber-500/20',
+};
+const ACCESS_SHORT = { editable: 'Edit', readonly: 'Locked', required: 'Required' };
+
+function FieldAccessPane({ setError }) {
+  const [data, setData] = useState(null);
+  const [policy, setPolicy] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const load = async () => {
+    try {
+      const res = await api.get('/change-config/field-policy');
+      setData(res);
+      setPolicy(res.policy);
+      setDirty(false);
+    } catch (e) { setError(e.message); }
+  };
+  useEffect(() => { load(); }, []);
+
+  if (!data) return <p className="flex items-center justify-center gap-2 py-10 text-sm text-slate-400"><Loader2 size={16} className="animate-spin" /> Loading field access…</p>;
+
+  const accessOf = (stateKey, fieldKey) => policy[stateKey]?.[fieldKey] || 'editable';
+
+  const cycle = (stateKey, fieldKey) => {
+    const next = ACCESS_CYCLE[(ACCESS_CYCLE.indexOf(accessOf(stateKey, fieldKey)) + 1) % ACCESS_CYCLE.length];
+    setPolicy((prev) => ({ ...prev, [stateKey]: { ...(prev[stateKey] || {}), [fieldKey]: next } }));
+    setDirty(true);
+    setSaved(false);
+  };
+
+  // Setting a whole column at once: locking everything from "Approved"
+  // onwards is the common intent, and clicking fourteen cells to express it
+  // is how an admin gives up halfway.
+  const setColumn = (stateKey, access) => {
+    setPolicy((prev) => ({
+      ...prev,
+      [stateKey]: Object.fromEntries(data.fields.map((f) => [f.key, access])),
+    }));
+    setDirty(true);
+    setSaved(false);
+  };
+
+  const save = async () => {
+    setSaving(true);
+    setError('');
+    try {
+      const res = await api.put('/change-config/field-policy', { policy });
+      setPolicy(res.policy);
+      setDirty(false);
+      setSaved(true);
+    } catch (e) { setError(e.message); } finally { setSaving(false); }
+  };
+
+  const groups = [...new Set(data.fields.map((f) => f.group))];
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h4 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Field access by change state</h4>
+          <p className="mt-0.5 max-w-3xl text-xs text-slate-500 dark:text-slate-400">
+            Click a cell to cycle it. <b>Edit</b> leaves the field open, <b>Locked</b> makes it read-only while the change sits in
+            that state, and <b>Required</b> means it must be filled in. Enforced when the ticket is saved as well as in the form,
+            so an API client cannot bypass it. Whether a field is <i>visible</i> stays with Business Rules.
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {saved && !dirty && <span className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400"><Check size={13} /> Saved</span>}
+          <button onClick={load} disabled={!dirty || saving} className="btn-secondary text-xs disabled:opacity-40">
+            <RotateCcw size={13} /> Discard
+          </button>
+          <button onClick={save} disabled={!dirty || saving} className="btn-primary text-xs disabled:opacity-40">
+            {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />} Save changes
+          </button>
+        </div>
+      </div>
+
+      <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-white/10">
+        <table className="w-full min-w-[900px] text-left text-xs">
+          <thead className="bg-slate-50 dark:bg-slate-800/60">
+            <tr>
+              <th className="sticky left-0 z-10 bg-slate-50 px-3 py-2 font-medium text-slate-500 dark:bg-slate-800 dark:text-slate-400">Field</th>
+              {data.states.map((st) => (
+                <th key={st.key} className="px-2 py-2 text-center font-medium text-slate-600 dark:text-slate-300">
+                  <div className="whitespace-nowrap">{st.label}</div>
+                  <div className="mt-1 flex justify-center gap-1">
+                    <button onClick={() => setColumn(st.key, 'editable')} className="rounded px-1 py-0.5 text-[10px] text-slate-400 hover:bg-emerald-100 hover:text-emerald-700 dark:hover:bg-emerald-500/20" title="Make every field editable in this state">all edit</button>
+                    <button onClick={() => setColumn(st.key, 'readonly')} className="rounded px-1 py-0.5 text-[10px] text-slate-400 hover:bg-slate-200 hover:text-slate-700 dark:hover:bg-slate-600" title="Lock every field in this state">all lock</button>
+                  </div>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+            {groups.map((group) => (
+              <Fragment key={group}>
+                <tr className="bg-slate-50/60 dark:bg-slate-800/30">
+                  <td colSpan={data.states.length + 1} className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">{group}</td>
+                </tr>
+                {data.fields.filter((f) => f.group === group).map((field) => (
+                  <tr key={field.key}>
+                    <td className="sticky left-0 z-10 whitespace-nowrap bg-white px-3 py-1.5 font-medium text-slate-700 dark:bg-slate-900 dark:text-slate-200">{field.label}</td>
+                    {data.states.map((st) => {
+                      const access = accessOf(st.key, field.key);
+                      return (
+                        <td key={st.key} className="px-1.5 py-1 text-center">
+                          <button
+                            onClick={() => cycle(st.key, field.key)}
+                            title={`${field.label} in ${st.label}: ${access}. Click to change.`}
+                            className={`w-full rounded-md px-1.5 py-1 text-[11px] font-medium transition-colors ${ACCESS_STYLE[access]}`}
+                          >
+                            {ACCESS_SHORT[access]}
+                          </button>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="text-[11px] text-slate-400">
+        Status itself is not listed: it is owned by the change state machine, which already decides which moves are legal.
+      </p>
+    </div>
+  );
+}
+
 export default function ChangeConfigTab() {
   const [tab, setTab] = useState('types');
   const [config, setConfig] = useState(null);
@@ -563,6 +709,7 @@ export default function ChangeConfigTab() {
       {tab === 'risk' && <RiskPane config={config} onChanged={load} setError={setError} />}
       {tab === 'freezes' && <FreezesPane config={config} onChanged={load} setError={setError} />}
       {tab === 'routes' && <RoutesPane config={config} setError={setError} />}
+      {tab === 'fieldAccess' && <FieldAccessPane setError={setError} />}
     </div>
   );
 }

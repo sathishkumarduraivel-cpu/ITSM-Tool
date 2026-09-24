@@ -12,6 +12,10 @@ import { listRiskRules, listRiskBands, SIGNALS, OPERATORS, BANDS, resolveSignals
 import { listTemplates } from '../services/changeTemplates.js';
 import { listFreezeWindows } from '../services/changeCalendar.js';
 import { listRoutes, APPROVER_TYPES } from '../services/changeApproval.js';
+import {
+  getFieldPolicy, saveFieldPolicy, GOVERNABLE_FIELDS, ACCESS_LEVELS,
+} from '../services/changeFieldPolicy.js';
+import { CHANGE_STATES, STATE_KEYS } from '../services/changeWorkflow.js';
 import { logAudit } from '../services/auditLog.js';
 
 const router = Router();
@@ -311,6 +315,29 @@ router.delete('/routes/:id', (req, res) => {
   if (!route) return res.status(404).json({ error: 'Not found' });
   db.prepare('DELETE FROM change_approval_routes WHERE id = ?').run(route.id);
   res.json({ approval_routes: listRoutes(req.workspaceId, { includeDisabled: true }) });
+});
+
+// ---- Per-state field access -------------------------------------------
+// The grid that says which fields stay editable at each point in a change's
+// lifecycle. Read and written whole: a partial save would leave the admin
+// looking at a half-applied matrix.
+router.get('/field-policy', (req, res) => {
+  res.json({
+    policy: getFieldPolicy(req.workspaceId),
+    fields: GOVERNABLE_FIELDS,
+    states: STATE_KEYS.map((key) => ({ key, ...CHANGE_STATES[key] })),
+    access_levels: ACCESS_LEVELS,
+  });
+});
+
+router.put('/field-policy', (req, res) => {
+  try {
+    const policy = saveFieldPolicy(req.workspaceId, req.body?.policy || {});
+    logAudit(req, { action: 'change_field_policy.updated', entityType: 'change_config', entityId: 'field_policy' });
+    return res.json({ policy });
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
 });
 
 export default router;

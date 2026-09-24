@@ -163,7 +163,7 @@ export default function Tickets() {
   const [groups, setGroups] = useState([]);
   const [loadError, setLoadError] = useState('');
   const [sort, setSort] = useState(() => localStorage.getItem('itsm_ticket_sort') || 'updated');
-  const [visibleColumns, setVisibleColumns] = useState(() => new Set(JSON.parse(localStorage.getItem('itsm_ticket_columns') || '["type","status","priority","category","updated"]')));
+  const [visibleColumns, setVisibleColumns] = useState(() => new Set(JSON.parse(localStorage.getItem('itsm_ticket_columns') || '["type","status","priority","category","created","updated"]')));
   const [showCustomize, setShowCustomize] = useState(false);
   const navigate = useNavigate();
 
@@ -279,7 +279,7 @@ export default function Tickets() {
 
       {isAgent && <div className="flex flex-wrap items-center gap-2"><span className="text-xs font-semibold uppercase tracking-wide text-slate-400 mr-1">Work queues</span><button onClick={() => applyQueue('mine')} className="btn-secondary text-xs"><UserRoundCheck size={13} /> My work</button><button onClick={() => applyQueue('urgent')} className="btn-secondary text-xs"><AlertTriangle size={13} /> Critical</button><button onClick={() => applyQueue('waiting')} className="btn-secondary text-xs"><Inbox size={13} /> Awaiting customer</button><button onClick={() => applyQueue('unassigned')} className="btn-secondary text-xs"><Bookmark size={13} /> Unassigned</button></div>}
       {Object.entries(filters).some(([key, value]) => value && key !== 'q') && <div className="flex flex-wrap items-center gap-1.5 text-xs"><span className="text-slate-400">Active filters:</span>{Object.entries(filters).filter(([key, value]) => value && key !== 'q').map(([key, value]) => <button key={key} onClick={() => setFilters((current) => ({ ...current, [key]: '' }))} className="inline-flex items-center gap-1 rounded-full bg-brand-50 px-2 py-1 text-brand-700 dark:bg-brand-500/10 dark:text-brand-300">{key.replace('_id', '').replace('_', ' ')}: {value === 'unassigned' ? 'unassigned' : String(value).replace('_', ' ')} <X size={11} /></button>)}</div>}
-      {showCustomize && <div className="card-flat flex flex-wrap gap-3 p-3 text-xs text-slate-600 dark:text-slate-300">{['type', 'status', 'priority', 'category', 'updated'].map((column) => <label key={column} className="flex items-center gap-1.5 capitalize"><input type="checkbox" checked={visibleColumns.has(column)} onChange={() => toggleColumn(column)} /> {column}</label>)}</div>}
+      {showCustomize && <div className="card-flat flex flex-wrap gap-3 p-3 text-xs text-slate-600 dark:text-slate-300">{['type', 'status', 'priority', 'category', 'created', 'updated'].map((column) => <label key={column} className="flex items-center gap-1.5 capitalize"><input type="checkbox" checked={visibleColumns.has(column)} onChange={() => toggleColumn(column)} /> {column}</label>)}</div>}
 
       {isAgent && selectedTickets.length > 0 && (
         <BulkActionBar selectedTickets={selectedTickets} onClear={clearSelection} onDone={afterBulkAction} agents={agents} groups={groups} />
@@ -309,6 +309,7 @@ export default function Tickets() {
                 {visibleColumns.has('status') && <th className="text-left px-4 py-2.5 font-medium">Status</th>}
                 {visibleColumns.has('priority') && <th className="text-left px-4 py-2.5 font-medium">Priority</th>}
                 {visibleColumns.has('category') && <th className="text-left px-4 py-2.5 font-medium">Category</th>}
+                {visibleColumns.has('created') && <th className="text-left px-4 py-2.5 font-medium">Created</th>}
                 {visibleColumns.has('updated') && <th className="text-left px-4 py-2.5 font-medium">Updated</th>}
               </tr>
             </thead>
@@ -339,6 +340,7 @@ export default function Tickets() {
                   {visibleColumns.has('status') && <td className="px-4 py-2.5"><StatusBadge status={t.status} /></td>}
                   {visibleColumns.has('priority') && <td className="px-4 py-2.5"><PriorityBadge priority={t.priority} /></td>}
                   {visibleColumns.has('category') && <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">{t.category || '—'}</td>}
+                  {visibleColumns.has('created') && <td className="px-4 py-2.5 text-slate-400 text-xs whitespace-nowrap">{fmtDateTime(t.created_at)}</td>}
                   {visibleColumns.has('updated') && <td className="px-4 py-2.5 text-slate-400 text-xs" title={fmtDateTime(t.updated_at)}>{fmtRelative(t.updated_at)}</td>}
                 </RevealItem>
               ))}

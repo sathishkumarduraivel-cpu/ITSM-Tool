@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Check, ChevronDown, Search } from 'lucide-react';
@@ -27,6 +27,7 @@ export default function Select({
   const triggerRef = useRef(null);
   const panelRef = useRef(null);
   const searchRef = useRef(null);
+  const panelId = useId();
 
   const normalized = options.map((o) => (typeof o === 'string' || typeof o === 'number' ? { value: o, label: String(o) } : o));
   const shouldSearch = searchable ?? normalized.length > 8;
@@ -50,12 +51,37 @@ export default function Select({
 
   useEffect(() => {
     if (!open) return undefined;
+    // The panel is positioned against the VIEWPORT, not the document, and
+    // flips above the trigger when there isn't room below it. A dropdown near
+    // the bottom of the window used to open downwards off-screen, and because
+    // the panel is portaled to <body> there was often nothing left to scroll
+    // to reach it -- inside a modal or a fixed-height pane it was simply
+    // unreachable. Fixed positioning also means the same numbers work whether
+    // the page scrolls or an inner pane does; the scroll listener below
+    // re-measures either way so the panel stays glued to its trigger.
     const measure = () => {
       const rect = triggerRef.current.getBoundingClientRect();
+      const GAP = 6;
+      const EDGE = 12; // never let the panel touch the window edge
+      const spaceBelow = window.innerHeight - rect.bottom - GAP - EDGE;
+      const spaceAbove = rect.top - GAP - EDGE;
+      // Only flip when it genuinely buys more room, so a dropdown in the
+      // middle of the page keeps its usual downward behaviour.
+      const dropUp = spaceBelow < 200 && spaceAbove > spaceBelow;
+
+      const width = Math.max(rect.width, 180);
+      const rawLeft = align === 'right' ? rect.right - width : rect.left;
+      const left = Math.min(Math.max(EDGE, rawLeft), Math.max(EDGE, window.innerWidth - width - EDGE));
+
       setPos({
-        top: rect.bottom + window.scrollY + 6,
-        left: (align === 'right' ? rect.right - Math.max(rect.width, 180) : rect.left) + window.scrollX,
-        width: Math.max(rect.width, 180),
+        dropUp,
+        top: dropUp ? undefined : rect.bottom + GAP,
+        bottom: dropUp ? window.innerHeight - rect.top + GAP : undefined,
+        left,
+        width,
+        // Whatever room is actually available, so the list scrolls inside the
+        // panel instead of the panel spilling out of the window.
+        maxHeight: Math.min(288, Math.max(120, dropUp ? spaceAbove : spaceBelow)),
       });
     };
     measure();
@@ -138,12 +164,19 @@ export default function Select({
           {open && pos && (
             <motion.div
               ref={panelRef}
-              initial={{ opacity: 0, y: -6, scale: 0.97 }}
+              initial={{ opacity: 0, y: pos.dropUp ? 6 : -6, scale: 0.97 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: -6, scale: 0.97 }}
+              exit={{ opacity: 0, y: pos.dropUp ? 6 : -6, scale: 0.97 }}
               transition={{ type: 'spring', stiffness: 420, damping: 32 }}
-              style={{ position: 'absolute', top: pos.top, left: pos.left, minWidth: pos.width }}
-              className="z-[200] card shadow-popover dark:shadow-popover-dark p-1.5 max-h-72 overflow-y-auto"
+              style={{
+                position: 'fixed',
+                top: pos.top,
+                bottom: pos.bottom,
+                left: pos.left,
+                minWidth: pos.width,
+                maxHeight: pos.maxHeight,
+              }}
+              className="z-[200] card shadow-popover dark:shadow-popover-dark p-1.5 overflow-y-auto overscroll-contain"
             >
               {shouldSearch && (
                 <div className="flex items-center gap-1.5 px-2 py-1.5 mb-1 border-b border-slate-100 dark:border-slate-800">
@@ -172,7 +205,7 @@ export default function Select({
                 >
                   {i === highlighted && (
                     <motion.span
-                      layoutId={`select-highlight-${pos.top}`}
+                      layoutId={`select-highlight-${panelId}`}
                       className="absolute inset-0 rounded-lg bg-brand-50 dark:bg-brand-500/10"
                       transition={{ type: 'spring', stiffness: 500, damping: 36 }}
                     />

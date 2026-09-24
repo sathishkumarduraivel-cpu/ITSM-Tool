@@ -10,6 +10,7 @@ import { CHANGE_STATES, availableTransitions, transition, transitionHistory, cur
 import { openPir, updatePir, completePir, getPir, isPirRequired, outstandingPirs, OUTCOMES } from '../services/changePir.js';
 import { computeMetrics, stateCounts, monthlyTrend } from '../services/changeMetrics.js';
 import { logAudit } from '../services/auditLog.js';
+import { policyForState } from '../services/changeFieldPolicy.js';
 
 const router = Router();
 router.use(requireAuth, requireWorkspace);
@@ -69,6 +70,9 @@ function hydrate(workspaceId, ticket) {
     ticket,
     state: currentState(ticket),
     state_meta: CHANGE_STATES[currentState(ticket)],
+    // Which fields this change's current state still allows to be edited.
+    // The UI disables the rest; the ticket PATCH route refuses them outright.
+    field_policy: policyForState(workspaceId, currentState(ticket)),
     states: CHANGE_STATES,
     change_type: type,
     transitions: availableTransitions(workspaceId, ticket),
@@ -146,6 +150,15 @@ router.get('/:id', (req, res) => {
   const ticket = getChange(req.params.id, req.workspaceId);
   if (!ticket) return res.status(404).json({ error: 'Change not found' });
   res.json(hydrate(req.workspaceId, ticket));
+});
+
+// Just the field-access policy for this change's current state. A separate,
+// cheap read so the ticket form can grey out locked inputs without pulling
+// the whole workflow payload (approvals, tasks, history, evidence...).
+router.get('/:id/field-policy', (req, res) => {
+  const ticket = getChange(req.params.id, req.workspaceId);
+  if (!ticket) return res.status(404).json({ error: 'Change not found' });
+  res.json(policyForState(req.workspaceId, currentState(ticket)));
 });
 
 // ---- stage 2 & 3: validation, classification, risk -----------------------

@@ -7,7 +7,7 @@ import {
   AlertTriangle, Inbox, Search, GitBranch, Pencil, ShieldCheck, ShieldOff,
   Milestone, ToggleLeft, ToggleRight, RefreshCw, ArrowUp, ArrowDown, FileStack, Hash, KeyRound,
   History, Download, Filter, LogIn, Copy, Check, Webhook, AlertOctagon, UserCog, Server, Mail,
-  DatabaseBackup, FileJson, HardDrive, Bug, Siren, CalendarClock, Target, Radar,
+  DatabaseBackup, FileJson, HardDrive, Bug, Siren, CalendarClock, Target, Radar, Boxes,
 } from 'lucide-react';
 import { api, getStoredToken } from '../lib/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -25,6 +25,7 @@ import OnCallScheduleTab from '../components/admin/OnCallScheduleTab.jsx';
 import AssignmentPolicyTab from '../components/admin/AssignmentPolicyTab.jsx';
 import TicketFieldManagerTab from '../components/admin/TicketFieldManagerTab.jsx';
 import ChangeConfigTab from '../components/admin/ChangeConfigTab.jsx';
+import CmdbConfigTab from '../components/admin/CmdbConfigTab.jsx';
 
 // A section with no `permission` is admin-only and never delegable — user
 // management, workspace management, HR templates, and role definition itself
@@ -43,6 +44,7 @@ const SECTIONS = [
   { key: 'fieldManager', label: 'Field Manager', description: 'Every field on a ticket form, built-in and custom — categories, subcategories, priority, impact, risk and your own fields, with editable options, labels and colours', icon: ListChecks, permission: 'custom_fields.manage' },
   { key: 'workspaces', label: 'Workspaces', description: 'Add, rename or remove workspaces you belong to', icon: Layers },
   { key: 'changeConfig', label: 'Change Management', description: 'Change types, standard templates, risk scoring, freeze windows and CAB approval routing', icon: GitBranch, permission: 'change.manage' },
+  { key: 'cmdbConfig', label: 'CMDB Configuration', description: 'CI classes and their typed fields, relationship types, identification rules that stop duplicates, and the discovery sources allowed to write', icon: Boxes, permission: 'cmdb.manage' },
   { key: 'ticketNumbering', label: 'Ticket Numbering', description: 'Customize the id prefix each ticket type gets — INC, REQ, PRB, CHG, or your own', icon: Hash, permission: 'ticket_numbering.manage' },
   { key: 'hrCaseTemplates', label: 'Onboarding/Offboarding Templates', description: 'Reusable department checklists for the Onboarding & Offboarding module', icon: FileStack },
   { key: 'alertManagement', label: 'Alert Management', description: 'Take in alerts from monitoring tools and your own service desk data, collapse repeats, and turn the ones that matter into incidents', icon: Siren, permission: 'alerts.manage' },
@@ -69,7 +71,7 @@ const SECTION_GROUPS = [
   {
     key: 'automation', label: 'Process & Automation', icon: Workflow, accent: 'from-violet-400 to-violet-600',
     description: 'How tickets behave — workflows, conditional logic, stage gates and custom fields',
-    sectionKeys: ['workflows', 'emailConfig', 'businessRules', 'lifecycles', 'fieldManager', 'changeConfig'],
+    sectionKeys: ['workflows', 'emailConfig', 'businessRules', 'lifecycles', 'fieldManager', 'changeConfig', 'cmdbConfig'],
   },
   {
     key: 'workspace', label: 'Workspace Settings', icon: Layers, accent: 'from-amber-400 to-amber-600',
@@ -2518,9 +2520,15 @@ function RuleBuilderModal({ initialType, rule, onClose, onSaved }) {
               </div>
             </div>
 
-            <label className="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-300">
-              <input type="checkbox" checked={status === 'active'} onChange={(e) => setStatus(e.target.checked ? 'active' : 'inactive')} /> Active
-            </label>
+            {/* Same control as the rule list, so enabling a rule looks and
+                works the same whether you do it here or from the list. */}
+            <div className="flex items-center gap-2">
+              <span className="label mb-0">Rule status</span>
+              <RuleToggle
+                enabled={status === 'active'}
+                onChange={() => setStatus(status === 'active' ? 'inactive' : 'active')}
+              />
+            </div>
 
             <div>
               <div className="flex items-center justify-between mb-1.5">
@@ -2591,6 +2599,34 @@ function RuleBuilderModal({ initialType, rule, onClose, onSaved }) {
   );
 }
 
+// Enable / disable a rule without deleting it. This used to be the
+// Active/Inactive badge itself, which read as a status label rather than a
+// control -- nobody could tell it was clickable. A switch says "you can
+// change this", and the word next to it says which way it currently is.
+function RuleToggle({ enabled, onChange, labels = ['Enabled', 'Disabled'] }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={enabled}
+      onClick={onChange}
+      title={enabled ? 'Disable this rule' : 'Enable this rule'}
+      className="flex items-center gap-2 shrink-0 px-1.5 py-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+    >
+      <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+        enabled ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'
+      }`}>
+        <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+          enabled ? 'translate-x-4' : 'translate-x-0.5'
+        }`} />
+      </span>
+      <span className={`text-xs font-medium ${enabled ? 'text-emerald-700 dark:text-emerald-400' : 'text-slate-500 dark:text-slate-400'}`}>
+        {enabled ? labels[0] : labels[1]}
+      </span>
+    </button>
+  );
+}
+
 // One ticket type's own Business Rules manager — a list of named rules,
 // sorted by priority, each summarizing its own IF/THEN in plain language.
 function TypeRuleManager({ type, onBack }) {
@@ -2654,22 +2690,20 @@ function TypeRuleManager({ type, onBack }) {
         <div className="card divide-y divide-slate-100 dark:divide-slate-800">
           {rules.map((rule) => (
             <div key={rule.id} className="flex items-start gap-3 px-4 py-3">
-              <div className="flex-1 min-w-0">
+              {/* A disabled rule stays listed but reads as switched off, so
+                  "why isn't this firing?" is answerable at a glance. */}
+              <div className={`flex-1 min-w-0 ${rule.status === 'active' ? '' : 'opacity-55'}`}>
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-sm font-medium text-slate-700 dark:text-slate-200">{rule.name}</span>
                   <span className="badge bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">priority {rule.priority}</span>
-                  <button
-                    type="button"
-                    onClick={() => toggleStatus(rule)}
-                    className={`badge ${rule.status === 'active' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'}`}
-                    title="Click to toggle"
-                  >
-                    {rule.status === 'active' ? 'Active' : 'Inactive'}
-                  </button>
                 </div>
                 <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">IF {describeConditions(rule.conditions)}</div>
                 <div className="text-xs text-slate-500 dark:text-slate-400">THEN {describeActions(rule.actions)}</div>
               </div>
+              <RuleToggle
+                enabled={rule.status === 'active'}
+                onChange={() => toggleStatus(rule)}
+              />
               <button type="button" onClick={() => setModalRule(rule)} className="text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors" title="Edit rule">
                 <Pencil size={14} />
               </button>
@@ -3303,6 +3337,7 @@ export default function AdminSettings() {
           {section === 'emailConfig' && <EmailConfigTab />}
           {section === 'fieldManager' && <TicketFieldManagerTab />}
           {section === 'changeConfig' && <ChangeConfigTab />}
+          {section === 'cmdbConfig' && <CmdbConfigTab />}
           {section === 'businessRules' && <BusinessRulesHub />}
           {section === 'lifecycles' && <LifecycleHub />}
           {section === 'hrCaseTemplates' && <HrCaseTemplatesTab />}

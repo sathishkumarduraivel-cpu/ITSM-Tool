@@ -18,6 +18,7 @@ import { pushToLinkedConnections, createExternalTicket, linkExistingTicket, push
 import { evaluateEscalationsSafely } from '../services/escalationEngine.js';
 import { autoAssignSafely } from '../services/assignmentEngine.js';
 import { reconcileSubcategories, listTaxonomy } from '../services/ticketCategories.js';
+import { checkEdit as checkChangeFieldEdit } from '../services/changeFieldPolicy.js';
 import { withComputed } from '../services/majorIncidents.js';
 import { broadcastToWorkspace } from '../services/realtime.js';
 import { logAudit } from '../services/auditLog.js';
@@ -428,6 +429,13 @@ router.patch('/:id', (req, res) => {
   if (ticket.type === 'change' && req.body.status === 'in_progress' && ticket.cab_status !== 'approved') {
     return res.status(409).json({ error: 'This change is not yet CAB-approved. It cannot move to in_progress until approval is granted.' });
   }
+
+  // Per-state field access: a change that has been approved or is in flight
+  // locks the fields the approval was given against. Configured in Change
+  // Configuration -> Field access, and enforced here rather than only in the
+  // UI, because a disabled input stops nobody with an API client.
+  const lockedEdit = checkChangeFieldEdit(req.workspaceId, ticket, req.body);
+  if (lockedEdit) return res.status(409).json({ error: lockedEdit.error, locked_fields: lockedEdit.fields });
 
   if (req.body.type !== undefined && !['incident', 'request', 'problem', 'change'].includes(req.body.type)) {
     return res.status(400).json({ error: 'type must be one of: incident, request, problem, change' });

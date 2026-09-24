@@ -30,6 +30,12 @@ export const PERMISSIONS = [
   { key: 'alerts.manage', group: 'Operations', label: 'Manage alert sources, rules & monitors' },
   { key: 'oncall.manage', group: 'Operations', label: 'Manage on-call schedules, rotations & overrides' },
   { key: 'assignment.manage', group: 'Operations', label: 'Manage assignment policies & agent availability' },
+  // The CMDB model -- CI classes and their attributes -- is delegable for the
+  // same reason: whoever owns the estate should be able to shape how it is
+  // described without being made a full admin. It reaches no credential and
+  // grants no permission. Editing individual CIs is NOT gated on this; that
+  // stays with the ordinary agent asset permissions.
+  { key: 'cmdb.manage', group: 'Operations', label: 'Manage the CMDB model — CI classes & attributes' },
   { key: 'automations.manage', group: 'Automation', label: 'Manage workflow automations' },
   { key: 'business_rules.manage', group: 'Automation', label: 'Manage business rules' },
   { key: 'lifecycles.manage', group: 'Automation', label: 'Manage ticket lifecycles & stages' },

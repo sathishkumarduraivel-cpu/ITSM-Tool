@@ -66,7 +66,14 @@ async function request(path, { method = 'GET', body, headers = {} } = {}) {
   if (!resp.ok) {
     const message = data?.error || `Request failed (${resp.status})`;
     notifyError(message);
-    throw new Error(message);
+    // The whole response body travels with the error, not just its message.
+    // Several endpoints answer a 400 with the specific fields at fault
+    // (field_errors, locked_fields); without this the caller can only show
+    // one generic sentence and the user is left guessing which box is wrong.
+    const err = new Error(message);
+    err.status = resp.status;
+    err.body = data;
+    throw err;
   }
   return data;
 }

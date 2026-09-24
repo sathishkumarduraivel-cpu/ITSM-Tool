@@ -28,6 +28,10 @@ import authRoutes from './routes/auth.js';
 import workspaceRoutes from './routes/workspaces.js';
 import ticketRoutes from './routes/tickets.js';
 import assetRoutes from './routes/assets.js';
+import cmdbConfigRoutes from './routes/cmdbConfig.js';
+import cmdbRoutes from './routes/cmdb.js';
+import discoveryRoutes from './routes/discovery.js';
+import itamRoutes from './routes/itam.js';
 import kbRoutes from './routes/kb.js';
 import automationRoutes from './routes/automations.js';
 import aiRoutes from './routes/ai.js';
@@ -176,6 +180,10 @@ app.use('/api/auth', authRoutes);
 app.use('/api/workspaces', workspaceRoutes);
 app.use('/api/tickets', ticketRoutes);
 app.use('/api/assets', assetRoutes);
+app.use('/api/cmdb-config', cmdbConfigRoutes);
+app.use('/api/cmdb', cmdbRoutes);
+app.use('/api/discovery', discoveryRoutes);
+app.use('/api/itam', itamRoutes);
 app.use('/api/kb', kbRoutes);
 app.use('/api/automations', automationRoutes);
 app.use('/api/ai', aiRoutes);
@@ -232,7 +240,13 @@ app.use('/api/webhooks/alerts', alertWebhookRoutes);
 // unmatched API path still falls through to a real 404, not index.html.
 const webDist = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'web', 'dist');
 if (fs.existsSync(webDist)) {
-  app.use(express.static(webDist));
+  // `redirect: false` matters: Vite emits its bundles into dist/assets, and
+  // the app also has a page at /assets. Without this, express.static sees a
+  // directory of that name and 301s /assets -> /assets/ before the SPA route
+  // ever gets a look at it. Turning the directory redirect off lets the page
+  // request fall through to the catch-all below, while the real bundle URLs
+  // (/assets/index-*.js) are files and still serve directly.
+  app.use(express.static(webDist, { redirect: false }));
   app.get('*', (req, res, next) => {
     if (req.path.startsWith('/api')) return next();
     res.sendFile(path.join(webDist, 'index.html'));

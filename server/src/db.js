@@ -1690,6 +1690,337 @@ CREATE TABLE IF NOT EXISTS internal_alert_monitors (
   last_triggered_at TEXT,
   created_at TEXT DEFAULT (datetime('now'))
 );
+
+-- ---- CMDB: configuration item classes ----
+-- A CI class decides what an "assets" row MEANS. The table stays "assets"
+-- because renaming it would churn its FK referrers and every consumer for no
+-- functional gain -- a row with class "business_service" is a CI that nobody
+-- owns and nothing depreciates, and a row with class "endpoint" is a laptop.
+-- "is_asset" is what separates the two: ownership, warranty and financial
+-- fields are only meaningful (and only surfaced) when it is set.
+CREATE TABLE IF NOT EXISTS ci_classes (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  key TEXT NOT NULL,                    -- stable slug; referenced by stored CIs and never changes after creation
+  label TEXT NOT NULL,
+  plural_label TEXT,
+  description TEXT,
+  parent_class_id TEXT,                 -- attributes are inherited down this chain
+  icon TEXT,
+  color TEXT,
+  is_asset INTEGER DEFAULT 1,           -- ownership / warranty / financial fields apply
+  is_abstract INTEGER DEFAULT 0,        -- a grouping node: real CIs cannot be created on it
+  sort_order INTEGER DEFAULT 0,
+  enabled INTEGER DEFAULT 1,
+  system INTEGER DEFAULT 0,             -- seeded default: the key is frozen and it cannot be deleted
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(workspace_id, key),
+  FOREIGN KEY (parent_class_id) REFERENCES ci_classes(id) ON DELETE SET NULL
+);
+
+-- The per-class typed schema. This is the Field Manager idea applied to the
+-- CMDB: an admin adds "hypervisor" to the Virtual Machine class and every VM
+-- gains a validated, referenceable field without a migration.
+CREATE TABLE IF NOT EXISTS ci_class_attributes (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  class_id TEXT NOT NULL,
+  attr_key TEXT NOT NULL,               -- stable slug, unique within the class; a child class may redeclare a parent's key to override it
+  label TEXT NOT NULL,
+  data_type TEXT NOT NULL DEFAULT 'text', -- text|textarea|number|integer|date|datetime|boolean|select|multiselect|reference|ip|url|email
+  options TEXT,                         -- JSON array of strings, for select/multiselect
+  reference_class_id TEXT,              -- for data_type='reference': which class the target CI must belong to
+  unit TEXT,                            -- display suffix: GB, %, hours
+  required INTEGER DEFAULT 0,
+  is_identifier INTEGER DEFAULT 0,      -- participates in CI identification / dedupe
+  default_value TEXT,
+  min_value REAL,
+  max_value REAL,
+  pattern TEXT,                         -- regex, applied to text-ish types
+  help_text TEXT,
+  sort_order INTEGER DEFAULT 0,
+  enabled INTEGER DEFAULT 1,
+  system INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(workspace_id, class_id, attr_key),
+  FOREIGN KEY (class_id) REFERENCES ci_classes(id) ON DELETE CASCADE,
+  FOREIGN KEY (reference_class_id) REFERENCES ci_classes(id) ON DELETE SET NULL
+);
+
+-- EAV, deliberately mirroring ticket_custom_field_values: one row per CI per
+-- attribute, values stored as text and JSON-encoded for multiselect.
+CREATE TABLE IF NOT EXISTS ci_attribute_values (
+  id TEXT PRIMARY KEY,
+  ci_id TEXT NOT NULL,
+  attribute_id TEXT NOT NULL,
+  value TEXT,
+  source TEXT DEFAULT 'manual',         -- manual | import | discovery:<source key>
+  updated_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (ci_id) REFERENCES assets(id) ON DELETE CASCADE,
+  FOREIGN KEY (attribute_id) REFERENCES ci_class_attributes(id) ON DELETE CASCADE,
+  UNIQUE(ci_id, attribute_id)
+);
+
+-- Lookups by value drive identification and "find every CI where os = X",
+-- both of which start from the attribute rather than the CI.
+CREATE INDEX IF NOT EXISTS idx_ci_attr_values_attr ON ci_attribute_values(attribute_id, value);
+CREATE INDEX IF NOT EXISTS idx_ci_attr_values_ci ON ci_attribute_values(ci_id);
+CREATE INDEX IF NOT EXISTS idx_ci_classes_parent ON ci_classes(parent_class_id);
+CREATE INDEX IF NOT EXISTS idx_ci_class_attributes_class ON ci_class_attributes(class_id);
+
+-- ---- CMDB: relationship types ----
+-- The existing three hard-coded strings (depends_on, hosted_on,
+-- connected_to) become rows, and gain the two things a graph needs to be
+-- traversable in a meaningful direction:
+--
+--   inverse_label -- so one stored edge reads correctly from both ends
+--                    ("app-01 runs on esx-04" / "esx-04 hosts app-01")
+--   is_dependency -- so impact analysis knows which edges actually propagate
+--                    failure. A peer link like "connected to" is a fact about
+--                    the estate, not a path an outage travels down.
+--
+-- An edge is stored as (asset_id -> related_asset_id) meaning asset_id
+-- DEPENDS ON related_asset_id, which is the direction blastRadius.js already
+-- assumed; impact therefore flows the other way, from target to source.
+CREATE TABLE IF NOT EXISTS ci_relationship_types (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  key TEXT NOT NULL,
+  label TEXT NOT NULL,                  -- reading source -> target
+  inverse_label TEXT NOT NULL,          -- reading target -> source
+  description TEXT,
+  is_dependency INTEGER DEFAULT 1,      -- failure propagates target -> source
+  is_containment INTEGER DEFAULT 0,     -- target physically or logically contains source
+  allowed_source_classes TEXT,          -- JSON array of class ids; null = any
+  allowed_target_classes TEXT,
+  color TEXT,
+  sort_order INTEGER DEFAULT 0,
+  enabled INTEGER DEFAULT 1,
+  system INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(workspace_id, key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_asset_rel_source ON asset_relationships(asset_id);
+CREATE INDEX IF NOT EXISTS idx_asset_rel_target ON asset_relationships(related_asset_id);
+
+-- ---- CMDB: discovery, identification and drift ----
+-- Each source carries a trust rank. When two sources disagree about the same
+-- attribute the higher rank wins and the loser is recorded as a rejected
+-- write rather than silently dropped -- "which tool keeps trying to change
+-- this, and why" is the question that actually gets a CMDB trusted.
+CREATE TABLE IF NOT EXISTS discovery_sources (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  key TEXT NOT NULL,                    -- stable slug used in the ingest URL
+  name TEXT NOT NULL,
+  description TEXT,
+  ingest_secret TEXT,                   -- compared timing-safely; write-only over the API
+  trust_rank INTEGER NOT NULL DEFAULT 50, -- 0-100; higher wins a conflict
+  enabled INTEGER DEFAULT 1,
+  allow_create INTEGER DEFAULT 1,       -- may this source bring NEW CIs into existence
+  default_class_id TEXT,                -- used when a payload does not name a class
+  last_ingest_at TEXT,
+  last_ingest_count INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(workspace_id, key),
+  FOREIGN KEY (default_class_id) REFERENCES ci_classes(id) ON DELETE SET NULL
+);
+
+-- Which attributes identify a CI of a given class. This is the dedupe engine:
+-- a CMDB without one accumulates duplicates until nobody trusts it. Rules are
+-- tried in priority order, so "serial number" can be preferred over the
+-- weaker "hostname + domain" composite.
+CREATE TABLE IF NOT EXISTS ci_identification_rules (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  class_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  attr_keys TEXT NOT NULL,              -- JSON array; ALL must match for the rule to hit
+  priority INTEGER NOT NULL DEFAULT 100, -- lower is tried first
+  enabled INTEGER DEFAULT 1,
+  system INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (class_id) REFERENCES ci_classes(id) ON DELETE CASCADE
+);
+
+-- Every attribute change, with what set it. Drift audit, and the evidence
+-- behind a rejected lower-trust write.
+CREATE TABLE IF NOT EXISTS ci_attribute_history (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  ci_id TEXT NOT NULL,
+  attribute_id TEXT,
+  attr_key TEXT NOT NULL,               -- kept denormalised so history survives the field being deleted
+  old_value TEXT,
+  new_value TEXT,
+  source TEXT NOT NULL DEFAULT 'manual',
+  accepted INTEGER NOT NULL DEFAULT 1,  -- 0 = refused because a higher-trust source owns the value
+  reason TEXT,
+  changed_by TEXT,
+  changed_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (ci_id) REFERENCES assets(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_ci_attr_history_ci ON ci_attribute_history(ci_id, changed_at);
+CREATE INDEX IF NOT EXISTS idx_ci_ident_rules_class ON ci_identification_rules(class_id, priority);
+
+-- Which source last wrote each attribute value, so a conflict can be judged
+-- without walking the whole history table.
+CREATE TABLE IF NOT EXISTS ci_attribute_provenance (
+  ci_id TEXT NOT NULL,
+  attribute_id TEXT NOT NULL,
+  source_key TEXT NOT NULL,
+  trust_rank INTEGER NOT NULL DEFAULT 0,
+  written_at TEXT DEFAULT (datetime('now')),
+  PRIMARY KEY (ci_id, attribute_id),
+  FOREIGN KEY (ci_id) REFERENCES assets(id) ON DELETE CASCADE
+);
+
+-- ---- Change lifecycle: per-state field access ----
+-- Which fields a change can still have edited, at each point in its own
+-- lifecycle. An approved change whose implementation plan is still freely
+-- editable has not really been approved -- this is the table that makes the
+-- approval mean something.
+--
+-- Deliberately separate from Business Rules: those decide whether a field is
+-- VISIBLE and what it must contain based on other field values; this decides
+-- whether it can still be CHANGED based on where the change has got to.
+-- Absence of a row means editable, so an empty table behaves exactly as the
+-- product did before this existed.
+CREATE TABLE IF NOT EXISTS change_state_field_rules (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  state_key TEXT NOT NULL,              -- a key from CHANGE_STATES in services/changeWorkflow.js
+  field_key TEXT NOT NULL,
+  access TEXT NOT NULL DEFAULT 'editable', -- editable | readonly | required
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(workspace_id, state_key, field_key)
+);
+
+-- ---- ITAM: custody, money and licences ----
+-- Who has had this asset, and who has it now. The current holder is also on
+-- assets.owner_id for cheap reads; this table is the history behind it, which
+-- is what an audit or a leaver process actually needs.
+CREATE TABLE IF NOT EXISTS asset_assignments (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  asset_id TEXT NOT NULL,
+  user_id TEXT,                          -- null when issued to a place or a team rather than a person
+  assigned_to_label TEXT,                -- free text for the non-user case
+  assigned_at TEXT DEFAULT (datetime('now')),
+  assigned_by TEXT,
+  returned_at TEXT,                      -- null = still out
+  returned_to TEXT,
+  condition_out TEXT,
+  condition_in TEXT,
+  notes TEXT,
+  FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_asset_assignments_asset ON asset_assignments(asset_id, assigned_at);
+CREATE INDEX IF NOT EXISTS idx_asset_assignments_open ON asset_assignments(asset_id, returned_at);
+
+-- The money. Kept off the assets table because most CIs are not assets at all
+-- and would carry a dozen permanently null columns.
+CREATE TABLE IF NOT EXISTS asset_financials (
+  asset_id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  purchase_cost REAL,
+  currency TEXT DEFAULT 'USD',
+  purchase_date TEXT,
+  in_service_date TEXT,                  -- depreciation starts here, not at purchase
+  useful_life_months INTEGER,
+  salvage_value REAL DEFAULT 0,
+  depreciation_method TEXT DEFAULT 'straight_line', -- straight_line | declining_balance | none
+  cost_centre TEXT,
+  budget_code TEXT,
+  supplier TEXT,
+  invoice_number TEXT,
+  contract_id TEXT,
+  purchase_order_id TEXT,
+  annual_support_cost REAL,
+  disposal_date TEXT,
+  disposal_value REAL,
+  disposal_method TEXT,
+  updated_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE,
+  FOREIGN KEY (contract_id) REFERENCES contracts(id) ON DELETE SET NULL,
+  FOREIGN KEY (purchase_order_id) REFERENCES purchase_orders(id) ON DELETE SET NULL
+);
+
+-- Software licensing. A product is what you buy entitlements to; an
+-- installation is a place it is actually running. Compliance is the
+-- comparison between the two, per product.
+CREATE TABLE IF NOT EXISTS software_products (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  publisher TEXT,
+  edition TEXT,
+  licensing_metric TEXT NOT NULL DEFAULT 'per_device', -- per_device | per_user | per_core | per_socket | concurrent | subscription | free
+  ci_id TEXT,                            -- the Software Product CI this mirrors, when there is one
+  notes TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(workspace_id, name, edition),
+  FOREIGN KEY (ci_id) REFERENCES assets(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS license_entitlements (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  product_id TEXT NOT NULL,
+  quantity INTEGER NOT NULL DEFAULT 0,
+  license_key TEXT,
+  purchase_date TEXT,
+  expiry_date TEXT,                      -- null = perpetual
+  unit_cost REAL,
+  currency TEXT DEFAULT 'USD',
+  contract_id TEXT,
+  purchase_order_id TEXT,
+  notes TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (product_id) REFERENCES software_products(id) ON DELETE CASCADE,
+  FOREIGN KEY (contract_id) REFERENCES contracts(id) ON DELETE SET NULL,
+  FOREIGN KEY (purchase_order_id) REFERENCES purchase_orders(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS software_installations (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  product_id TEXT NOT NULL,
+  ci_id TEXT,                            -- the device it is installed on
+  user_id TEXT,                          -- the person it is assigned to, for per-user metrics
+  version TEXT,
+  discovered_at TEXT DEFAULT (datetime('now')),
+  last_seen_at TEXT,
+  source TEXT DEFAULT 'manual',
+  UNIQUE(workspace_id, product_id, ci_id, user_id),
+  FOREIGN KEY (product_id) REFERENCES software_products(id) ON DELETE CASCADE,
+  FOREIGN KEY (ci_id) REFERENCES assets(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_software_installs_product ON software_installations(product_id);
+CREATE INDEX IF NOT EXISTS idx_license_entitlements_product ON license_entitlements(product_id);
+
+-- The asset lifecycle, separate from the CI's operational status. An asset
+-- can be "in stock" (a lifecycle fact about ownership) while the CI it
+-- represents is simply not running yet.
+CREATE TABLE IF NOT EXISTS asset_lifecycle_events (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  asset_id TEXT NOT NULL,
+  from_state TEXT,
+  to_state TEXT NOT NULL,
+  reason TEXT,
+  actor_id TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_asset_lifecycle_asset ON asset_lifecycle_events(asset_id, created_at);
 `);
 
 // Additive migrations for columns introduced after the initial tickets table
@@ -1751,6 +2082,20 @@ const ticketColumnMigrations = [
   "ALTER TABLE users ADD COLUMN active INTEGER DEFAULT 1",
   "ALTER TABLE tickets ADD COLUMN workspace_id TEXT",
   "ALTER TABLE assets ADD COLUMN workspace_id TEXT",
+  // CMDB: which CI class this row is. Nullable because every asset that
+  // predates classes is still a valid asset; ciClasses.js resolves a null
+  // class from the legacy `type` column so nothing has to be backfilled.
+  "ALTER TABLE assets ADD COLUMN class_id TEXT",
+  // The asset lifecycle, which is about ownership and custody, is separate
+  // from assets.status, which is about whether the thing is running.
+  "ALTER TABLE assets ADD COLUMN lifecycle_state TEXT DEFAULT 'in_stock'",
+  // CMDB relationships become typed rows rather than a free-text string.
+  // relationship_type is kept alongside so existing edges still read, and
+  // so an edge whose type was deleted degrades to its old label instead of
+  // vanishing from the graph.
+  "ALTER TABLE asset_relationships ADD COLUMN type_id TEXT",
+  "ALTER TABLE asset_relationships ADD COLUMN description TEXT",
+  "ALTER TABLE asset_relationships ADD COLUMN source TEXT DEFAULT 'manual'",
   "ALTER TABLE kb_articles ADD COLUMN workspace_id TEXT",
   "ALTER TABLE automations ADD COLUMN workspace_id TEXT",
   "ALTER TABLE integrations ADD COLUMN workspace_id TEXT",
@@ -1929,6 +2274,124 @@ for (const sql of ticketColumnMigrations) {
     // column already exists — ignore
   }
 }
+
+// ---- Tenant-scoping a globally-UNIQUE column (idempotent) ----------------
+// Three workspace-scoped tables were declared with a column-level UNIQUE that
+// is global rather than per workspace: tickets.number, assets.tag and
+// purchase_orders.po_number. Because ticket numbering restarts per workspace,
+// two tenants both produce INC-1000 and the second tenant's very first ticket
+// fails to insert -- multi-workspace was effectively broken for tickets.
+//
+// SQLite creates an implicit sqlite_autoindex for a column-level UNIQUE, and
+// that index cannot be dropped. The only fix is the table rebuild recipe from
+// SQLite's "Making Other Kinds Of Table Schema Changes", which is what this
+// does -- reading the live shape from pragma rather than hardcoding a CREATE
+// TABLE, so it survives the ~30 columns already added to tickets by migration
+// and anything added later.
+//
+// Idempotent: the table's own CREATE TABLE text is the signal. Once the
+// column-level UNIQUE is gone from it this is a no-op, which is what makes it
+// safe to run on every boot.
+function retenantUniqueColumn(table, column) {
+  const row = rawDb.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name = ?").get(table);
+  if (!row?.sql) return; // table not created yet
+
+  // Is there still a single-column unique index on this column alone?
+  // Inspecting the actual index beats parsing the CREATE TABLE text: it is
+  // what SQLite really enforces, and the composite index this migration
+  // creates (two columns) can never be mistaken for it.
+  let stillGloballyUnique = false;
+  for (const ix of rawDb.prepare('SELECT name FROM pragma_index_list(?) WHERE "unique" = 1').all(table)) {
+    const parts = rawDb.prepare('SELECT name FROM pragma_index_info(?)').all(ix.name);
+    if (parts.length === 1 && parts[0].name === column) { stillGloballyUnique = true; break; }
+  }
+  if (!stillGloballyUnique) return; // already rebuilt
+
+  const cols = rawDb.prepare('SELECT name, type, "notnull" nn, dflt_value dv, pk FROM pragma_table_info(?)').all(table);
+  if (!cols.some((c) => c.name === 'workspace_id')) return; // nothing to scope by
+  const fks = rawDb.prepare('SELECT id, seq, "table" ref_table, "from" ref_from, "to" ref_to, on_update, on_delete FROM pragma_foreign_key_list(?)').all(table);
+
+  // Named indexes and triggers are dropped with the table, so capture their
+  // DDL to replay afterwards. Autoindexes have a NULL sql and are recreated by
+  // the new table definition itself.
+  const namedIndexes = rawDb.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name = ? AND sql IS NOT NULL").all(table);
+  const triggers = rawDb.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND tbl_name = ?").all(table);
+
+  const pkCols = cols.filter((c) => c.pk > 0).sort((a, b) => a.pk - b.pk).map((c) => c.name);
+  const defs = cols.map((c) => {
+    let def = '  ' + c.name + ' ' + (c.type || 'TEXT');
+    // A single-column PK is declared inline; a composite one becomes a table
+    // constraint below.
+    if (pkCols.length === 1 && c.pk === 1) def += ' PRIMARY KEY';
+    if (c.nn) def += ' NOT NULL';
+    if (c.dv !== null && c.dv !== undefined) {
+      // pragma_table_info reports DEFAULT (datetime('now')) as the bare
+      // expression, but a function-call default is only legal in a CREATE
+      // TABLE when parenthesised -- so put them back. Wrapping a plain
+      // literal is harmless and keeps this one branch.
+      const dv = String(c.dv);
+      def += dv.startsWith('(') ? ' DEFAULT ' + dv : ' DEFAULT (' + dv + ')';
+    }
+    return def;
+  });
+
+  if (pkCols.length > 1) defs.push('  PRIMARY KEY (' + pkCols.join(', ') + ')');
+  defs.push('  UNIQUE(workspace_id, ' + column + ')'); // the point of the exercise
+
+  const byFk = new Map();
+  for (const fk of fks) {
+    if (!byFk.has(fk.id)) byFk.set(fk.id, []);
+    byFk.get(fk.id).push(fk);
+  }
+  for (const parts of byFk.values()) {
+    const ordered = parts.sort((a, b) => a.seq - b.seq);
+    let clause = '  FOREIGN KEY (' + ordered.map((p) => p.ref_from).join(', ')
+      + ') REFERENCES ' + ordered[0].ref_table + '(' + ordered.map((p) => p.ref_to).join(', ') + ')';
+    if (ordered[0].on_update && ordered[0].on_update !== 'NO ACTION') clause += ' ON UPDATE ' + ordered[0].on_update;
+    if (ordered[0].on_delete && ordered[0].on_delete !== 'NO ACTION') clause += ' ON DELETE ' + ordered[0].on_delete;
+    defs.push(clause);
+  }
+
+  const columnList = cols.map((c) => c.name).join(', ');
+  const before = rawDb.prepare('SELECT COUNT(*) c FROM ' + table).get().c;
+  const tmp = table + '__retenant';
+
+  // foreign_keys cannot be toggled inside a transaction, so it brackets it.
+  rawDb.exec('PRAGMA foreign_keys = OFF');
+  try {
+    rawDb.exec('BEGIN');
+    rawDb.exec('DROP TABLE IF EXISTS ' + tmp);
+    rawDb.exec('CREATE TABLE ' + tmp + ' (\n' + defs.join(',\n') + '\n)');
+    rawDb.exec('INSERT INTO ' + tmp + ' (' + columnList + ') SELECT ' + columnList + ' FROM ' + table);
+    rawDb.exec('DROP TABLE ' + table);
+    // Modern SQLite rewrites other tables' REFERENCES clauses on RENAME, so
+    // the dependants follow automatically -- verified below.
+    rawDb.exec('ALTER TABLE ' + tmp + ' RENAME TO ' + table);
+    for (const idx of namedIndexes) rawDb.exec(idx.sql);
+    for (const trg of triggers) rawDb.exec(trg.sql);
+
+    const after = rawDb.prepare('SELECT COUNT(*) c FROM ' + table).get().c;
+    if (after !== before) throw new Error('row count changed during rebuild: ' + before + ' -> ' + after);
+    const violations = rawDb.prepare('PRAGMA foreign_key_check').all();
+    if (violations.length) throw new Error(violations.length + ' foreign key violation(s) after rebuild');
+
+    rawDb.exec('COMMIT');
+    console.log('[db] ' + table + '.' + column + ' is now unique per workspace, not globally (' + before + ' rows preserved)');
+  } catch (e) {
+    try { rawDb.exec('ROLLBACK'); } catch { /* already rolled back */ }
+    console.error('[db] could not tenant-scope ' + table + '.' + column + ':', e.message);
+    // A migration that fails opaquely is unfixable in production, so the
+    // statement it choked on goes in the log with it.
+    console.error('[db] generated definition was:', defs.join(', '));
+    throw e;
+  } finally {
+    rawDb.exec('PRAGMA foreign_keys = ON');
+  }
+}
+
+retenantUniqueColumn('tickets', 'number');
+retenantUniqueColumn('assets', 'tag');
+retenantUniqueColumn('purchase_orders', 'po_number');
 
 export function uid(prefix = '') {
   const rand = Math.random().toString(36).slice(2, 10);

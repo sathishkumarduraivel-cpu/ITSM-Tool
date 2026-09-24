@@ -334,6 +334,7 @@ export default function TicketDetail() {
   const [taxonomy, setTaxonomy] = useState([]);
   const [fieldMeta, setFieldMeta] = useState(null);
   const [changeMeta, setChangeMeta] = useState(null);
+  const [fieldPolicy, setFieldPolicy] = useState(null);
 
   // Every field edit below is staged here, not sent to the server, until the
   // agent explicitly clicks Update -- one PATCH applies everything at once
@@ -489,6 +490,16 @@ export default function TicketDetail() {
     if (ticket?.type !== 'change') { setChangeMeta(null); return; }
     api.get('/changes/meta').then(setChangeMeta).catch(() => setChangeMeta(null));
   }, [ticket?.type]);
+
+  // Which fields this change's current state still allows to be edited,
+  // configured in Change Configuration -> Field Access. Re-read whenever the
+  // change moves state, because that is exactly when the answer changes.
+  // The server refuses a locked edit regardless; this only stops an agent
+  // typing into a box that was never going to save.
+  useEffect(() => {
+    if (ticket?.type !== 'change') { setFieldPolicy(null); return; }
+    api.get(`/changes/${ticket.id}/field-policy`).then(setFieldPolicy).catch(() => setFieldPolicy(null));
+  }, [ticket?.type, ticket?.id, ticket?.change_state]);
 
   const setDraftField = (field, value) => setDraft((d) => ({ ...d, [field]: value }));
   const setDraftCustomField = (key, value) => setDraftCustom((d) => ({ ...d, [key]: value }));
@@ -725,6 +736,16 @@ export default function TicketDetail() {
   };
   const fieldRules = useBusinessRules(ticket?.type, liveTicketValues);
 
+  // Locked by the change's own lifecycle state, as distinct from hidden by a
+  // Business Rule. A locked field stays visible and still shows its value --
+  // read-only, not gone -- because "what was approved" is the thing people
+  // come back to look at.
+  const lockedFields = new Set(fieldPolicy?.readonly || []);
+  const isLocked = (field) => lockedFields.has(field);
+  const lockTitle = (field) => (isLocked(field)
+    ? `Locked while this change is ${fieldPolicy?.state_label || 'in this state'}`
+    : undefined);
+
   usePageTitle(ticket ? `${ticket.number} — ${ticket.title}` : null);
 
   if (!ticket) return <div className="text-slate-400 text-sm py-20 text-center">Loading ticket…</div>;
@@ -833,6 +854,27 @@ export default function TicketDetail() {
               )}
             </div>
             <h1 className="text-xl font-semibold text-slate-800 dark:text-slate-100">{ticket.title}</h1>
+            {/* When a ticket was raised is the first thing anyone asks about
+                it, and until now the page only showed it on individual
+                comments. Created is absolute because "3 weeks ago" is not an
+                answer you can put in a report; updated stays relative because
+                what matters there is how stale the ticket is, with the exact
+                time on hover. */}
+            <div className="mt-1.5 flex items-center gap-3 flex-wrap text-xs text-slate-400">
+              <span className="flex items-center gap-1">
+                <Clock size={12} /> Created {fmtDateTime(ticket.created_at)}
+              </span>
+              {ticket.updated_at && ticket.updated_at !== ticket.created_at && (
+                <span title={fmtDateTime(ticket.updated_at)}>
+                  Updated {fmtRelative(ticket.updated_at)}
+                </span>
+              )}
+              {ticket.resolved_at && (
+                <span title={fmtDateTime(ticket.resolved_at)}>
+                  Resolved {fmtRelative(ticket.resolved_at)}
+                </span>
+              )}
+            </div>
           </div>
         </div>
 
@@ -1165,6 +1207,20 @@ export default function TicketDetail() {
                 </p>
               )}
 
+              {/* Greyed-out inputs with no explanation read as a bug. Say
+                  which state locked them and how many, so the agent knows
+                  this is policy rather than something broken. */}
+              {lockedFields.size > 0 && (
+                <p className="flex items-start gap-1.5 rounded-lg bg-slate-100 px-2.5 py-1.5 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                  <Lock size={12} className="mt-0.5 shrink-0" />
+                  <span>
+                    {lockedFields.size} field{lockedFields.size === 1 ? ' is' : 's are'} locked while this change is{' '}
+                    <strong>{fieldPolicy?.state_label}</strong>. An admin sets this under
+                    {' '}Admin Settings → Change Configuration → Field Access.
+                  </span>
+                </p>
+              )}
+
               {/* The plans. These are what the change type's mandatory-field
                   rules and the workflow guards actually check, so they have to
                   be editable here -- previously the backout plan was the only
@@ -1175,7 +1231,7 @@ export default function TicketDetail() {
                   {changeTypeMeta?.requires_implementation_plan && <span className="text-red-500">*</span>}
                 </label>
                 <textarea
-                  className="input" rows={4} disabled={!isAgent}
+                  className="input" rows={4} disabled={!isAgent || isLocked('implementation_plan')} title={lockTitle('implementation_plan')}
                   value={val('implementation_plan') || ''}
                   onChange={(e) => setDraftField('implementation_plan', e.target.value)}
                   placeholder={'1. Fail over to the replica.\n2. Apply the patch.\n3. Fail back and verify.'}
@@ -1189,7 +1245,7 @@ export default function TicketDetail() {
                     {changeTypeMeta?.requires_backout && <span className="text-red-500">*</span>}
                   </label>
                   <textarea
-                    className="input" rows={3} disabled={!isAgent}
+                    className="input" rows={3} disabled={!isAgent || isLocked('rollback_plan')} title={lockTitle('rollback_plan')}
                     value={val('rollback_plan') || ''}
                     onChange={(e) => setDraftField('rollback_plan', e.target.value)}
                     placeholder="How this change is reversed if it fails."
@@ -1206,7 +1262,7 @@ export default function TicketDetail() {
                   {changeTypeMeta?.requires_test_plan && <span className="text-red-500">*</span>}
                 </label>
                 <textarea
-                  className="input" rows={2} disabled={!isAgent}
+                  className="input" rows={2} disabled={!isAgent || isLocked('test_plan')} title={lockTitle('test_plan')}
                   value={val('test_plan') || ''}
                   onChange={(e) => setDraftField('test_plan', e.target.value)}
                   placeholder="How you will confirm the change worked."
@@ -1217,13 +1273,13 @@ export default function TicketDetail() {
                 {showPlannedStart && (
                   <div>
                     <label className="label">Requested start</label>
-                    <input type="datetime-local" className="input" disabled={!isAgent} value={(val('planned_start') || '').slice(0, 16)} onChange={(e) => setDraftField('planned_start', e.target.value)} />
+                    <input type="datetime-local" className="input" disabled={!isAgent || isLocked('planned_start')} title={lockTitle('planned_start')} value={(val('planned_start') || '').slice(0, 16)} onChange={(e) => setDraftField('planned_start', e.target.value)} />
                   </div>
                 )}
                 {showPlannedEnd && (
                   <div>
                     <label className="label">Requested end</label>
-                    <input type="datetime-local" className="input" disabled={!isAgent} value={(val('planned_end') || '').slice(0, 16)} onChange={(e) => setDraftField('planned_end', e.target.value)} />
+                    <input type="datetime-local" className="input" disabled={!isAgent || isLocked('planned_end')} title={lockTitle('planned_end')} value={(val('planned_end') || '').slice(0, 16)} onChange={(e) => setDraftField('planned_end', e.target.value)} />
                   </div>
                 )}
               </div>
@@ -1362,6 +1418,7 @@ export default function TicketDetail() {
               <div>
                 <label className="label">Agent</label>
                 <Select
+                  disabled={isLocked('assignee_id')} title={lockTitle('assignee_id')}
                   value={val('assignee_id') || ''} onChange={(v) => setDraftField('assignee_id', v)}
                   options={[
                     { value: '', label: 'Unassigned' },
@@ -1418,7 +1475,7 @@ export default function TicketDetail() {
                 <div>
                   <label className="label">Priority</label>
                   <Select
-                    disabled={!isAgent} value={val('priority')} onChange={(v) => setDraftField('priority', v)}
+                    disabled={!isAgent || isLocked('priority')} title={lockTitle('priority')} value={val('priority')} onChange={(v) => setDraftField('priority', v)}
                     options={fieldRules.getOptions('priority', null) || builtinOptions('priority', PRIORITIES)}
                   />
                 </div>
@@ -1428,7 +1485,7 @@ export default function TicketDetail() {
                   <div>
                     <label className="label">Category</label>
                     <Select
-                      disabled={!isAgent}
+                      disabled={!isAgent || isLocked('category')} title={lockTitle('category')}
                       value={val('category') || ''}
                       onChange={(v) => {
                         setDraftField('category', v);
@@ -1459,7 +1516,7 @@ export default function TicketDetail() {
                       </label>
                       <Select
                         multiple
-                        disabled={!isAgent}
+                        disabled={!isAgent || isLocked('subcategory')} title={lockTitle('subcategory')}
                         value={selectedSubcategories}
                         onChange={(next) => setDraftField('subcategory', next.join(', '))}
                         options={subcategoryOptions}
@@ -1490,7 +1547,7 @@ export default function TicketDetail() {
                 <div>
                   <label className="label">Impact</label>
                   <Select
-                    disabled={!isAgent} value={val('impact') || ''} onChange={(v) => setDraftField('impact', v)}
+                    disabled={!isAgent || isLocked('impact')} title={lockTitle('impact')} value={val('impact') || ''} onChange={(v) => setDraftField('impact', v)}
                     options={[{ value: '', label: 'Not set' }, ...builtinOptions('impact', IMPACTS)]}
                   />
                 </div>
@@ -1499,7 +1556,7 @@ export default function TicketDetail() {
                 <div>
                   <label className="label">Group</label>
                   <Select
-                    disabled={!isAgent} value={val('team') || ''} onChange={(v) => setDraftField('team', v)}
+                    disabled={!isAgent || isLocked('team')} title={lockTitle('team')} value={val('team') || ''} onChange={(v) => setDraftField('team', v)}
                     options={[
                       { value: '', label: 'Unassigned' },
                       ...fieldRules.getOptions('team', groups.map((g) => g.name)),

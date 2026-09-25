@@ -28,18 +28,60 @@ import { motion, useReducedMotion } from 'framer-motion';
 export default function Modal({ title, onClose, maxWidth = 'max-w-lg', footer, headerActions, children }) {
   const shouldReduceMotion = useReducedMotion();
   const closeRef = useRef(null);
-  const previouslyFocused = useRef(null);
+  const dialogRef = useRef(null);
+  // Captured during the FIRST RENDER, not in the effect below, and this
+  // timing is the whole point: React applies a child's `autoFocus` while it
+  // commits the DOM, which is before any passive effect runs. Reading
+  // document.activeElement from the effect therefore returned an input
+  // INSIDE this modal, and restoring focus to it on unmount was a no-op
+  // against a node that had just been removed -- so closing a dialog
+  // dropped focus on <body> and keyboard users lost their place entirely.
+  // During render the modal does not exist yet, so this is still whatever
+  // the person was actually on when they opened it.
+  const previouslyFocused = useRef(undefined);
+  if (previouslyFocused.current === undefined) previouslyFocused.current = document.activeElement;
+
+  // Focus management runs ONCE, on mount and unmount.
+  //
+  // This used to share an effect with the Escape handler below, keyed on
+  // [onClose]. Almost every call site passes an inline arrow —
+  // `onClose={() => setCreating(false)}` — which is a new function identity
+  // on every render of the component that owns it. So typing a character
+  // into a field whose state lives in that same component tore this effect
+  // down and ran it again, and `closeRef.current.focus()` moved the caret
+  // to the X button. One letter, then focus gone, and you had to click back
+  // into the box for the next one -- which is exactly what it felt like.
+  //
+  // Whether a given box was affected came down to where its state lived: a
+  // modal that kept its own state in a child component (the article editor)
+  // never re-rendered its parent, so onClose stayed stable and it was fine.
+  // That is why only some boxes misbehaved, which made it look arbitrary.
+  //
+  // Splitting them fixes every modal in the app at once, without any call
+  // site having to remember to wrap its handler in useCallback.
   useEffect(() => {
-    previouslyFocused.current = document.activeElement;
-    closeRef.current?.focus();
+    // Only pull focus in if nothing here has it already. A call site that
+    // marked a field `autoFocus` has said where the cursor belongs, and it
+    // is nearly always a better answer than the close button -- opening
+    // "New catalog item" should put you in the Name box ready to type.
+    if (!dialogRef.current?.contains(document.activeElement)) closeRef.current?.focus();
+    return () => {
+      // isConnected: if whatever opened this has since been unmounted (a row
+      // that was deleted, a list that reloaded) there is nothing to go back
+      // to, and focusing a detached node just silently does nothing.
+      const previous = previouslyFocused.current;
+      if (previous?.isConnected) previous.focus?.();
+    };
+  }, []);
+
+  // The Escape listener genuinely does depend on the latest onClose, and
+  // rebinding it is free — it touches no focus.
+  useEffect(() => {
     const onKeyDown = (event) => {
       if (event.key === 'Escape') onClose();
     };
     document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('keydown', onKeyDown);
-      previouslyFocused.current?.focus?.();
-    };
+    return () => document.removeEventListener('keydown', onKeyDown);
   }, [onClose]);
   const cardMotion = {
     initial: shouldReduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.94, y: 12 },
@@ -78,7 +120,7 @@ export default function Modal({ title, onClose, maxWidth = 'max-w-lg', footer, h
         aria-label={title}
         className="fixed inset-0 bg-slate-900/40 dark:bg-slate-950/60 backdrop-blur-[2px] flex items-center justify-center z-50 px-4 py-8 overflow-y-auto"
       >
-        <motion.div {...cardMotion} className={`card w-full ${maxWidth} p-5 space-y-4 my-auto shadow-popover dark:shadow-popover-dark`}>
+        <motion.div ref={dialogRef} {...cardMotion} className={`card w-full ${maxWidth} p-5 space-y-4 my-auto shadow-popover dark:shadow-popover-dark`}>
           <div className="flex items-center justify-between">
             <h2 className="font-display font-semibold text-slate-800 dark:text-slate-100">{title}</h2>
             {trailingActions}
@@ -100,7 +142,7 @@ export default function Modal({ title, onClose, maxWidth = 'max-w-lg', footer, h
       aria-label={title}
       className="fixed inset-0 bg-slate-900/40 dark:bg-slate-950/60 backdrop-blur-[2px] flex items-center justify-center z-50 px-4 py-8 overflow-y-auto"
     >
-      <motion.div {...cardMotion} className={`card w-full ${maxWidth} max-h-[88vh] flex flex-col overflow-hidden p-0 my-auto shadow-popover dark:shadow-popover-dark`}>
+      <motion.div ref={dialogRef} {...cardMotion} className={`card w-full ${maxWidth} max-h-[88vh] flex flex-col overflow-hidden p-0 my-auto shadow-popover dark:shadow-popover-dark`}>
         <div className="flex items-center justify-between px-5 sm:px-6 pt-5 pb-4 border-b border-slate-100 dark:border-white/[0.06] shrink-0">
           <h2 className="font-display font-semibold text-lg text-slate-800 dark:text-slate-100">{title}</h2>
           {trailingActions}

@@ -5,6 +5,7 @@ import { api } from '../lib/api.js';
 import { SeverityBadge, MiStatusBadge } from './Badge.jsx';
 import Modal from './Modal.jsx';
 import Select from './Select.jsx';
+import ProposeModal from './majorIncident/ProposeModal.jsx';
 
 function DeclareModal({ ticketId, onClose, onDeclared }) {
   const [severity, setSeverity] = useState('sev2');
@@ -114,12 +115,12 @@ export default function MajorIncidentPanel({ ticketId, ticketType, isAgent, majo
 
       {isAgent && ticketType === 'incident' && !majorIncident && (
         <button onClick={() => setDeclaring(true)} className="btn-secondary w-full justify-center text-red-600 dark:text-red-400 border-red-200 dark:border-red-900">
-          <Siren size={14} /> Declare Major Incident
+          <Siren size={14} /> Propose Major Incident
         </button>
       )}
 
       {declaring && (
-        <DeclareModal ticketId={ticketId} onClose={() => setDeclaring(false)} onDeclared={() => { setDeclaring(false); onChanged(); }} />
+        <ProposeModal ticketId={ticketId} onClose={() => setDeclaring(false)} onProposed={() => { setDeclaring(false); onChanged(); }} />
       )}
     </>
   );

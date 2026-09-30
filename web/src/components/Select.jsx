@@ -143,11 +143,21 @@ export default function Select({
 
   return (
     <>
+      {/* A combobox, announced as one. The keyboard behaviour was already
+          right -- arrows, Enter, Escape -- but a screen reader had no way to
+          know this was a listbox at all, what was selected, or that pressing
+          the arrow keys would do anything. */}
       <button
         type="button"
         ref={triggerRef}
         disabled={disabled}
         title={title}
+        role="combobox"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? panelId : undefined}
+        aria-activedescendant={open && filtered[highlighted] ? `${panelId}-opt-${highlighted}` : undefined}
+        aria-label={title || (typeof placeholder === 'string' ? placeholder : undefined)}
         onClick={() => setOpen((o) => !o)}
         onKeyDown={onKeyDown}
         className={`${isBadge ? 'badge border-none cursor-pointer' : `input ${sizeCls}`} flex items-center justify-between ${isBadge ? 'gap-1' : 'gap-2'} text-left disabled:opacity-50 disabled:cursor-not-allowed ${className}`}
@@ -176,6 +186,9 @@ export default function Select({
                 minWidth: pos.width,
                 maxHeight: pos.maxHeight,
               }}
+              id={panelId}
+              role="listbox"
+              aria-multiselectable={multiple || undefined}
               className="z-[200] card shadow-popover dark:shadow-popover-dark p-1.5 overflow-y-auto overscroll-contain"
             >
               {shouldSearch && (
@@ -195,7 +208,11 @@ export default function Select({
               {filtered.map((o, i) => (
                 <button
                   key={o.value}
+                  id={`${panelId}-opt-${i}`}
                   type="button"
+                  role="option"
+                  aria-selected={multiple ? selectedValues.includes(o.value) : o.value === value}
+                  aria-disabled={o.disabled || undefined}
                   disabled={o.disabled}
                   onMouseEnter={() => setHighlighted(i)}
                   onClick={() => commit(o)}

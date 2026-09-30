@@ -2,7 +2,7 @@
 // declare. The CIs themselves live on /api/assets -- this route only shapes
 // what a CI is allowed to be.
 import { Router } from 'express';
-import { requireAuth, requireWorkspace, requirePermission } from '../middleware/auth.js';
+import { requireAuth, requireWorkspace, requirePermission, requireStaff } from '../middleware/auth.js';
 import { logAudit } from '../services/auditLog.js';
 import {
   DATA_TYPES, ConfigError,
@@ -19,7 +19,7 @@ import {
 import { db } from '../db.js';
 
 const router = Router();
-router.use(requireAuth, requireWorkspace);
+router.use(requireAuth, requireWorkspace, requireStaff('cmdb.manage'));
 
 // A thrown ConfigError already carries the status and a message written for
 // the person reading it; anything else is a genuine fault and should not be

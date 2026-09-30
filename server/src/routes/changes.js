@@ -105,7 +105,10 @@ router.get('/meta', (req, res) => {
   });
 });
 
-router.get('/', (req, res) => {
+// The change pipeline is staff information. /meta (static config) and
+// /:id stay open because a requester can legitimately be an approver on a
+// single change and has to be able to see the one they are deciding.
+router.get('/', agentOnly, (req, res) => {
   const { state, change_type, risk_band, q } = req.query;
   const clauses = ["t.workspace_id = ?", "t.type = 'change'", 'COALESCE(t.is_spam,0) = 0'];
   const params = [req.workspaceId];
@@ -130,7 +133,7 @@ router.get('/', (req, res) => {
   res.json({ changes, counts: stateCounts(req.workspaceId) });
 });
 
-router.get('/metrics', (req, res) => {
+router.get('/metrics', agentOnly, (req, res) => {
   res.json({
     metrics: computeMetrics(req.workspaceId, { days: Number(req.query.days) || 90 }),
     trend: monthlyTrend(req.workspaceId, { months: Number(req.query.months) || 6 }),
@@ -138,7 +141,7 @@ router.get('/metrics', (req, res) => {
   });
 });
 
-router.get('/calendar', (req, res) => {
+router.get('/calendar', agentOnly, (req, res) => {
   const from = req.query.from ? new Date(req.query.from) : new Date();
   const days = Math.min(120, Math.max(1, Number(req.query.days) || 30));
   if (Number.isNaN(from.getTime())) return res.status(400).json({ error: 'Invalid from date' });

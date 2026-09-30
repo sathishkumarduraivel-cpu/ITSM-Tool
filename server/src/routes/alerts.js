@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { randomBytes } from 'node:crypto';
 import { db, uid } from '../db.js';
-import { requireAuth, requireWorkspace, requirePermission } from '../middleware/auth.js';
+import { requireAuth, requireWorkspace, requirePermission, requireStaff } from '../middleware/auth.js';
 import {
   SEVERITIES, SOURCE_PRESETS, ingestAlert,
   acknowledgeAlert, resolveAlert, suppressAlert, alertEvents, getAlert,
@@ -11,7 +11,7 @@ import { MONITOR_TYPES, isMonitorType, evaluateMonitor, evaluateWorkspaceMonitor
 import { logAudit } from '../services/auditLog.js';
 
 const router = Router();
-router.use(requireAuth, requireWorkspace);
+router.use(requireAuth, requireWorkspace, requireStaff('alerts.manage'));
 
 const STATUSES = ['open', 'acknowledged', 'resolved', 'suppressed'];
 

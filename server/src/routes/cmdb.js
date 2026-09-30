@@ -3,13 +3,13 @@
 // route answers questions about the shape of the estate.
 import { Router } from 'express';
 import { db } from '../db.js';
-import { requireAuth, requireWorkspace } from '../middleware/auth.js';
+import { requireAuth, requireWorkspace, requireStaff } from '../middleware/auth.js';
 import { getClass, descendantsOf, resolveClass, listClasses } from '../services/ciClasses.js';
 import { listRelationshipTypes } from '../services/ciRelationshipTypes.js';
 import { impactOf, dependenciesOf, servicesAffectedBy, serviceMap, neighbourhood, DEFAULT_MAX_DEPTH } from '../services/cmdbGraph.js';
 
 const router = Router();
-router.use(requireAuth, requireWorkspace);
+router.use(requireAuth, requireWorkspace, requireStaff('cmdb.manage'));
 
 // A depth the caller supplies is clamped rather than trusted: the graph walk
 // is bounded work per hop, and an unbounded depth on a dense estate is a

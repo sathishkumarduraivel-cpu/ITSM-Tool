@@ -1,12 +1,12 @@
 import { Router } from 'express';
 import { db, uid } from '../db.js';
-import { requireAuth, requireWorkspace, requirePermission } from '../middleware/auth.js';
+import { requireAuth, requireWorkspace, requirePermission, requireStaff } from '../middleware/auth.js';
 import { sendIntegrationMessage } from '../services/notify.js';
 import { encrypt, decrypt } from '../services/crypto.js';
 import { logAudit } from '../services/auditLog.js';
 
 const router = Router();
-router.use(requireAuth, requireWorkspace);
+router.use(requireAuth, requireWorkspace, requireStaff('integrations.manage'));
 
 function redactConfig(configJson) {
   const config = JSON.parse(decrypt(configJson) || '{}');

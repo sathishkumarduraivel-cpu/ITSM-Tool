@@ -6,7 +6,7 @@
 // no user to log in as -- the same pattern routes/alertWebhooks.js uses.
 import { Router } from 'express';
 import { db } from '../db.js';
-import { requireAuth, requireWorkspace, requirePermission } from '../middleware/auth.js';
+import { requireAuth, requireWorkspace, requirePermission, requireStaff } from '../middleware/auth.js';
 import { logAudit } from '../services/auditLog.js';
 import { ConfigError } from '../services/ciClasses.js';
 import {
@@ -79,7 +79,7 @@ router.post('/ingest/:workspaceId/:sourceKey', (req, res) => {
 });
 
 // -------------------------------------------------- everything below is UI --
-router.use(requireAuth, requireWorkspace);
+router.use(requireAuth, requireWorkspace, requireStaff('cmdb.manage'));
 
 // Any signed-in agent can read the drift and history reports -- they are how
 // you answer "why does this CI say that", which is an everyday question.

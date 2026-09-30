@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { db, uid } from '../db.js';
-import { requireAuth, requireWorkspace } from '../middleware/auth.js';
+import { requireAuth, requireWorkspace, requireStaff } from '../middleware/auth.js';
 import {
   getClass, listClasses, resolveClass, descendantsOf, ancestryOf,
   effectiveAttributes, validateAttributes, writeAttributes,
@@ -9,7 +9,7 @@ import {
 import { getRelationshipType, checkEndpoints, listRelationshipTypes } from '../services/ciRelationshipTypes.js';
 
 const router = Router();
-router.use(requireAuth, requireWorkspace);
+router.use(requireAuth, requireWorkspace, requireStaff('cmdb.manage'));
 
 function getAsset(id, workspaceId) {
   return db.prepare('SELECT * FROM assets WHERE id = ? AND workspace_id = ?').get(id, workspaceId);

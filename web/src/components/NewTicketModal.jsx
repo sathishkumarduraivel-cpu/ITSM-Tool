@@ -41,7 +41,7 @@ const TYPE_META = {
 };
 
 const FIELD_LABELS = {
-  priority: 'Priority', category: 'Category', subcategory: 'Subcategory', team: 'Group', impact: 'Impact',
+  priority: 'Priority', category: 'Category', subcategory: 'Subcategory', team: 'Group', impact: 'Impact', urgency: 'Urgency',
   risk: 'Risk', planned_start: 'Planned start', planned_end: 'Planned end', rollback_plan: 'Rollback plan',
 };
 
@@ -89,7 +89,7 @@ function PillGroup({ options, value, onChange, toneFor, disabled }) {
 export default function NewTicketModal({ onClose, onCreated, availableTypes }) {
   const [form, setForm] = useState({
     title: '', description: '', type: availableTypes[0], priority: 'medium',
-    category: '', subcategory: '', team: '', impact: 'medium',
+    category: '', subcategory: '', team: '', impact: 'medium', urgency: 'medium',
     risk: 'medium', planned_start: '', planned_end: '', rollback_plan: '',
     change_type: 'normal', implementation_plan: '', test_plan: '',
     catalog_item_id: '', custom: {},
@@ -164,7 +164,7 @@ export default function NewTicketModal({ onClose, onCreated, availableTypes }) {
   // but only ever calls setForm when a computed value actually differs, so
   // it settles after one extra render instead of looping.
   useEffect(() => {
-    const builtinAuto = ['priority', 'category', 'subcategory', 'team', 'impact', 'risk', 'planned_start', 'planned_end', 'rollback_plan']
+    const builtinAuto = ['priority', 'category', 'subcategory', 'team', 'impact', 'urgency', 'risk', 'planned_start', 'planned_end', 'rollback_plan']
       .reduce((acc, f) => {
         const v = fieldRules.getAutoValue(f);
         if (v !== undefined && form[f] !== v) acc[f] = v;
@@ -188,6 +188,21 @@ export default function NewTicketModal({ onClose, onCreated, availableTypes }) {
   const showSubcategory = fieldRules.isVisible('subcategory', true);
   const showTeam = fieldRules.isVisible('team', true);
   const showImpact = fieldRules.isVisible('impact', true);
+  const showUrgency = fieldRules.isVisible('urgency', true);
+
+  // The whole grid is fetched once rather than asking the server per
+  // keystroke, so the priority updates the instant a pill is pressed.
+  const [grid, setGrid] = useState(null);
+  const [overriding, setOverriding] = useState(false);
+  useEffect(() => { api.get('/priority-matrix', { quiet: true }).then(setGrid).catch(() => setGrid(null)); }, []);
+  const derivedPriority = grid?.cells?.[`${form.impact}|${form.urgency}`] ?? null;
+  // Once the grid can answer, it owns the field -- the agent sees what it
+  // decided and has to choose to disagree.
+  useEffect(() => {
+    if (derivedPriority && !overriding && form.priority !== derivedPriority) {
+      setForm((prev) => ({ ...prev, priority: derivedPriority }));
+    }
+  }, [derivedPriority, overriding]);
   const showServiceItem = isRequest && fieldRules.isVisible('catalog_item_name', true);
   const showRisk = fieldRules.isVisible('risk', isChange);
   const showPlannedStart = fieldRules.isVisible('planned_start', isChange);
@@ -203,14 +218,30 @@ export default function NewTicketModal({ onClose, onCreated, availableTypes }) {
     const opts = fieldMeta?.builtin?.find((f) => f.key === key)?.options;
     return opts?.length ? opts.map((o) => ({ value: o.value, label: o.label })) : fallback;
   };
-  const priorityOptions = fieldRules.getOptions('priority', null) || configured('priority', PRIORITIES);
-  const impactOptions = fieldRules.getOptions('impact', null) || configured('impact', RISKS);
+  // A Business Rule narrowing a field's choices hands back bare values, which
+  // would render the raw "medium" instead of the label an admin wrote in the
+  // Field Manager. The rule decides WHICH options are offered; the Field
+  // Manager decides what each is CALLED, so the two are combined here rather
+  // than letting the first one to answer also decide the wording.
+  const labelled = (key, opts) => {
+    if (!opts) return null;
+    const configuredOpts = fieldMeta?.builtin?.find((f) => f.key === key)?.options || [];
+    return opts.map((o) => {
+      const value = typeof o === 'string' ? o : o.value;
+      const known = configuredOpts.find((c) => c.value === value);
+      return { value, label: known?.label ?? (typeof o === 'string' ? o : o.label ?? value) };
+    });
+  };
+  const optionsFor = (key, fallback) => labelled(key, fieldRules.getOptions(key, null)) || configured(key, fallback);
+  const priorityOptions = optionsFor('priority', PRIORITIES);
+  const impactOptions = optionsFor('impact', RISKS);
+  const urgencyOptions = optionsFor('urgency', RISKS);
   const riskOptions = fieldRules.getOptions('risk', null) || configured('risk', RISKS);
   const teamOptions = fieldRules.getOptions('team', groups.map((g) => g.name));
 
-  const ALL_RULED_FIELDS = ['priority', 'category', 'subcategory', 'team', 'impact', 'risk', 'planned_start', 'planned_end', 'rollback_plan'];
+  const ALL_RULED_FIELDS = ['priority', 'category', 'subcategory', 'team', 'impact', 'urgency', 'risk', 'planned_start', 'planned_end', 'rollback_plan'];
   const VISIBLE_BY_FIELD = {
-    priority: showPriority, category: showCategory, subcategory: showSubcategory, team: showTeam, impact: showImpact,
+    priority: showPriority, category: showCategory, subcategory: showSubcategory, team: showTeam, impact: showImpact, urgency: showUrgency,
     risk: showRisk, planned_start: showPlannedStart, planned_end: showPlannedEnd, rollback_plan: showRollbackPlan,
   };
 
@@ -350,23 +381,73 @@ export default function NewTicketModal({ onClose, onCreated, availableTypes }) {
           </div>
         )}
 
-        {(showPriority || showImpact) && (
+        {(showPriority || showImpact || showUrgency) && (
           <div>
             <SectionHeading>Severity</SectionHeading>
-            <div className="grid sm:grid-cols-2 gap-4">
-              {showPriority && (
-                <div>
-                  <label className="label">Priority{fieldRules.isRequired('priority') && <Required />}</label>
-                  <PillGroup options={priorityOptions} value={form.priority} onChange={(v) => setForm({ ...form, priority: v })} toneFor={toneForSeverity} />
-                </div>
-              )}
+            <div className="grid gap-4 sm:grid-cols-2">
               {showImpact && (
                 <div>
                   <label className="label">Impact{fieldRules.isRequired('impact') && <Required />}</label>
                   <PillGroup options={impactOptions} value={form.impact} onChange={(v) => setForm({ ...form, impact: v })} toneFor={toneForSeverity} />
+                  <p className="mt-1 text-[11px] text-slate-400">How badly the business is affected.</p>
+                </div>
+              )}
+              {showUrgency && (
+                <div>
+                  <label className="label">Urgency{fieldRules.isRequired('urgency') && <Required />}</label>
+                  <PillGroup options={urgencyOptions} value={form.urgency} onChange={(v) => setForm({ ...form, urgency: v })} toneFor={toneForSeverity} />
+                  <p className="mt-1 text-[11px] text-slate-400">How quickly it has to be put right.</p>
                 </div>
               )}
             </div>
+
+            {showPriority && (
+              <div className="mt-4">
+                <label className="label">Priority{fieldRules.isRequired('priority') && <Required />}</label>
+                {derivedPriority && !overriding ? (
+                  // Shown as the outcome of the two choices above, not as a
+                  // third thing to pick -- that is the entire point of
+                  // grading impact and urgency separately.
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <span className={`badge ${toneForSeverity(derivedPriority)}`}>
+                      {priorityOptions.find((o) => o.value === derivedPriority)?.label || derivedPriority}
+                    </span>
+                    <span className="text-[11px] text-slate-400">Set by impact and urgency</span>
+                    <button
+                      type="button"
+                      onClick={() => setOverriding(true)}
+                      className="text-[11px] font-medium text-brand-600 hover:underline dark:text-brand-400"
+                    >
+                      Override
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <PillGroup options={priorityOptions} value={form.priority} onChange={(v) => setForm({ ...form, priority: v })} toneFor={toneForSeverity} />
+                    {derivedPriority && (
+                      <div className="mt-2">
+                        <label className="label">
+                          Why this differs from {priorityOptions.find((o) => o.value === derivedPriority)?.label || derivedPriority}<Required />
+                        </label>
+                        <input
+                          className="input"
+                          value={form.priority_override_reason || ''}
+                          onChange={(e) => setForm({ ...form, priority_override_reason: e.target.value })}
+                          placeholder="e.g. affects the month-end close tonight"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => { setOverriding(false); setForm((p) => ({ ...p, priority: derivedPriority, priority_override_reason: '' })); }}
+                          className="mt-1.5 text-[11px] text-slate-400 hover:text-slate-600"
+                        >
+                          Use the grid's priority instead
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
           </div>
         )}
 

@@ -46,7 +46,13 @@ async function fetchWithRetry(url, init) {
   }
 }
 
-async function request(path, { method = 'GET', body, headers = {} } = {}) {
+// `quiet` suppresses the error toast for a call whose failure the caller
+// has already decided is not worth telling anyone about -- a best-effort
+// fetch with a fallback, typically. Without it the toast fired even when
+// the caller had handled the rejection, so an agent opening Admin
+// Settings saw one "Insufficient permissions" toast per count the index
+// page tried to fetch, for counts it simply does without.
+async function request(path, { method = 'GET', body, headers = {}, quiet = false } = {}) {
   const token = getToken();
   const resp = await fetchWithRetry(`${BASE}${path}`, {
     method,
@@ -65,7 +71,7 @@ async function request(path, { method = 'GET', body, headers = {} } = {}) {
   }
   if (!resp.ok) {
     const message = data?.error || `Request failed (${resp.status})`;
-    notifyError(message);
+    if (!quiet) notifyError(message);
     // The whole response body travels with the error, not just its message.
     // Several endpoints answer a 400 with the specific fields at fault
     // (field_errors, locked_fields); without this the caller can only show
@@ -100,7 +106,7 @@ async function upload(path, formData) {
 }
 
 export const api = {
-  get: (path) => request(path),
+  get: (path, opts) => request(path, opts),
   post: (path, body) => request(path, { method: 'POST', body }),
   patch: (path, body) => request(path, { method: 'PATCH', body }),
   put: (path, body) => request(path, { method: 'PUT', body }),

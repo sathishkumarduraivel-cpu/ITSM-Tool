@@ -8,6 +8,8 @@ import {
   Tag, Search, BookmarkPlus, ListChecks, Plus, Clock, CircleAlert, UserRoundCheck, History,
 } from 'lucide-react';
 import { api, getStoredToken } from '../lib/api.js';
+import SlaPanel from '../components/SlaPanel.jsx';
+import ConflictDialog from '../components/ConflictDialog.jsx';
 import { fmtDateTime, fmtRelative, dateValue } from '../lib/dates.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { PriorityBadge, StatusBadge, TypeBadge } from '../components/Badge.jsx';
@@ -290,6 +292,21 @@ export default function TicketDetail() {
   const { user } = useAuth();
   const isAgent = user.role === 'admin' || user.role === 'agent';
   const [ticket, setTicket] = useState(null);
+  const [sla, setSla] = useState(null);
+  const [conflict, setConflict] = useState(null);
+  // The version this edit started from.
+  //
+  // It is NOT simply ticket.row_version, because a realtime update from
+  // somebody else's save reloads the ticket -- which would quietly adopt
+  // their version and defeat the lock for the exact case it exists to catch:
+  // an unsaved edit of a field they just changed would then overwrite them
+  // with no conflict at all. It is pinned while there are unsaved changes and
+  // refreshed only once there are none.
+  const [baseVersion, setBaseVersion] = useState(null);
+  // load() is called from realtime handlers that captured an older closure,
+  // so the unsaved state is read through a ref rather than from the closure
+  // it happens to have been created with.
+  const draftRef = useRef({ draft: {}, draftCustom: {} });
   const [comments, setComments] = useState([]);
   const [history, setHistory] = useState([]);
   const [approvals, setApprovals] = useState([]);
@@ -345,6 +362,7 @@ export default function TicketDetail() {
   const [draftCustom, setDraftCustom] = useState({});
   const [saving, setSaving] = useState(false);
   const dirty = Object.keys(draft).length > 0 || Object.keys(draftCustom).length > 0;
+  useEffect(() => { draftRef.current = { draft, draftCustom }; }, [draft, draftCustom]);
 
   // Quick one-click actions (Assign to me, Resolve, spam moderation) apply
   // immediately rather than joining the staged draft -- each is a single,
@@ -380,6 +398,14 @@ export default function TicketDetail() {
   const load = async () => {
     const data = await api.get(`/tickets/${id}`);
     setTicket(data.ticket);
+    setSla(data.sla || null);
+    // Only moved forward when nothing is half-written; otherwise the edit in
+    // progress keeps measuring against what its author actually saw.
+    setBaseVersion((prev) => {
+      const nothingUnsaved = Object.keys(draftRef.current.draft).length === 0
+        && Object.keys(draftRef.current.draftCustom).length === 0;
+      return (prev === null || nothingUnsaved) ? data.ticket.row_version : prev;
+    });
     setComments(data.comments);
     setHistory(data.history);
     setApprovals(data.approvals || []);
@@ -510,15 +536,19 @@ export default function TicketDetail() {
     setFieldError('');
     setSaving(true);
     try {
-      const payload = { ...draft };
+      const payload = { ...draft, row_version: baseVersion ?? ticket.row_version };
       if (Object.keys(draftCustom).length) payload.custom = draftCustom;
       const { ticket: updated, custom } = await api.patch(`/tickets/${id}`, payload);
       setTicket(updated);
+      setBaseVersion(updated.row_version);
       if (custom) setCustomValues(custom);
       setDraft({});
       setDraftCustom({});
     } catch (e) {
-      setFieldError(e.message);
+      // A refused save is shown as a decision to make, not a message to
+      // dismiss: the draft is deliberately kept so nothing typed is lost.
+      if (e.status === 409 && e.body?.conflict) setConflict({ conflict: e.body.conflict, attempted: draft });
+      else setFieldError(e.message);
     } finally {
       setSaving(false);
     }
@@ -758,6 +788,7 @@ export default function TicketDetail() {
   const showPriority = fieldRules.isVisible('priority', true);
   const showCategory = fieldRules.isVisible('category', true);
   const showImpact = fieldRules.isVisible('impact', true);
+  const showUrgency = fieldRules.isVisible('urgency', true);
   const changeStateLabel = isChange ? CHANGE_STATE_LABELS[ticket.change_state] || null : null;
   // Which plans this change type actually demands, so the required markers
   // match the configured policy rather than being hardcoded.
@@ -1552,6 +1583,21 @@ export default function TicketDetail() {
                   />
                 </div>
               )}
+              {/* Urgency belongs here for the same reason Impact does, and
+                  more so: triage happens AFTER creation, and re-grading it is
+                  precisely what triage is. Without a control the priority
+                  grid could only ever be applied once, at the moment somebody
+                  who may not have known the impact raised the ticket. */}
+              {showUrgency && (
+                <div>
+                  <label className="label">Urgency</label>
+                  <Select
+                    disabled={!isAgent || isLocked('urgency')} title={lockTitle('urgency')} value={val('urgency') || ''} onChange={(v) => setDraftField('urgency', v)}
+                    options={[{ value: '', label: 'Not set' }, ...builtinOptions('urgency', IMPACTS)]}
+                  />
+                  <p className="mt-1 text-[11px] text-slate-400">Impact and urgency together decide the priority.</p>
+                </div>
+              )}
               {showTeam && (
                 <div>
                   <label className="label">Group</label>
@@ -1640,15 +1686,15 @@ export default function TicketDetail() {
             </div>
           )}
 
-          <div className="card p-4 space-y-2 text-sm">
-            <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-1">SLA</h3>
-            <div className="flex justify-between text-slate-500"><span>Response due</span><span className="text-slate-700 dark:text-slate-200">{fmtDateTime(ticket.response_due_at)}</span></div>
-            <div className="flex justify-between text-slate-500"><span>Resolution due</span><span className="text-slate-700 dark:text-slate-200">{fmtDateTime(ticket.sla_due_at)}</span></div>
-            <div className="flex justify-between text-slate-500"><span>Source</span><span className="text-slate-700 dark:text-slate-200 capitalize">{ticket.source}</span></div>
-            {ticket.ai_sentiment && (
-              <div className="flex justify-between text-slate-500"><span>AI sentiment</span><span className="text-slate-700 dark:text-slate-200 capitalize">{ticket.ai_sentiment}</span></div>
-            )}
-          </div>
+          <>
+            <SlaPanel sla={sla} ticket={ticket} />
+            <div className="card p-4 space-y-2 text-sm">
+              <div className="flex justify-between text-slate-500"><span>Source</span><span className="text-slate-700 dark:text-slate-200 capitalize">{ticket.source}</span></div>
+              {ticket.ai_sentiment && (
+                <div className="flex justify-between text-slate-500"><span>AI sentiment</span><span className="text-slate-700 dark:text-slate-200 capitalize">{ticket.ai_sentiment}</span></div>
+              )}
+            </div>
+          </>
 
           {isAgent && (
             <div className="card p-4">
@@ -1706,6 +1752,14 @@ export default function TicketDetail() {
           ticket={ticket}
           onClose={() => setRequesterEditOpen(false)}
           onSaved={(updated) => { setTicket(updated); setRequesterEditOpen(false); }}
+        />
+      )}
+      {conflict && (
+        <ConflictDialog
+          conflict={conflict.conflict}
+          attempted={conflict.attempted}
+          onClose={() => setConflict(null)}
+          onReload={() => { setConflict(null); setDraft({}); setDraftCustom({}); setBaseVersion(null); load(); }}
         />
       )}
     </div>

@@ -1,11 +1,11 @@
 import { Router } from 'express';
 import { db, uid } from '../db.js';
-import { requireAuth, requireWorkspace, requirePermission } from '../middleware/auth.js';
+import { requireAuth, requireWorkspace, requirePermission, requireStaff } from '../middleware/auth.js';
 import { getLifecycleForAdmin, listLifecycleSummaries, createLifecycle, seedTemplate, LIFECYCLE_TEMPLATES } from '../services/lifecycleEngine.js';
 import { logAudit } from '../services/auditLog.js';
 
 const router = Router();
-router.use(requireAuth, requireWorkspace);
+router.use(requireAuth, requireWorkspace, requireStaff('lifecycles.manage'));
 
 const TICKET_TYPES = ['incident', 'request', 'problem', 'change'];
 

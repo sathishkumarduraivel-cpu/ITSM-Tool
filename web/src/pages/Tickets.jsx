@@ -7,6 +7,7 @@ import { fmtDateTime, fmtRelative, dateValue } from '../lib/dates.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { PriorityBadge, StatusBadge, TypeBadge } from '../components/Badge.jsx';
 import PageHeader from '../components/PageHeader.jsx';
+import ViewBar from '../components/views/ViewBar.jsx';
 import { SkeletonRows } from '../components/Skeleton.jsx';
 import NewTicketModal from '../components/NewTicketModal.jsx';
 import Modal from '../components/Modal.jsx';
@@ -161,6 +162,9 @@ export default function Tickets() {
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [agents, setAgents] = useState([]);
   const [groups, setGroups] = useState([]);
+  // The saved view currently being shown, if any. Running one replaces the
+  // simple filter row rather than fighting with it.
+  const [activeView, setActiveView] = useState(null);
   const [loadError, setLoadError] = useState('');
   const [sort, setSort] = useState(() => localStorage.getItem('itsm_ticket_sort') || 'updated');
   const [visibleColumns, setVisibleColumns] = useState(() => new Set(JSON.parse(localStorage.getItem('itsm_ticket_columns') || '["type","status","priority","category","created","updated"]')));
@@ -171,6 +175,16 @@ export default function Tickets() {
     setLoading(true);
     setLoadError('');
     try {
+      // A saved view carries its own condition tree and sort, so it is run
+      // through the filter endpoint rather than squeezed into query params.
+      if (activeView) {
+        const out = await api.post('/views/run', {
+          filters: activeView.filters, sort_by: activeView.sort_by, sort_dir: activeView.sort_dir,
+        });
+        setTickets(out.tickets);
+        setLoading(false);
+        return;
+      }
       const params = new URLSearchParams();
       Object.entries(filters).forEach(([k, v]) => v && params.set(k, v));
       const { tickets } = await api.get(`/tickets?${params.toString()}`);
@@ -198,7 +212,7 @@ export default function Tickets() {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters.status, filters.priority, filters.type, filters.assignee_id]);
+  }, [filters.status, filters.priority, filters.type, filters.assignee_id, activeView]);
 
   useEffect(() => {
     if (!isAgent) return;
@@ -247,6 +261,25 @@ export default function Tickets() {
         description="Incidents, requests, problems & changes"
         actions={<button onClick={() => setShowNew(true)} className="btn-primary"><Plus size={14} /> New ticket</button>}
       />
+
+      <ViewBar
+        module="tickets"
+        activeId={activeView?.id}
+        groups={groups}
+        onRun={(view) => { setActiveView(view); setFilters({ status: '', priority: '', type: '', q: '' }); }}
+      />
+
+      {activeView && (
+        <div className="flex items-center gap-2 rounded-xl bg-brand-50 px-3 py-2 text-xs dark:bg-brand-500/10">
+          <span className="text-brand-700 dark:text-brand-300">
+            Showing <strong>{activeView.name}</strong>
+            {activeView.description ? ` — ${activeView.description}` : ''}
+          </span>
+          <button onClick={() => setActiveView(null)} className="ml-auto shrink-0 font-medium text-brand-700 hover:underline dark:text-brand-300">
+            Clear
+          </button>
+        </div>
+      )}
 
       <div className="card p-3 flex flex-wrap items-center gap-2">
         <form onSubmit={search} className="flex-1 min-w-[200px] relative">

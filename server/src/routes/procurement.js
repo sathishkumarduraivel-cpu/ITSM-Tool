@@ -1,9 +1,9 @@
 import { Router } from 'express';
 import { db, uid } from '../db.js';
-import { requireAuth, requireWorkspace, requireRole } from '../middleware/auth.js';
+import { requireAuth, requireWorkspace, requireRole, requireStaff } from '../middleware/auth.js';
 
 const router = Router();
-router.use(requireAuth, requireWorkspace);
+router.use(requireAuth, requireWorkspace, requireStaff());
 
 // ---- Contracts ----
 router.get('/contracts', (req, res) => {

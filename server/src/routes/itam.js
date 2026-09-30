@@ -6,7 +6,7 @@
 // disposes of -- a different question, asked by different people.
 import { Router } from 'express';
 import { db } from '../db.js';
-import { requireAuth, requireWorkspace, requirePermission } from '../middleware/auth.js';
+import { requireAuth, requireWorkspace, requirePermission, requireStaff } from '../middleware/auth.js';
 import { logAudit } from '../services/auditLog.js';
 import { ConfigError } from '../services/ciClasses.js';
 import {
@@ -27,7 +27,7 @@ import {
 } from '../services/cmdbImport.js';
 
 const router = Router();
-router.use(requireAuth, requireWorkspace);
+router.use(requireAuth, requireWorkspace, requireStaff('cmdb.manage'));
 
 function handle(req, res, fn) {
   try {

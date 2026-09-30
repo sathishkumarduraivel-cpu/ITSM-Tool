@@ -3,10 +3,12 @@ import express from 'express';
 import cors from 'cors';
 import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
+import jwt from 'jsonwebtoken';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { db } from './db.js';
+import { JWT_SECRET } from './middleware/auth.js';
 
 // A platform with no persistent disk (Render's free tier, among others) can
 // hand this process a brand-new, completely empty server/data/itsm.db on
@@ -43,6 +45,11 @@ import escalationRoutes from './routes/escalations.js';
 import procurementRoutes from './routes/procurement.js';
 import notificationRoutes from './routes/notifications.js';
 import reportRoutes from './routes/reports.js';
+import analyticsRoutes from './routes/analytics.js';
+import priorityMatrixRoutes from './routes/priorityMatrix.js';
+import problemRoutes from './routes/problems.js';
+import viewRoutes from './routes/views.js';
+import benchmarkRoutes from './routes/benchmarks.js';
 import businessRuleRoutes from './routes/businessRules.js';
 import customFieldRoutes from './routes/customFields.js';
 import lifecycleRoutes from './routes/lifecycles.js';
@@ -161,16 +168,45 @@ app.use(express.json({ limit: '2mb' }));
 // access log the way a normal request URL would be. See middleware/auth.js.
 app.use(morgan('dev', { skip: (req) => req.path === '/api/realtime/stream' }));
 
-// Strict in production; generous outside it. This limiter covers every
-// /api/* call combined (not just login), so normal interactive use — several
-// requests per page navigation plus the notification bell polling every
-// 20s — was tripping the old flat 300/15min limit during ordinary usage,
-// not just abuse. Same reasoning as the login limiter fix.
+// A backstop against abuse of /api/* as a whole. The limits that actually
+// protect the expensive and attackable routes are the narrower ones next to
+// them (login, AI); this one only stops somebody hammering the API broadly.
+//
+// Budgeted PER ACCOUNT, not per IP. An office reaches the internet through
+// one NAT address, so an IP-keyed budget is shared by everybody in the
+// building: colleagues' traffic throttles you, and the busier the workspace
+// the worse it gets — the opposite of what a limit should do. The bearer
+// token says which account is asking, so each account gets its own
+// allowance and one person's activity cannot lock out their team. A token
+// that does not verify is deliberately NOT trusted for keying: it falls
+// back to the IP, so a forged token cannot mint itself a fresh budget.
+// Unauthenticated traffic (login, SSO callbacks) has nothing else to key
+// on and keeps the previous per-IP behaviour.
+//
+// The ceiling was measured rather than guessed: a single page view costs
+// roughly a dozen API calls, and the notification bell polls every 20s, so
+// the previous production value of 300/15min was about 25 page views —
+// under half an hour of ordinary work before a working agent started
+// getting "Request failed (429)". The comment here used to describe 300 as
+// the value that "was tripping during ordinary usage", but only the
+// non-production branch had been raised, leaving production on exactly the
+// number already identified as too low.
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: process.env.NODE_ENV === 'production' ? 300 : 2000,
+  max: 2000,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: (req) => {
+    const header = req.headers.authorization || '';
+    const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+    if (token) {
+      try {
+        const payload = jwt.verify(token, JWT_SECRET);
+        if (payload?.id) return `user:${payload.id}`;
+      } catch { /* unverifiable -- fall through to the address below */ }
+    }
+    return `ip:${req.ip}`;
+  },
 });
 app.use('/api', apiLimiter);
 
@@ -195,6 +231,11 @@ app.use('/api/escalations', escalationRoutes);
 app.use('/api/procurement', procurementRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/reports', reportRoutes);
+app.use('/api/analytics', analyticsRoutes);
+app.use('/api/priority-matrix', priorityMatrixRoutes);
+app.use('/api/problems', problemRoutes);
+app.use('/api/views', viewRoutes);
+app.use('/api/benchmarks', benchmarkRoutes);
 app.use('/api/business-rules', businessRuleRoutes);
 app.use('/api/custom-fields', customFieldRoutes);
 app.use('/api/lifecycles', lifecycleRoutes);

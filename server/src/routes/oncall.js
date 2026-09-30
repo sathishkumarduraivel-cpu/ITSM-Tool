@@ -1,11 +1,11 @@
 import { Router } from 'express';
 import { db, uid } from '../db.js';
-import { requireAuth, requireWorkspace, requirePermission } from '../middleware/auth.js';
+import { requireAuth, requireWorkspace, requirePermission, requireStaff } from '../middleware/auth.js';
 import { resolveOnCall, resolveShiftRange, getOnCallUserIds } from '../services/oncallEngine.js';
 import { logAudit } from '../services/auditLog.js';
 
 const router = Router();
-router.use(requireAuth, requireWorkspace);
+router.use(requireAuth, requireWorkspace, requireStaff('oncall.manage'));
 
 const ROTATION_TYPES = ['daily', 'weekly', 'custom'];
 const TARGET_TYPES = ['oncall_layer', 'user', 'group', 'role'];

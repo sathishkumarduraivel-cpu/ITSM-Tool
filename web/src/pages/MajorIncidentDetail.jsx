@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { ArrowLeft, Siren, AlertTriangle, Clock, Send, Loader2, X, Search, Save } from 'lucide-react';
 import { api } from '../lib/api.js';
+import CommandConsole from '../components/majorIncident/CommandConsole.jsx';
 import { SeverityBadge, MiStatusBadge } from '../components/Badge.jsx';
 import { useRealtimeEvent } from '../context/RealtimeContext.jsx';
 import Select from '../components/Select.jsx';
@@ -22,6 +23,7 @@ export default function MajorIncidentDetail() {
   const [pirDraft, setPirDraft] = useState({ pir_status: 'not_started', pir_document: '' });
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState(null);
+  const [miMeta, setMiMeta] = useState(null);
 
   const load = async () => {
     const data = await api.get(`/major-incidents/${id}`);
@@ -32,6 +34,7 @@ export default function MajorIncidentDetail() {
   };
   useEffect(() => { load(); }, [id]);
   useEffect(() => { api.get('/tickets/assignable-agents').then((d) => setAgents(d.agents)); }, []);
+  useEffect(() => { api.get('/major-incidents/meta', { quiet: true }).then(setMiMeta).catch(() => setMiMeta(null)); }, []);
 
   // Another responder posting an update or changing status shows up live --
   // this is the war-room page, so seeing it the moment it happens matters.
@@ -231,6 +234,10 @@ export default function MajorIncidentDetail() {
           </div>
         )}
       </div>
+
+      {mi && miMeta && (
+        <CommandConsole majorIncident={mi} meta={miMeta} agents={agents} onChanged={load} />
+      )}
 
       <div className="card p-4">
         <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3">Post-incident review</h3>

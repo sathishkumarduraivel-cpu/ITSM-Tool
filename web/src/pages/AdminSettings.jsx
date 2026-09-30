@@ -2,12 +2,7 @@ import { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
-  Loader2, Save, UserPlus, Users, ListChecks, UsersRound, Layers,
-  Workflow, ArrowLeft, ChevronRight, Plus, Trash2, ChevronDown, ChevronUp, X,
-  AlertTriangle, Inbox, Search, GitBranch, Pencil, ShieldCheck, ShieldOff,
-  Milestone, ToggleLeft, ToggleRight, RefreshCw, ArrowUp, ArrowDown, FileStack, Hash, KeyRound,
-  History, Download, Filter, LogIn, Copy, Check, Webhook, AlertOctagon, UserCog, Server, Mail,
-  DatabaseBackup, FileJson, HardDrive, Bug, Siren, CalendarClock, Target, Radar, Boxes,
+  Loader2, Save, UserPlus, Users, ListChecks, UsersRound, Layers, Workflow, ArrowLeft, ChevronRight, Plus, Trash2, ChevronDown, ChevronUp, X, AlertTriangle, Inbox, Search, GitBranch, Pencil, ShieldCheck, ShieldOff, Milestone, ToggleLeft, ToggleRight, RefreshCw, ArrowUp, ArrowDown, FileStack, Hash, KeyRound, History, Download, Filter, LogIn, Copy, Check, Webhook, AlertOctagon, UserCog, Server, Mail, DatabaseBackup, FileJson, HardDrive, Bug, Siren, CalendarClock, Target, Radar, Boxes, Grid3x3,
 } from 'lucide-react';
 import { api, getStoredToken } from '../lib/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -26,6 +21,7 @@ import AssignmentPolicyTab from '../components/admin/AssignmentPolicyTab.jsx';
 import TicketFieldManagerTab from '../components/admin/TicketFieldManagerTab.jsx';
 import ChangeConfigTab from '../components/admin/ChangeConfigTab.jsx';
 import CmdbConfigTab from '../components/admin/CmdbConfigTab.jsx';
+import PriorityMatrixTab from '../components/admin/PriorityMatrixTab.jsx';
 
 // A section with no `permission` is admin-only and never delegable — user
 // management, workspace management, HR templates, and role definition itself
@@ -41,6 +37,7 @@ const SECTIONS = [
   { key: 'emailConfig', label: 'Email Configuration', description: 'SMTP settings, requester/agent/admin/approval email templates, canned responses and delivery log', icon: Mail, permission: 'notifications.manage' },
   { key: 'businessRules', label: 'Business Rules', description: 'Conditional visibility, required and validation logic per ticket type', icon: ShieldCheck, permission: 'business_rules.manage' },
   { key: 'lifecycles', label: 'Lifecycles', description: 'Stage-by-stage workflows per ticket type, with role-restricted and condition-gated transitions enforced server-side', icon: Milestone, permission: 'lifecycles.manage' },
+  { key: 'priorityMatrix', label: 'Priority Matrix', description: 'How Impact and Urgency combine into Priority, so the same problem is always graded the same way', icon: Grid3x3, permission: 'custom_fields.manage' },
   { key: 'fieldManager', label: 'Field Manager', description: 'Every field on a ticket form, built-in and custom — categories, subcategories, priority, impact, risk and your own fields, with editable options, labels and colours', icon: ListChecks, permission: 'custom_fields.manage' },
   { key: 'workspaces', label: 'Workspaces', description: 'Add, rename or remove workspaces you belong to', icon: Layers },
   { key: 'changeConfig', label: 'Change Management', description: 'Change types, standard templates, risk scoring, freeze windows and CAB approval routing', icon: GitBranch, permission: 'change.manage' },
@@ -71,7 +68,7 @@ const SECTION_GROUPS = [
   {
     key: 'automation', label: 'Process & Automation', icon: Workflow, accent: 'from-violet-400 to-violet-600',
     description: 'How tickets behave — workflows, conditional logic, stage gates and custom fields',
-    sectionKeys: ['workflows', 'emailConfig', 'businessRules', 'lifecycles', 'fieldManager', 'changeConfig', 'cmdbConfig'],
+    sectionKeys: ['workflows', 'emailConfig', 'businessRules', 'lifecycles', 'priorityMatrix', 'fieldManager', 'changeConfig', 'cmdbConfig'],
   },
   {
     key: 'workspace', label: 'Workspace Settings', icon: Layers, accent: 'from-amber-400 to-amber-600',
@@ -3245,22 +3242,39 @@ export default function AdminSettings() {
   // (the Microsoft mailbox-connect OAuth callback, routes/emailSettings.js)
   // -- location.state doesn't survive a real HTTP redirect the way client
   // -side navigate() state does, so that flow has to use the URL instead.
-  const [section, setSection] = useState(() => location.state?.section ?? new URLSearchParams(location.search).get('section') ?? null);
+  const [requestedSection, setSection] = useState(() => location.state?.section ?? new URLSearchParams(location.search).get('section') ?? null);
   const [counts, setCounts] = useState({});
   const visibleSections = SECTIONS.filter((s) => canSeeSection(user, s));
 
   // A delegated agent landing here directly (e.g. a stale back-navigation
-  // state) should never see a tab their custom role wasn't granted.
+  // state, or a typed ?section=) should never see a tab their custom role
+  // wasn't granted.
+  //
+  // Decided DURING RENDER rather than in an effect. An effect runs after
+  // the child has already mounted and fired its requests, so the tab loaded,
+  // every one of its calls came back 403, and the agent got a stack of
+  // identical "Insufficient permissions" toasts -- one per request -- before
+  // being bounced back to the index. Resolving it here means an unauthorised
+  // tab never mounts and therefore never asks.
+  const section = requestedSection !== null && !visibleSections.some((s) => s.key === requestedSection)
+    ? null
+    : requestedSection;
+  // Keep the stored value in step, so a later render (or a back navigation)
+  // doesn't resurrect the section the check above just refused.
   useEffect(() => {
-    if (section && !visibleSections.some((s) => s.key === section)) setSection(null);
-  }, [section]);
+    if (requestedSection !== null && section === null) setSection(null);
+  }, [requestedSection, section]);
 
   useEffect(() => {
+    // Counts for the section cards, and nothing more: a delegated agent
+    // legitimately cannot read some of these, and the card simply shows no
+    // number. Quiet, because a toast per missing count told them off four
+    // times for opening a page that was working as intended.
     Promise.all([
-      api.get('/auth/users/all').catch(() => ({ users: [] })),
-      api.get('/groups').catch(() => ({ groups: [] })),
-      api.get('/workspaces').catch(() => ({ workspaces: [] })),
-      api.get('/automations').catch(() => ({ automations: [] })),
+      api.get('/auth/users/all', { quiet: true }).catch(() => ({ users: [] })),
+      api.get('/groups', { quiet: true }).catch(() => ({ groups: [] })),
+      api.get('/workspaces', { quiet: true }).catch(() => ({ workspaces: [] })),
+      api.get('/automations', { quiet: true }).catch(() => ({ automations: [] })),
     ]).then(([u, g, w, a]) => {
       setCounts({
         users: u.users.length,
@@ -3335,6 +3349,7 @@ export default function AdminSettings() {
           {section === 'workspaces' && <WorkspacesTab />}
           {section === 'workflows' && <Automations />}
           {section === 'emailConfig' && <EmailConfigTab />}
+          {section === 'priorityMatrix' && <PriorityMatrixTab />}
           {section === 'fieldManager' && <TicketFieldManagerTab />}
           {section === 'changeConfig' && <ChangeConfigTab />}
           {section === 'cmdbConfig' && <CmdbConfigTab />}

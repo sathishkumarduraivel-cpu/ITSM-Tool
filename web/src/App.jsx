@@ -22,7 +22,7 @@ import Approvals from './pages/Approvals.jsx';
 import SlaPolicies from './pages/SlaPolicies.jsx';
 import EscalationRules from './pages/EscalationRules.jsx';
 import Procurement from './pages/Procurement.jsx';
-import Reports from './pages/Reports.jsx';
+import Analytics from './pages/Analytics.jsx';
 import AdminSettings from './pages/AdminSettings.jsx';
 import WorkflowBuilder from './pages/WorkflowBuilder.jsx';
 import HrCases from './pages/HrCases.jsx';
@@ -100,19 +100,19 @@ export default function App() {
                 <Route path="/problems" element={<RequireRole roles={['admin', 'agent']}><ProblemManagement /></RequireRole>} />
                 <Route path="/major-incidents" element={<RequireRole roles={['admin', 'agent']}><MajorIncidents /></RequireRole>} />
                 <Route path="/major-incidents/:id" element={<RequireRole roles={['admin', 'agent']}><MajorIncidentDetail /></RequireRole>} />
-                <Route path="/assets" element={<Assets module="assets" />} />
-                <Route path="/cmdb" element={<Assets module="cmdb" />} />
+                <Route path="/assets" element={<RequireRole roles={['admin', 'agent']} permission="cmdb.manage"><Assets module="assets" /></RequireRole>} />
+                <Route path="/cmdb" element={<RequireRole roles={['admin', 'agent']} permission="cmdb.manage"><Assets module="cmdb" /></RequireRole>} />
                 <Route path="/knowledge-base" element={<KnowledgeBase />} />
-                <Route path="/integrations" element={<Integrations />} />
+                <Route path="/integrations" element={<RequireRole roles={['admin', 'agent']} permission="integrations.manage"><Integrations /></RequireRole>} />
                 <Route path="/external-connections" element={<RequireRole role="admin" permission="integrations.manage"><ExternalConnections /></RequireRole>} />
-                <Route path="/ai-settings" element={<AISettings />} />
+                <Route path="/ai-settings" element={<RequireRole roles={['admin', 'agent']}><AISettings /></RequireRole>} />
                 <Route path="/developer" element={<RequireRole role="admin"><DeveloperDocs /></RequireRole>} />
                 <Route path="/catalog" element={<Catalog />} />
                 <Route path="/approvals" element={<Approvals />} />
-                <Route path="/sla" element={<SlaPolicies />} />
-                <Route path="/escalations" element={<EscalationRules />} />
-                <Route path="/procurement" element={<Procurement />} />
-                <Route path="/reports" element={<Reports />} />
+                <Route path="/sla" element={<RequireRole roles={['admin', 'agent']} permission="sla.manage"><SlaPolicies /></RequireRole>} />
+                <Route path="/escalations" element={<RequireRole roles={['admin', 'agent']} permission="escalations.manage"><EscalationRules /></RequireRole>} />
+                <Route path="/procurement" element={<RequireRole roles={['admin', 'agent']}><Procurement /></RequireRole>} />
+                <Route path="/reports" element={<RequireRole roles={['admin', 'agent']}><Analytics /></RequireRole>} />
                 <Route path="/admin-settings" element={<RequireRole role="admin" anyPermission><AdminSettings /></RequireRole>} />
                 <Route path="/automations/:id" element={<RequireRole role="admin" permission="automations.manage"><WorkflowBuilder /></RequireRole>} />
                 <Route path="/hr-cases" element={<RequireRole roles={['admin', 'agent']}><HrCases /></RequireRole>} />

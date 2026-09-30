@@ -8,6 +8,10 @@ import { notifyUser, renderTemplate } from '../services/notifications.js';
 import { sendTemplatedEmail } from '../services/emailService.js';
 import { listTasks, createTask, updateTask, deleteTask, computeTaskAggregates } from '../services/tasks.js';
 import { computeSlaDueDate, findSlaPolicy, stampSlaBreach } from '../services/sla.js';
+import { resolvePriority, PriorityError } from '../services/priorityMatrix.js';
+import { syncPauseState, recalculateTargets, slaSnapshot, evaluateSlaSafely, listSlaEvents } from '../services/slaEngine.js';
+import { checkVersion, versionBump, ConflictError } from '../services/concurrency.js';
+import { findDuplicates, recordCandidates, listCandidates, decideCandidate } from '../services/duplicateDetection.js';
 import { nextTicketNumber } from '../services/ticketNumbering.js';
 import { listBusinessRules, applyBusinessRules, buildFieldOptionsMap } from '../services/businessRules.js';
 import { listCustomFields, normalizeCustomValues, saveCustomValues, getCustomValues } from '../services/customFields.js';
@@ -291,7 +295,12 @@ router.get('/:id', (req, res) => {
 
   const tasks = listTasks(ticket.id);
 
-  res.json({ ticket: ticketOut, comments, history, approvals, linkedAssets, csat: csat || null, attachments, businessRules, fieldOptions, blastRadius, customFields, custom, lifecycle, externalLinks, mergedFrom, mergedInto, majorIncident, relatedMajorIncidents, tasks });
+  // Everything about this ticket's clocks -- elapsed, remaining, percentage
+  // consumed, whether it is paused and why. Computed rather than stored, so
+  // it can never be stale, and the same shape §12 asks to be reportable.
+  const sla = slaSnapshot(ticket);
+  const slaEvents = listSlaEvents(req.workspaceId, ticket.id);
+  res.json({ ticket: ticketOut, sla, sla_events: slaEvents, comments, history, approvals, linkedAssets, csat: csat || null, attachments, businessRules, fieldOptions, blastRadius, customFields, custom, lifecycle, externalLinks, mergedFrom, mergedInto, majorIncident, relatedMajorIncidents, tasks });
 });
 
 router.post('/', async (req, res) => {
@@ -328,9 +337,30 @@ router.post('/', async (req, res) => {
   const finalCatalogItemId = ('catalog_item_name' in evalBody) ? (catalogItem?.id || null) : null;
 
   const {
-    description, priority = 'medium', category, subcategory, team, impact, requester_id, source = 'portal',
+    description, category, subcategory, team, impact, urgency, requester_id, source = 'portal',
     risk, planned_start, planned_end, rollback_plan, implementation_plan, test_plan, change_type,
   } = evalBody;
+
+  // Priority is worked out before anything else uses it, because it chooses
+  // the SLA policy: deriving it afterwards would time the ticket against the
+  // priority the caller happened to send rather than the one it really has.
+  //
+  // evalBody.priority is read directly rather than through a destructuring
+  // default, so a caller who simply did not mention priority is not mistaken
+  // for one insisting on 'medium' -- which would read as overruling the grid
+  // and demand a written reason for every ticket raised without one.
+  let priorityFields;
+  try {
+    priorityFields = resolvePriority(req.workspaceId, null, {
+      impact, urgency,
+      priority: evalBody.priority,
+      priority_override_reason: evalBody.priority_override_reason,
+    }, req.user).fields;
+  } catch (e) {
+    if (e instanceof PriorityError) return res.status(e.status).json({ error: e.message, field_errors: e.field_errors });
+    throw e;
+  }
+  const priority = priorityFields.priority ?? evalBody.priority ?? 'medium';
 
   const id = uid('tkt');
   const number = nextTicketNumber(req.workspaceId, type);
@@ -347,16 +377,35 @@ router.post('/', async (req, res) => {
   const initialStage = initialStageFor(req.workspaceId, type);
 
   db.prepare(
-    `INSERT INTO tickets (id, workspace_id, number, type, title, description, priority, impact, category, subcategory, team, requester_id, sla_due_at, response_due_at, sla_policy_id, source, risk, planned_start, planned_end, rollback_plan, cab_status, catalog_item_id, lifecycle_stage, status)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    `INSERT INTO tickets (id, workspace_id, number, type, title, description, priority, impact, urgency, category, subcategory, team, requester_id, sla_due_at, response_due_at, sla_policy_id, source, risk, planned_start, planned_end, rollback_plan, cab_status, catalog_item_id, lifecycle_stage, status, priority_overridden, priority_override_reason, priority_override_by, priority_override_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).run(
-    id, req.workspaceId, number, type, title, description || '', priority, impact || 'medium', category || null,
+    id, req.workspaceId, number, type, title, description || '', priority, impact || 'medium', urgency || null, category || null,
     reconcileSubcategories(req.workspaceId, category, subcategory), team || null,
     requester_id || req.user.id, sla_due_at, response_due_at, policy?.id || null, source,
     risk || null, planned_start || null, planned_end || null, rollback_plan || null, cab_status, finalCatalogItemId,
-    initialStage?.key || null, initialStage?.bucket || 'open'
+    initialStage?.key || null, initialStage?.bucket || 'open',
+    priorityFields.priority_overridden ?? 0, priorityFields.priority_override_reason ?? null,
+    priorityFields.priority_override_by ?? null, priorityFields.priority_override_at ?? null
   );
   db.prepare('INSERT INTO ticket_history (id, ticket_id, event, detail) VALUES (?,?,?,?)').run(uid('h'), id, 'created', `Ticket created via ${source}`);
+  if (priorityFields.priority_overridden) {
+    db.prepare('INSERT INTO ticket_history (id, ticket_id, event, detail) VALUES (?,?,?,?)')
+      .run(uid('h'), id, 'priority_overridden', `Raised as ${priority}, against the impact/urgency grid - ${priorityFields.priority_override_reason}`);
+  }
+  // Possible duplicates are suggested, never acted on: merging two genuinely
+  // different faults because their wording agreed is worse than showing an
+  // agent two candidates and letting them judge. Wrapped, because a failed
+  // suggestion must never be the reason a ticket could not be raised.
+  try {
+    const dupes = findDuplicates(req.workspaceId, {
+      id, title, type, category, subcategory, team,
+      requester_id: requester_id || req.user.id,
+    });
+    if (dupes.length) recordCandidates(req.workspaceId, id, dupes);
+  } catch (e) {
+    console.error('duplicate detection error', e);
+  }
   if (Object.keys(customValues).length) saveCustomValues(id, customDefs, customValues);
 
   // A change starts in the state machine's first state and carries no
@@ -441,6 +490,19 @@ router.patch('/:id', (req, res) => {
     return res.status(400).json({ error: 'type must be one of: incident, request, problem, change' });
   }
 
+  // Checked before anything else happens, so a stale save has no side
+  // effects at all -- not a business rule evaluated, not a custom field
+  // written, not an SLA clock touched.
+  try {
+    checkVersion('tickets', ticket.id, req.body.row_version, {
+      fields: Object.keys(req.body).filter((k) => k !== 'row_version'),
+      current: ticket,
+    });
+  } catch (e) {
+    if (e instanceof ConflictError) return res.status(409).json({ error: e.message, conflict: e.conflict });
+    throw e;
+  }
+
   const customDefs = listCustomFields(req.workspaceId, ticket.type);
   const { values: customValues, error: customError } = normalizeCustomValues(customDefs, req.body.custom);
   if (customError) return res.status(400).json({ error: customError });
@@ -464,7 +526,62 @@ router.patch('/:id', (req, res) => {
   // is required to carry. change_type and change_state are deliberately NOT
   // in this list: those move through POST /changes/:id/classify and the
   // guarded state machine, so a plain PATCH cannot skip a gate.
-  const allowed = ['title', 'description', 'status', 'type', 'priority', 'category', 'subcategory', 'assignee_id', 'team', 'impact', 'risk', 'planned_start', 'planned_end', 'rollback_plan', 'implementation_plan', 'test_plan'];
+  const allowed = ['title', 'description', 'status', 'type', 'priority', 'category', 'subcategory', 'assignee_id', 'team', 'impact', 'urgency', 'risk', 'planned_start', 'planned_end', 'rollback_plan', 'implementation_plan', 'test_plan', 'pending_reason', 'next_review_at', 'resolution_code', 'closure_code'];
+
+  // Re-grade the priority whenever impact or urgency moves, and police any
+  // attempt to set priority against the grid. Runs before the field list is
+  // built so the derived values are what actually get written.
+  let priorityChange = null;
+  if (evalBody.impact !== undefined || evalBody.urgency !== undefined || evalBody.priority !== undefined) {
+    try {
+      const resolved = resolvePriority(req.workspaceId, ticket, {
+        impact: evalBody.impact, urgency: evalBody.urgency,
+        priority: evalBody.priority,
+        priority_override_reason: evalBody.priority_override_reason ?? req.body.priority_override_reason,
+      }, req.user);
+      priorityChange = resolved.change;
+      for (const [k, v] of Object.entries(resolved.fields)) {
+        if (v !== undefined) evalBody[k] = v;
+      }
+      // An override held against a changed impact must NOT rewrite priority,
+      // so the key is dropped rather than written back unchanged.
+      if (resolved.change?.kind === 'override_held') delete evalBody.priority;
+    } catch (e) {
+      if (e instanceof PriorityError) return res.status(e.status).json({ error: e.message, field_errors: e.field_errors });
+      throw e;
+    }
+    for (const k of ['priority_overridden', 'priority_override_reason', 'priority_override_by', 'priority_override_at']) {
+      if (evalBody[k] !== undefined && !allowed.includes(k)) allowed.push(k);
+    }
+  }
+
+  // Pending is where tickets go to be forgotten. Moving one there has to say
+  // why, so "pending" is a commitment to come back rather than a parking
+  // space -- and the clock on that wait starts now.
+  const PENDING_STATES = ['on_hold', 'pending'];
+  const movingToPending = evalBody.status !== undefined
+    && PENDING_STATES.includes(evalBody.status)
+    && !PENDING_STATES.includes(ticket.status);
+  if (movingToPending) {
+    const reason = evalBody.pending_reason ?? ticket.pending_reason;
+    if (!reason) {
+      return res.status(400).json({
+        error: 'Say what this ticket is waiting on before putting it on hold.',
+        field_errors: [{ field: 'pending_reason', message: 'Required when a ticket goes on hold' }],
+      });
+    }
+    evalBody.pending_reason = reason;
+    if (!allowed.includes('pending_since')) allowed.push('pending_since');
+    evalBody.pending_since = new Date().toISOString();
+  }
+  // Coming back off hold clears the wait, so a later report cannot count a
+  // ticket as still waiting on a vendor it stopped waiting for weeks ago.
+  if (evalBody.status !== undefined && !PENDING_STATES.includes(evalBody.status) && PENDING_STATES.includes(ticket.status)) {
+    for (const k of ['pending_reason', 'pending_since', 'next_review_at']) {
+      if (!allowed.includes(k)) allowed.push(k);
+      evalBody[k] = null;
+    }
+  }
 
   // Subcategories only mean anything under their own category, so they are
   // normalized against the category this ticket will actually have once this
@@ -484,6 +601,19 @@ router.patch('/:id', (req, res) => {
   for (const key of allowed) {
     if (evalBody[key] !== undefined) { fields.push(`${key} = ?`); params.push(evalBody[key]); }
   }
+  // The clock follows the ticket rather than needing anyone to remember it.
+  // Done before the write so the shifted due dates are not immediately
+  // overwritten by this same UPDATE.
+  if (evalBody.status !== undefined && evalBody.status !== ticket.status) {
+    const afterClock = syncPauseState(ticket, evalBody.status);
+    // syncPauseState may have moved the targets; drop them from this update
+    // so the values it just wrote are not clobbered by stale ones.
+    for (const k of ['sla_due_at', 'response_due_at', 'ola_due_at', 'ola_response_due_at']) {
+      const i = fields.indexOf(`${k} = ?`);
+      if (i !== -1) { fields.splice(i, 1); params.splice(i, 1); }
+    }
+    Object.assign(ticket, afterClock);
+  }
   // The ticket number's prefix (INC-/REQ-/PRB-/CHG-) identifies its type --
   // changing type without renumbering would leave e.g. an INC- number on a
   // ticket that's now a Request. Draws the next number from the *target*
@@ -501,12 +631,42 @@ router.patch('/:id', (req, res) => {
     if (req.body.status === 'resolved' && ticket.status !== 'resolved') { fields.push("resolved_at = datetime('now')"); }
     if (req.body.status === 'closed' && ticket.status !== 'closed') { fields.push("closed_at = datetime('now')"); }
     fields.push("updated_at = datetime('now')");
+    // The bump rides in the same statement as the change, so there is no
+    // window where the row is written but still advertises its old version.
+    const bump = versionBump(req.user.id);
+    fields.push(...bump.sql);
+    params.push(...bump.params);
     params.push(req.params.id);
     db.prepare(`UPDATE tickets SET ${fields.join(', ')} WHERE id = ?`).run(...params);
   }
   db.prepare('INSERT INTO ticket_history (id, ticket_id, event, detail) VALUES (?,?,?,?)').run(
     uid('h'), req.params.id, 'updated', Object.keys(req.body).join(', ')
   );
+  // Priority movements get their own history line. "updated: impact" does not
+  // tell you that the ticket silently became critical, and that is exactly
+  // the change people go looking for afterwards.
+  // A ticket regraded to critical should have had the critical target all
+  // along, so the targets are recomputed from when it was raised rather than
+  // from now -- measuring from the moment somebody noticed would reward
+  // noticing late.
+  if (priorityChange && ['derived', 'overridden', 'override_cleared'].includes(priorityChange.kind)) {
+    try {
+      const fresh = getTicket(req.params.id, req.workspaceId);
+      if (fresh) recalculateTargets(fresh, `Priority became ${fresh.priority}`);
+    } catch (e) { console.error('sla recalculation error', e); }
+  }
+  if (priorityChange) {
+    const detail = {
+      derived: () => `Priority became ${priorityChange.priority} from impact/urgency (was ${priorityChange.from ?? 'unset'})`,
+      overridden: () => `Priority set to ${priorityChange.priority}, against the grid's ${priorityChange.derived} - ${priorityChange.reason}`,
+      override_held: () => `Impact or urgency changed (grid now says ${priorityChange.derived}) but the manual priority ${priorityChange.priority} was kept`,
+      override_cleared: () => `Priority returned to the grid's ${priorityChange.priority}`,
+    }[priorityChange.kind];
+    if (detail) {
+      db.prepare('INSERT INTO ticket_history (id, ticket_id, event, detail) VALUES (?,?,?,?)')
+        .run(uid('h'), req.params.id, `priority_${priorityChange.kind}`, detail());
+    }
+  }
   if (newNumber) {
     db.prepare('INSERT INTO ticket_history (id, ticket_id, event, detail) VALUES (?,?,?,?)').run(
       uid('h'), req.params.id, 'renumbered', `Type changed from ${ticket.type} to ${evalBody.type} — ${previousNumber} became ${newNumber}`
@@ -553,6 +713,43 @@ router.delete('/:id', requirePermission('tickets.delete'), (req, res) => {
 // description only). Each is its own narrow, fully-gated route rather than
 // widening PATCH's allowlist for them. ----
 const REOPEN_WINDOW_DAYS = 7;
+
+// Possible duplicates of this ticket, and the agent's verdict on them.
+// Kept as a suggestion the agent decides on: the system proposes, a person
+// disposes, and the decision is recorded either way.
+router.get('/:id/duplicates', (req, res) => {
+  const ticket = getTicket(req.params.id, req.workspaceId);
+  if (!ticket) return res.status(404).json({ error: 'Not found' });
+  if (req.user.role === 'requester') return res.status(403).json({ error: 'Insufficient permissions' });
+  res.json({ candidates: listCandidates(req.workspaceId, ticket.id, { includeDismissed: req.query.all === '1' }) });
+});
+
+// Re-run detection on demand, for a ticket whose title has since been
+// sharpened into something recognisable.
+router.post('/:id/duplicates/rescan', requireRole('agent', 'admin'), (req, res) => {
+  const ticket = getTicket(req.params.id, req.workspaceId);
+  if (!ticket) return res.status(404).json({ error: 'Not found' });
+  const found = findDuplicates(req.workspaceId, {
+    id: ticket.id, title: ticket.title, type: ticket.type,
+    category: ticket.category, subcategory: ticket.subcategory,
+    team: ticket.team, requester_id: ticket.requester_id,
+  });
+  if (found.length) recordCandidates(req.workspaceId, ticket.id, found);
+  res.json({ candidates: listCandidates(req.workspaceId, ticket.id) });
+});
+
+router.post('/:id/duplicates/:candidateId/decide', requireRole('agent', 'admin'), (req, res) => {
+  try {
+    const out = decideCandidate(req.workspaceId, req.params.candidateId, req.user, req.body.status);
+    db.prepare('INSERT INTO ticket_history (id, ticket_id, event, detail) VALUES (?,?,?,?)')
+      .run(uid('h'), req.params.id, `duplicate_${req.body.status}`,
+        req.body.status === 'confirmed' ? 'Confirmed as a duplicate of an existing ticket' : 'Dismissed a suggested duplicate');
+    res.json({ candidate: out, candidates: listCandidates(req.workspaceId, req.params.id) });
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    throw e;
+  }
+});
 
 router.post('/:id/reopen', (req, res) => {
   if (req.user.role !== 'requester') return res.status(403).json({ error: 'Only the requester can reopen their own ticket this way — agents use a normal status change.' });

@@ -716,6 +716,351 @@ CREATE TABLE IF NOT EXISTS saved_reports (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+-- ---- Analytics: a report is a board of cards ----------------------------
+-- saved_reports above holds ONE chart per row, which is why the reports page
+-- could only ever show a single visualisation at a time. A real analytics
+-- report answers a question from several angles at once, so a dashboard here
+-- owns many cards and each card carries its own type, metrics, grouping and
+-- filters. saved_reports is left exactly as it is: it still backs the
+-- single-chart builder, and nothing that exists today has to be migrated.
+CREATE TABLE IF NOT EXISTS analytics_dashboards (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT,
+  folder TEXT,
+  visibility TEXT DEFAULT 'shared',
+  -- The board's own date window, as JSON. Every card inherits it unless the
+  -- card sets its own, so changing the period on a board re-frames all of
+  -- its cards at once instead of card by card.
+  date_range TEXT,
+  created_by TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS analytics_cards (
+  id TEXT PRIMARY KEY,
+  dashboard_id TEXT NOT NULL REFERENCES analytics_dashboards(id) ON DELETE CASCADE,
+  workspace_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  card_type TEXT NOT NULL,
+  -- Shape depends on card_type; services/analyticsCards.js validates it
+  -- against that type's contract before anything is stored.
+  config TEXT NOT NULL,
+  -- Width on a 12-column grid, so a board can mix full-width trends with
+  -- quarter-width KPIs.
+  span INTEGER DEFAULT 6,
+  position INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_analytics_cards_board ON analytics_cards(dashboard_id, position);
+CREATE INDEX IF NOT EXISTS idx_analytics_boards_ws ON analytics_dashboards(workspace_id);
+
+-- ---- Benchmark targets (§19) --------------------------------------------
+-- A target with a date it came into force, and the date it stopped.
+--
+-- Versioning is the whole point: if the desk tightened its P1 response target
+-- in April, then measuring March against the April target is simply the wrong
+-- comparison, and every "we were failing last quarter" conversation that
+-- follows from it is wrong too. A period is always judged against the target
+-- that was actually in force at the time.
+CREATE TABLE IF NOT EXISTS benchmark_targets (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  kpi TEXT NOT NULL,
+  target_value REAL NOT NULL,
+  -- gte for "at least this good", lte for "no worse than this".
+  comparator TEXT NOT NULL DEFAULT 'gte',
+  effective_from TEXT NOT NULL,
+  -- NULL means "still in force". Closed automatically when a newer target
+  -- supersedes it, so the history is a continuous timeline with no gaps.
+  effective_to TEXT,
+  note TEXT,
+  created_by TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_benchmark_targets ON benchmark_targets(workspace_id, kpi, effective_from);
+
+-- ---- Saved views (§21) --------------------------------------------------
+-- A named filter somebody actually works from. The point is the scope: a
+-- view is worth saving precisely because it is shared -- "unassigned P1s" is
+-- how a team agrees what it is looking at, and a personal-only feature makes
+-- everyone rebuild the same filter separately.
+CREATE TABLE IF NOT EXISTS saved_views (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT,
+  -- Which list it applies to: tickets, changes, problems and so on. A view
+  -- built for changes makes no sense on the incident queue.
+  module TEXT NOT NULL DEFAULT 'tickets',
+  -- private  -- only its owner
+  -- team     -- everyone in the named group
+  -- workspace-- everyone who can see the module
+  scope TEXT NOT NULL DEFAULT 'private',
+  team TEXT,
+  owner_id TEXT,
+  -- The AND/OR condition tree, as JSON. Compiled to SQL through an allowlist
+  -- in services/ticketFilters.js -- never interpolated.
+  filters TEXT NOT NULL,
+  sort_by TEXT,
+  sort_dir TEXT,
+  -- Which columns this view shows, so a view is a whole way of looking at
+  -- the queue rather than only a filter.
+  columns TEXT,
+  position INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_saved_views_ws ON saved_views(workspace_id, module);
+
+-- Which view a person lands on, and which they have pinned. Kept separate
+-- from the view itself because it is a preference about a shared object:
+-- pinning a team view must not change it for the rest of the team.
+CREATE TABLE IF NOT EXISTS saved_view_preferences (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  view_id TEXT NOT NULL REFERENCES saved_views(id) ON DELETE CASCADE,
+  is_default INTEGER DEFAULT 0,
+  pinned INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(user_id, view_id)
+);
+
+-- ---- Major Incident command ---------------------------------------------
+-- The gate in front of declaring a Major Incident. Anyone working an
+-- incident can PROPOSE one; only an authorised manager can promote it. The
+-- proposal deliberately changes nothing about the original incident until
+-- that decision is taken -- the specification is explicit that promotion
+-- must preserve the source incident and leave a traceable relationship,
+-- which a single "declare" button cannot do.
+CREATE TABLE IF NOT EXISTS major_incident_proposals (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  ticket_id TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+  proposed_by TEXT,
+  reason TEXT NOT NULL,
+  suggested_severity TEXT,
+  affected_service TEXT,
+  users_affected TEXT,
+  -- What the automated check found at the time it was proposed, kept as
+  -- evidence rather than recomputed later against changed data.
+  criteria TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',   -- pending | promoted | rejected | withdrawn
+  decided_by TEXT,
+  decided_at TEXT,
+  decision_comment TEXT,
+  major_incident_id TEXT REFERENCES major_incidents(id) ON DELETE SET NULL,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_mi_proposals_ws ON major_incident_proposals(workspace_id, status);
+
+-- Who is doing what, by when. During a major incident this is the thing the
+-- bridge actually runs on, and the thing nobody can reconstruct afterwards
+-- if it only ever existed as speech.
+CREATE TABLE IF NOT EXISTS major_incident_actions (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  major_incident_id TEXT NOT NULL REFERENCES major_incidents(id) ON DELETE CASCADE,
+  action TEXT NOT NULL,
+  owner_id TEXT,
+  started_at TEXT,
+  eta TEXT,
+  status TEXT NOT NULL DEFAULT 'open',      -- open | in_progress | done | abandoned
+  outcome TEXT,
+  completed_at TEXT,
+  created_by TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_mi_actions ON major_incident_actions(major_incident_id, status);
+
+-- What was decided, what else was considered, and why. The post-incident
+-- review is mostly an argument about this, and without it the argument is
+-- conducted from memory.
+CREATE TABLE IF NOT EXISTS major_incident_decisions (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  major_incident_id TEXT NOT NULL REFERENCES major_incidents(id) ON DELETE CASCADE,
+  decision TEXT NOT NULL,
+  options_considered TEXT,
+  rationale TEXT,
+  decided_by TEXT,
+  decided_at TEXT DEFAULT (datetime('now')),
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_mi_decisions ON major_incident_decisions(major_incident_id);
+
+-- Who was told what, through which channel, and when. Distinct from the
+-- running timeline: a stakeholder update to the executive team is a
+-- different record from a technical note on the bridge.
+CREATE TABLE IF NOT EXISTS major_incident_comms (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  major_incident_id TEXT NOT NULL REFERENCES major_incidents(id) ON DELETE CASCADE,
+  audience TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  message TEXT NOT NULL,
+  sent_by TEXT,
+  sent_at TEXT DEFAULT (datetime('now')),
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_mi_comms ON major_incident_comms(major_incident_id);
+
+-- ---- SLA / OLA timer engine ---------------------------------------------
+-- Days the clock does not run. Business hours already say which hours count
+-- on a normal week; this says which whole days do not count at all, which is
+-- the difference between a target that survives Christmas and one that
+-- breaches every ticket over a public holiday.
+CREATE TABLE IF NOT EXISTS business_holidays (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  date TEXT NOT NULL,              -- YYYY-MM-DD
+  name TEXT,
+  recurs_annually INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(workspace_id, date)
+);
+
+-- What the clock did and when. A breach that says only "breached" cannot be
+-- argued with or learned from; this is the record of when it started, every
+-- pause and why, which warnings fired, and the moment it was met or missed.
+CREATE TABLE IF NOT EXISTS ticket_sla_events (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  ticket_id TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,              -- started | paused | resumed | warning | breached | met | recalculated
+  target TEXT,                     -- response | resolution | ola_response | ola_resolution
+  threshold INTEGER,               -- for warnings: the percentage crossed
+  reason TEXT,
+  at TEXT DEFAULT (datetime('now')),
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_sla_events_ticket ON ticket_sla_events(ticket_id, kind);
+
+-- ---- Problem Management -------------------------------------------------
+-- A problem is held on the tickets table like every other record type, so it
+-- inherits numbering, assignment, SLA, comments, attachments and audit for
+-- free. What lives here is everything a problem has that a ticket does not:
+-- which incidents it explains, how the root cause was actually worked out,
+-- the workaround people can use meanwhile, and the corrective actions that
+-- stop it happening again.
+
+-- Which incidents this problem accounts for. The link is the evidence for
+-- the problem existing at all, and it is what makes "how many incidents did
+-- this one root cause produce" answerable.
+CREATE TABLE IF NOT EXISTS problem_incidents (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  problem_id TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+  incident_id TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+  note TEXT,
+  linked_by TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(problem_id, incident_id)
+);
+CREATE INDEX IF NOT EXISTS idx_problem_incidents_p ON problem_incidents(problem_id);
+CREATE INDEX IF NOT EXISTS idx_problem_incidents_i ON problem_incidents(incident_id);
+
+-- The analysis itself, as steps rather than one prose box. Five Whys is five
+-- ordered answers; a fishbone is causes grouped by category. Holding them as
+-- rows means the reasoning can be read back, revised and reported on --
+-- "what category of cause do most of our problems land in" is a question a
+-- free-text field cannot answer.
+CREATE TABLE IF NOT EXISTS problem_rca_steps (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  problem_id TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+  sequence INTEGER NOT NULL DEFAULT 0,
+  label TEXT,
+  content TEXT NOT NULL,
+  created_by TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_problem_rca_p ON problem_rca_steps(problem_id, sequence);
+
+-- What will actually be done about it, with an owner and a date. A root
+-- cause identified and then not acted on is the normal failure mode of
+-- problem management, so these are tracked to completion and reported when
+-- overdue.
+CREATE TABLE IF NOT EXISTS problem_actions (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  problem_id TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  description TEXT,
+  owner_id TEXT,
+  due_date TEXT,
+  status TEXT NOT NULL DEFAULT 'open',   -- open | in_progress | done | cancelled
+  outcome TEXT,
+  change_ticket_id TEXT REFERENCES tickets(id) ON DELETE SET NULL,
+  completed_at TEXT,
+  created_by TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_problem_actions_p ON problem_actions(problem_id, status);
+
+-- Clusters of incidents that look like one underlying fault nobody has
+-- raised a problem for yet. Stored rather than recomputed so a cluster can
+-- be dismissed once instead of reappearing every time someone looks.
+CREATE TABLE IF NOT EXISTS problem_candidates (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  signature TEXT NOT NULL,        -- what the incidents have in common
+  basis TEXT NOT NULL,            -- category | subcategory | asset | title
+  label TEXT NOT NULL,
+  incident_count INTEGER NOT NULL,
+  first_seen TEXT,
+  last_seen TEXT,
+  sample_incident_ids TEXT,       -- JSON array
+  status TEXT NOT NULL DEFAULT 'open',  -- open | dismissed | promoted
+  problem_id TEXT REFERENCES tickets(id) ON DELETE SET NULL,
+  decided_by TEXT,
+  decided_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(workspace_id, signature)
+);
+
+-- ---- Priority derived from Impact x Urgency -----------------------------
+-- Priority used to be typed in directly, which makes it an opinion. ITIL
+-- derives it: how badly the business is hurt (impact) crossed with how fast
+-- it has to be fixed (urgency). Holding the grid as data rather than code is
+-- the point -- every organisation grades its own combinations differently,
+-- and the impact/urgency values themselves are editable in the Field
+-- Manager, so the grid has to be able to follow them.
+--
+-- A combination that has no row simply does not derive, and the ticket keeps
+-- whatever priority it already had. That is deliberate: inventing a default
+-- for a combination nobody configured would be a guess presented as a rule.
+CREATE TABLE IF NOT EXISTS priority_matrix (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  impact TEXT NOT NULL,
+  urgency TEXT NOT NULL,
+  priority TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(workspace_id, impact, urgency)
+);
+
+-- Why a ticket was flagged as a possible duplicate of another, kept so the
+-- suggestion can be shown, dismissed, and audited rather than recomputed
+-- (and silently changing) every time the ticket is opened.
+CREATE TABLE IF NOT EXISTS ticket_duplicate_candidates (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  ticket_id TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+  candidate_id TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+  score REAL NOT NULL,
+  reasons TEXT,
+  status TEXT NOT NULL DEFAULT 'open',   -- open | dismissed | confirmed
+  decided_by TEXT,
+  decided_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(ticket_id, candidate_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dupe_ticket ON ticket_duplicate_candidates(ticket_id, status);
+
 CREATE TABLE IF NOT EXISTS workspace_settings (
   workspace_id TEXT NOT NULL,
   key TEXT NOT NULL,
@@ -2514,8 +2859,120 @@ const ticketColumnMigrations = [
   "ALTER TABLE users ADD COLUMN totp_secret TEXT",
   "ALTER TABLE users ADD COLUMN totp_enabled INTEGER DEFAULT 0",
   "ALTER TABLE users ADD COLUMN totp_enrolled_at TEXT",
+  // Urgency: the missing half of the priority calculation. Impact alone says
+  // how much it hurts; urgency says how fast it has to stop hurting, and the
+  // two together are what actually decides what gets worked first.
+  "ALTER TABLE tickets ADD COLUMN urgency TEXT",
+  // Whether the priority on this ticket came from the grid or from a person
+  // overruling it. Without this you cannot tell a considered override from a
+  // stale value left behind when impact changed -- and cannot report on how
+  // often the grid is being overruled, which is the signal that the grid is
+  // wrong.
+  "ALTER TABLE tickets ADD COLUMN priority_overridden INTEGER DEFAULT 0",
+  "ALTER TABLE tickets ADD COLUMN priority_override_reason TEXT",
+  "ALTER TABLE tickets ADD COLUMN priority_override_by TEXT",
+  "ALTER TABLE tickets ADD COLUMN priority_override_at TEXT",
+  // Pending is the state tickets go to die in. A reason and a review date
+  // make it a commitment to come back rather than a parking space.
+  "ALTER TABLE tickets ADD COLUMN pending_reason TEXT",
+  "ALTER TABLE tickets ADD COLUMN pending_since TEXT",
+  "ALTER TABLE tickets ADD COLUMN next_review_at TEXT",
+  // How it was fixed, and how it was closed -- the two codes every incident
+  // report slices by, and which free-text resolution notes cannot answer.
+  "ALTER TABLE tickets ADD COLUMN resolution_code TEXT",
+  "ALTER TABLE tickets ADD COLUMN closure_code TEXT",
+  // ---- Problem Management ------------------------------------------------
+  // Its own lifecycle, separate from the generic open/resolved/closed status
+  // every ticket has: a problem sitting in "investigation" and one sitting in
+  // "fix planned" are both 'in_progress' to the rest of the app, and that
+  // distinction is the entire management view of the practice.
+  "ALTER TABLE tickets ADD COLUMN problem_state TEXT",
+  "ALTER TABLE tickets ADD COLUMN rca_method TEXT",
+  "ALTER TABLE tickets ADD COLUMN root_cause_category TEXT",
+  "ALTER TABLE tickets ADD COLUMN root_cause_detail TEXT",
+  // The workaround is the single most valuable field on a problem before it
+  // is fixed: it is what the service desk gives people while the real fix is
+  // still being built.
+  "ALTER TABLE tickets ADD COLUMN workaround TEXT",
+  "ALTER TABLE tickets ADD COLUMN is_known_error INTEGER DEFAULT 0",
+  "ALTER TABLE tickets ADD COLUMN known_error_at TEXT",
+  "ALTER TABLE tickets ADD COLUMN known_error_article_id TEXT",
+  "ALTER TABLE tickets ADD COLUMN problem_frequency TEXT",
+  "ALTER TABLE tickets ADD COLUMN business_impact TEXT",
+  "ALTER TABLE tickets ADD COLUMN lessons_learned TEXT",
+  // Closing a problem without fixing it is a legitimate outcome, but it has
+  // to be a decision somebody took and justified, not a silent one.
+  "ALTER TABLE tickets ADD COLUMN residual_risk_accepted INTEGER DEFAULT 0",
+  "ALTER TABLE tickets ADD COLUMN residual_risk_reason TEXT",
+  // ---- SLA timer -------------------------------------------------------
+  // When the clock was stopped, and how long it has been stopped in total.
+  // Without these, a ticket waiting three weeks on a customer breaches its
+  // target through no fault of the desk -- which makes the whole measure
+  // something people argue with instead of act on.
+  "ALTER TABLE tickets ADD COLUMN sla_paused_at TEXT",
+  "ALTER TABLE tickets ADD COLUMN sla_paused_minutes INTEGER DEFAULT 0",
+  "ALTER TABLE tickets ADD COLUMN sla_pause_reason TEXT",
+  // Why it breached, not merely that it did.
+  "ALTER TABLE tickets ADD COLUMN sla_breach_reason TEXT",
+  "ALTER TABLE tickets ADD COLUMN sla_breached_at TEXT",
+  "ALTER TABLE tickets ADD COLUMN response_breached INTEGER DEFAULT 0",
+  // Which warning percentages have already been announced, so the same
+  // warning is not sent on every page load.
+  "ALTER TABLE tickets ADD COLUMN sla_warnings_sent TEXT",
+  // The internal commitment between teams, measured separately from the one
+  // made to the customer: an OLA can be missed while the SLA is still met,
+  // and that is exactly the handover problem worth seeing.
+  "ALTER TABLE tickets ADD COLUMN ola_due_at TEXT",
+  "ALTER TABLE tickets ADD COLUMN ola_response_due_at TEXT",
+  "ALTER TABLE tickets ADD COLUMN ola_breached INTEGER DEFAULT 0",
+  // ---- Optimistic locking ----------------------------------------------
+  // Bumped on every write. A client sends back the version it loaded, and a
+  // write against a stale one is refused rather than applied -- two agents
+  // working the same ticket during an incident is the normal case, not an
+  // edge case, and last-write-wins silently discards whichever of them
+  // pressed Save first.
+  "ALTER TABLE tickets ADD COLUMN row_version INTEGER DEFAULT 1",
+  // Who wrote last, so a conflict can name them instead of saying "somebody".
+  "ALTER TABLE tickets ADD COLUMN updated_by TEXT",
 ];
-for (const sql of ticketColumnMigrations) {
+// SLA policies gain internal targets, warning thresholds and their own pause
+// rules, all optional so every policy that exists today keeps behaving
+// exactly as it does.
+const majorIncidentMigrations = [
+  // The specification names four distinct roles; one "commander" column
+  // cannot express who is running the technical work versus who is talking
+  // to the business, which during a real outage are different people.
+  "ALTER TABLE major_incidents ADD COLUMN incident_lead_id TEXT",
+  "ALTER TABLE major_incidents ADD COLUMN technical_lead_id TEXT",
+  "ALTER TABLE major_incidents ADD COLUMN comms_lead_id TEXT",
+  // The benchmark clocks (§6.6): each is measured from promotion.
+  "ALTER TABLE major_incidents ADD COLUMN acknowledged_at TEXT",
+  "ALTER TABLE major_incidents ADD COLUMN lead_assigned_at TEXT",
+  "ALTER TABLE major_incidents ADD COLUMN first_comms_at TEXT",
+  "ALTER TABLE major_incidents ADD COLUMN promoted_at TEXT",
+  "ALTER TABLE major_incidents ADD COLUMN bridge_url TEXT",
+  // Technical context and recovery, the two template sections with nowhere
+  // to live today.
+  "ALTER TABLE major_incidents ADD COLUMN environment TEXT",
+  "ALTER TABLE major_incidents ADD COLUMN symptoms TEXT",
+  "ALTER TABLE major_incidents ADD COLUMN recovery_validation TEXT",
+  "ALTER TABLE major_incidents ADD COLUMN residual_impact TEXT",
+  "ALTER TABLE major_incidents ADD COLUMN monitoring_until TEXT",
+  "ALTER TABLE major_incidents ADD COLUMN users_affected TEXT",
+  "ALTER TABLE major_incidents ADD COLUMN locations_affected TEXT",
+  // The war room is the highest-contention record in the product: several
+  // people edit it at once by design.
+  "ALTER TABLE major_incidents ADD COLUMN row_version INTEGER DEFAULT 1",
+  "ALTER TABLE major_incidents ADD COLUMN updated_by TEXT",
+];
+const slaPolicyMigrations = [
+  "ALTER TABLE sla_policies ADD COLUMN ola_response_minutes INTEGER",
+  "ALTER TABLE sla_policies ADD COLUMN ola_resolution_minutes INTEGER",
+  "ALTER TABLE sla_policies ADD COLUMN warning_thresholds TEXT",
+  "ALTER TABLE sla_policies ADD COLUMN pause_on_statuses TEXT",
+  "ALTER TABLE sla_policies ADD COLUMN ticket_type TEXT",
+];
+for (const sql of [...ticketColumnMigrations, ...slaPolicyMigrations, ...majorIncidentMigrations]) {
   try {
     db.exec(sql);
   } catch {

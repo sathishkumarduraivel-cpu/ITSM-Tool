@@ -78,6 +78,29 @@ export function requirePermission(key) {
   };
 }
 
+// The service desk's own information, as opposed to the people it serves.
+// requireAuth alone is not an authorization decision: it only establishes
+// WHO is asking, and every route that stopped there was readable by any
+// signed-in account -- including requesters, who are ordinary employees.
+// That exposed other people's ticket titles, what the company pays its
+// vendors, the asset register and who is on call, to anyone who typed the
+// URL. The UI never linked to those pages for a requester, which hid the
+// problem rather than preventing it.
+//
+// Requesters raise tickets, order from the catalog, read the knowledge base
+// and answer their own approvals; everything else here is staff work.
+// Pass permission keys to additionally admit a delegated custom role, the
+// same keys requirePermission uses, so this never overrides a grant an
+// administrator has deliberately made.
+export function requireStaff(...permissions) {
+  return (req, res, next) => {
+    if (!req.user) return res.status(401).json({ error: 'Missing auth token' });
+    if (req.user.role === 'admin' || req.user.role === 'agent') return next();
+    if (Array.isArray(req.user.permissions) && permissions.some((p) => req.user.permissions.includes(p))) return next();
+    return res.status(403).json({ error: 'Insufficient permissions' });
+  };
+}
+
 // Auth for the public developer API (/api/v1/*) -- a completely separate
 // credential from the session JWT above, since an external company system
 // integrating with this platform has no user to log in as. Sets

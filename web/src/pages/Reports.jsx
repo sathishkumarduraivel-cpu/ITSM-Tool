@@ -737,7 +737,12 @@ export default function Reports() {
           </thead>
           <tbody>
             {summary.byAgent.map((a) => (
-              <tr key={a.name} className="row-interactive border-t border-slate-100 dark:border-slate-800">
+              // Keyed on the agent id, not the name: the query groups by
+              // assignee_id, so two people who happen to share a display name
+              // are two legitimate rows, and keying on name made React treat
+              // them as one -- it warns that such rows may be "duplicated
+              // and/or omitted", which here means silently wrong figures.
+              <tr key={a.agent_id} className="row-interactive border-t border-slate-100 dark:border-slate-800">
                 <td className="px-4 py-3 font-medium text-slate-800 dark:text-slate-100"><span className="mr-2 inline-grid h-7 w-7 place-items-center rounded-full bg-brand-50 text-[10px] font-bold text-brand-700 dark:bg-brand-500/10 dark:text-brand-300">{a.name.split(' ').map((part) => part[0]).join('').slice(0, 2)}</span>{a.name}</td>
                 <td className="px-4 py-2 text-slate-600 dark:text-slate-300">{a.total}</td>
                 <td className="px-4 py-2 text-slate-600 dark:text-slate-300">{a.resolved}</td>

@@ -4,6 +4,13 @@ import { requireAuth, requireWorkspace, requireRole } from '../middleware/auth.j
 import { notifyUser } from '../services/notifications.js';
 import { nextMajorIncidentNumber, withComputed, getMajorIncident, SEVERITIES, STATUSES } from '../services/majorIncidents.js';
 import { broadcastToWorkspace } from '../services/realtime.js';
+import {
+  MajorIncidentError, commandMeta, evaluateCriteria,
+  propose, listProposals, getProposal, promote, reject, withdraw,
+  addAction, updateAction, listActions,
+  addDecision, listDecisions, addComms, listComms,
+  acknowledge, assignRoles, commandSummary,
+} from '../services/majorIncidentCommand.js';
 
 const router = Router();
 // Operational coordination work, not admin configuration -- any agent may
@@ -24,6 +31,90 @@ function withNames(mi) {
   const ticket = ticketSummary(mi.ticket_id, mi.workspace_id);
   return { ...mi, commander_name: commander?.name || null, declared_by_name: declaredBy?.name || null, ticket };
 }
+
+
+// ---- the proposal gate (§6.3) -------------------------------------------
+//
+// Registered before '/:id' so "proposals" and "meta" are never mistaken for
+// a major-incident id.
+
+const handle = (res, fn) => {
+  try { return res.json(fn()); }
+  catch (e) {
+    if (e instanceof MajorIncidentError) {
+      const body = { error: e.message };
+      if (e.field_errors) body.field_errors = e.field_errors;
+      return res.status(e.status).json(body);
+    }
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    throw e;
+  }
+};
+
+router.get('/meta', (req, res) => handle(res, () => commandMeta()));
+
+// What the automated check makes of an incident, shown to whoever is
+// deciding rather than used to decide for them.
+router.get('/criteria/:ticketId', (req, res) => handle(res, () => {
+  const ticket = db.prepare('SELECT * FROM tickets WHERE id = ? AND workspace_id = ?').get(req.params.ticketId, req.workspaceId);
+  if (!ticket) return { signals: [] };
+  return { signals: evaluateCriteria(req.workspaceId, ticket) };
+}));
+
+router.get('/proposals', (req, res) => handle(res, () => ({
+  proposals: listProposals(req.workspaceId, { status: req.query.status || 'pending' }),
+})));
+
+// Anyone working an incident may propose; deciding is a separate right.
+router.post('/proposals', (req, res) => {
+  try { res.status(201).json({ proposal: propose(req.workspaceId, req.user, req.body) }); }
+  catch (e) {
+    if (e instanceof MajorIncidentError) return res.status(e.status).json({ error: e.message, field_errors: e.field_errors });
+    throw e;
+  }
+});
+
+router.get('/proposals/:id', (req, res) => handle(res, () => ({ proposal: getProposal(req.workspaceId, req.params.id) })));
+
+router.post('/proposals/:id/withdraw', (req, res) => handle(res, () => ({
+  proposal: withdraw(req.workspaceId, req.params.id, req.user),
+})));
+
+router.post('/proposals/:id/reject', requireRole('admin', 'agent'), (req, res) => handle(res, () => ({
+  proposal: reject(req.workspaceId, req.params.id, req.user, req.body.comment),
+})));
+
+router.post('/proposals/:id/promote', requireRole('admin', 'agent'), (req, res) => handle(res, () => {
+  const out = promote(req.workspaceId, req.params.id, req.user, req.body);
+  const mi = withNames(getMajorIncident(out.majorIncidentId, req.workspaceId));
+  // Everyone who needs to know, told at the moment it becomes real.
+  for (const target of new Set([mi.commander_id, mi.incident_lead_id, mi.technical_lead_id, mi.comms_lead_id].filter(Boolean))) {
+    notifyUser(target, `Major Incident ${mi.number} declared`, mi.summary, `/major-incidents/${mi.id}`, req.workspaceId);
+  }
+  return { proposal: out.proposal, majorIncident: mi };
+}));
+
+// ---- the command logs (§6.5) --------------------------------------------
+
+router.get('/:id/command', (req, res) => handle(res, () => commandSummary(req.workspaceId, req.params.id)));
+
+router.post('/:id/acknowledge', (req, res) => handle(res, () => ({
+  majorIncident: withNames(acknowledge(req.workspaceId, req.params.id, req.user)),
+})));
+
+router.patch('/:id/roles', (req, res) => handle(res, () => ({
+  majorIncident: withNames(assignRoles(req.workspaceId, req.params.id, req.user, req.body)),
+})));
+
+router.get('/:id/actions', (req, res) => handle(res, () => ({ actions: listActions(req.workspaceId, req.params.id) })));
+router.post('/:id/actions', (req, res) => handle(res, () => ({ actions: addAction(req.workspaceId, req.params.id, req.user, req.body) })));
+router.patch('/actions/:actionId', (req, res) => handle(res, () => ({ actions: updateAction(req.workspaceId, req.params.actionId, req.user, req.body) })));
+
+router.get('/:id/decisions', (req, res) => handle(res, () => ({ decisions: listDecisions(req.workspaceId, req.params.id) })));
+router.post('/:id/decisions', (req, res) => handle(res, () => ({ decisions: addDecision(req.workspaceId, req.params.id, req.user, req.body) })));
+
+router.get('/:id/comms', (req, res) => handle(res, () => ({ comms: listComms(req.workspaceId, req.params.id) })));
+router.post('/:id/comms', (req, res) => handle(res, () => ({ comms: addComms(req.workspaceId, req.params.id, req.user, req.body) })));
 
 router.get('/', (req, res) => {
   const { status } = req.query;

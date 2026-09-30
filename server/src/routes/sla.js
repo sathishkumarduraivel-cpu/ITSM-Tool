@@ -1,11 +1,12 @@
 import { Router } from 'express';
 import { db, uid } from '../db.js';
-import { requireAuth, requireWorkspace, requirePermission } from '../middleware/auth.js';
+import { requireAuth, requireWorkspace, requirePermission, requireStaff } from '../middleware/auth.js';
 import { logAudit } from '../services/auditLog.js';
 import { resolveConditions } from '../services/sla.js';
+import { listHolidays, addHoliday, deleteHoliday } from '../services/slaEngine.js';
 
 const router = Router();
-router.use(requireAuth, requireWorkspace);
+router.use(requireAuth, requireWorkspace, requireStaff('sla.manage'));
 
 const CONDITION_OPS = new Set(['equals', 'not_equals', 'contains', 'greater_than', 'less_than', 'is_empty', 'is_not_empty']);
 
@@ -109,12 +110,26 @@ router.get('/at-risk', (req, res) => {
     FROM tickets
     WHERE workspace_id = ? AND status NOT IN ('resolved', 'closed')
       AND (
-        sla_due_at < datetime('now', '+2 hours')
+        datetime(sla_due_at) < datetime('now', '+2 hours')
         OR (response_due_at < datetime('now') AND responded_at IS NULL)
       )
     ORDER BY sla_due_at ASC
   `).all(req.workspaceId);
   res.json({ tickets: rows });
+});
+
+// ---- business calendar: the days the clock does not run -----------------
+
+router.get('/holidays', (req, res) => res.json({ holidays: listHolidays(req.workspaceId) }));
+
+router.post('/holidays', requirePermission('sla.manage'), (req, res) => {
+  try { res.status(201).json({ holidays: addHoliday(req.workspaceId, req.body) }); }
+  catch (e) { if (e.status) return res.status(e.status).json({ error: e.message }); throw e; }
+});
+
+router.delete('/holidays/:id', requirePermission('sla.manage'), (req, res) => {
+  try { res.json({ holidays: deleteHoliday(req.workspaceId, req.params.id) }); }
+  catch (e) { if (e.status) return res.status(e.status).json({ error: e.message }); throw e; }
 });
 
 export default router;

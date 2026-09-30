@@ -40,9 +40,36 @@ const DEFAULT_OPTIONS = {
     { value: 'critical', label: 'Critical', color: 'red' },
   ],
   impact: [
-    { value: 'low', label: 'Low — one person', color: 'sky' },
+    { value: 'low', label: 'Low ', color: 'sky' },
     { value: 'medium', label: 'Medium — a team', color: 'amber' },
     { value: 'high', label: 'High — whole site', color: 'red' },
+  ],
+  urgency: [
+    { value: 'low', label: 'Low — can wait', color: 'sky' },
+    { value: 'medium', label: 'Medium — soon', color: 'amber' },
+    { value: 'high', label: 'High — right now', color: 'red' },
+  ],
+  pending_reason: [
+    { value: 'awaiting_user', label: 'Waiting on the requester', color: 'amber' },
+    { value: 'awaiting_vendor', label: 'Waiting on a vendor', color: 'orange' },
+    { value: 'awaiting_change', label: 'Waiting on a change', color: 'violet' },
+    { value: 'awaiting_parts', label: 'Waiting on parts or delivery', color: 'cyan' },
+    { value: 'scheduled', label: 'Scheduled for later', color: 'slate' },
+  ],
+  resolution_code: [
+    { value: 'fixed', label: 'Fixed — permanent', color: 'emerald' },
+    { value: 'workaround', label: 'Workaround applied', color: 'amber' },
+    { value: 'no_fault_found', label: 'No fault found', color: 'slate' },
+    { value: 'user_error', label: 'User education', color: 'sky' },
+    { value: 'resolved_by_change', label: 'Resolved by a change', color: 'violet' },
+    { value: 'duplicate', label: 'Duplicate of another ticket', color: 'slate' },
+  ],
+  closure_code: [
+    { value: 'successful', label: 'Closed — resolved', color: 'emerald' },
+    { value: 'auto_closed', label: 'Auto-closed — no response', color: 'slate' },
+    { value: 'withdrawn', label: 'Withdrawn by the requester', color: 'slate' },
+    { value: 'not_reproducible', label: 'Could not reproduce', color: 'amber' },
+    { value: 'rejected', label: 'Rejected — out of scope', color: 'red' },
   ],
   risk: [
     { value: 'low', label: 'Low', color: 'emerald' },
@@ -66,7 +93,23 @@ export const FIELD_REGISTRY = {
   },
   impact: {
     label: 'Impact', kind: 'enum', manage: 'options',
-    description: 'How many people are affected. Fully editable — nothing downstream depends on these values.',
+    description: 'How badly the business is affected. Crossed with Urgency to derive Priority — edit the grid in Priority Matrix if you change these.',
+  },
+  urgency: {
+    label: 'Urgency', kind: 'enum', manage: 'options',
+    description: 'How quickly it has to be put right. Crossed with Impact to derive Priority — edit the grid in Priority Matrix if you change these.',
+  },
+  pending_reason: {
+    label: 'Pending reason', kind: 'enum', manage: 'options',
+    description: 'Why a ticket is parked, asked for whenever one moves to a waiting state so "pending" never means "forgotten".',
+  },
+  resolution_code: {
+    label: 'Resolution code', kind: 'enum', manage: 'options',
+    description: 'How it was actually put right. This is what resolution reporting slices by — free-text notes cannot be counted.',
+  },
+  closure_code: {
+    label: 'Closure code', kind: 'enum', manage: 'options',
+    description: 'How the ticket ended, which is not always how it was resolved — auto-closed and withdrawn are outcomes worth measuring separately.',
   },
   risk: {
     label: 'Risk', kind: 'enum', manage: 'options', types: ['change'],

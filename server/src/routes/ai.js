@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { db, uid } from '../db.js';
-import { requireAuth, requireWorkspace, requireRole } from '../middleware/auth.js';
+import { requireAuth, requireWorkspace, requireRole, requireStaff } from '../middleware/auth.js';
 import { getProvider, testProvider, dashboardInsights, askAssistant, describeProblem, askAboutMyTickets } from '../services/aiClient.js';
 import { encrypt } from '../services/crypto.js';
 import { getOnlineUserIds } from '../services/realtime.js';
@@ -16,7 +16,11 @@ const router = Router();
 const aiLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 30, standardHeaders: true, legacyHeaders: false });
 router.use(requireAuth, requireWorkspace);
 
-router.get('/providers', (req, res) => {
+// Which AI providers are wired up, and the desk-wide dashboard figures, are
+// staff information. The assistant endpoints below stay open: answering your
+// own question and describing your own problem is what a requester is here
+// for.
+router.get('/providers', requireStaff(), (req, res) => {
   const rows = db.prepare('SELECT id, name, provider_type, base_url, model, is_default, created_at FROM ai_providers WHERE workspace_id = ? ORDER BY created_at DESC').all(req.workspaceId);
   res.json({ providers: rows });
 });
@@ -74,7 +78,7 @@ function buildStats(workspaceId) {
   const byPriority = db.prepare('SELECT priority, COUNT(*) c FROM tickets WHERE workspace_id = ? GROUP BY priority').all(workspaceId);
   const byCategory = db.prepare('SELECT category, COUNT(*) c FROM tickets WHERE workspace_id = ? GROUP BY category').all(workspaceId);
   const byTeam = db.prepare('SELECT team, COUNT(*) c FROM tickets WHERE workspace_id = ? AND team IS NOT NULL GROUP BY team').all(workspaceId);
-  const slaBreached = db.prepare("SELECT COUNT(*) c FROM tickets WHERE workspace_id = ? AND (sla_breached = 1 OR (sla_due_at < datetime('now') AND status NOT IN ('resolved','closed')))").get(workspaceId);
+  const slaBreached = db.prepare("SELECT COUNT(*) c FROM tickets WHERE workspace_id = ? AND (sla_breached = 1 OR (datetime(sla_due_at) < datetime('now') AND status NOT IN ('resolved','closed')))").get(workspaceId);
   const openCount = db.prepare("SELECT COUNT(*) c FROM tickets WHERE workspace_id = ? AND status NOT IN ('resolved','closed')").get(workspaceId);
   const totalCount = db.prepare('SELECT COUNT(*) c FROM tickets WHERE workspace_id = ?').get(workspaceId);
   const last7days = db.prepare("SELECT date(created_at) d, COUNT(*) c FROM tickets WHERE workspace_id = ? AND created_at >= datetime('now','-7 days') GROUP BY date(created_at) ORDER BY d").all(workspaceId);
@@ -84,7 +88,7 @@ function buildStats(workspaceId) {
   return { byStatus, byPriority, byCategory, byTeam, slaBreached: slaBreached.c, openCount: openCount.c, totalCount: totalCount.c, last7days, topAgents };
 }
 
-router.get('/dashboard-stats', (req, res) => {
+router.get('/dashboard-stats', requireStaff(), (req, res) => {
   res.json({ stats: buildStats(req.workspaceId) });
 });
 
@@ -123,7 +127,7 @@ function buildCommandCenterStats(workspaceId, filters = {}, callerId) {
   const reliabilityHealth = closedCount > 0 ? Math.round((closedWithinSla / closedCount) * 100) : 100;
 
   const openRisks = db.prepare(
-    `SELECT COUNT(*) c FROM tickets WHERE ${wAll.sql} AND status NOT IN ('resolved','closed') AND (priority = 'critical' OR sla_breached = 1 OR (sla_due_at < datetime('now')))`
+    `SELECT COUNT(*) c FROM tickets WHERE ${wAll.sql} AND status NOT IN ('resolved','closed') AND (priority = 'critical' OR sla_breached = 1 OR (datetime(sla_due_at) < datetime('now')))`
   ).get(...wAll.params).c;
 
   const unassignedOpen = db.prepare(
@@ -233,7 +237,7 @@ function buildCommandCenterStats(workspaceId, filters = {}, callerId) {
   };
 }
 
-router.get('/command-center-stats', (req, res) => {
+router.get('/command-center-stats', requireStaff(), (req, res) => {
   try {
     const stats = buildCommandCenterStats(req.workspaceId, req.query, req.user.id);
     res.json({ stats });

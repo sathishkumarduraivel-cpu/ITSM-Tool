@@ -1,10 +1,10 @@
 import { Router } from 'express';
 import { db, uid } from '../db.js';
-import { requireAuth, requireWorkspace, requirePermission } from '../middleware/auth.js';
+import { requireAuth, requireWorkspace, requirePermission, requireStaff } from '../middleware/auth.js';
 import { logAudit } from '../services/auditLog.js';
 
 const router = Router();
-router.use(requireAuth, requireWorkspace);
+router.use(requireAuth, requireWorkspace, requireStaff('escalations.manage'));
 
 function withLevels(policy) {
   const levels = db.prepare('SELECT * FROM escalation_levels WHERE policy_id = ? ORDER BY level_order ASC').all(policy.id);

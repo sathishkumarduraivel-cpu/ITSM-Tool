@@ -12,15 +12,57 @@ import QRCode from 'qrcode';
 
 const router = Router();
 
-// Strict in production (brute-force protection); generous outside it so
-// normal dev/test iteration doesn't trip the same limiter real users share.
-const authLimiter = rateLimit({
+// Brute-force protection, in two parts, because the two things worth
+// stopping need different keys.
+//
+// Keying the whole thing on the IP address, as this used to, conflates
+// "somebody is guessing one person's password" with "these people share an
+// office". A company reaches the internet through one NAT address, so ten
+// attempts per quarter-hour is ten attempts for the entire building: on the
+// first Monday morning the eleventh person to sign in — or the fourth
+// person to mistype once — is told "Too many attempts" because of their
+// colleagues. That locks out exactly the people the limit is meant to
+// protect.
+//
+// Per account: guessing one person's password is bounded tightly, and it
+// follows the account rather than the machine, so moving between networks
+// (or a botnet) does not buy more attempts.
+const perAccountLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: process.env.NODE_ENV === 'production' ? 10 : 100,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many attempts — please try again later.' },
+  // Normalised so casing and stray whitespace cannot be used to mint fresh
+  // allowances for the same account. With no email to key on, fall back to
+  // the address so a malformed flood is still bounded.
+  keyGenerator: (req) => {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    if (email) return `account:${email}`;
+    // MFA verification carries a signed challenge rather than an email, and
+    // its subject is the account. Verified, not merely decoded, so a forged
+    // challenge cannot mint itself a fresh allowance -- it falls through to
+    // the address below instead.
+    if (req.body?.challenge) {
+      try { return `account:${verifyMfaChallenge(req.body.challenge)}`; } catch { /* not valid */ }
+    }
+    return `ip:${req.ip}`;
+  },
 });
+
+// Per address: one machine working through a list of accounts. Set high
+// enough that a real shared office never reaches it — a person signing in
+// costs one or two attempts — but low enough that enumeration is not free.
+const perAddressLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: process.env.NODE_ENV === 'production' ? 100 : 1000,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many attempts from this network — please try again later.' },
+});
+
+// Both apply: whichever is exceeded first stops the request.
+const authLimiter = [perAddressLimiter, perAccountLimiter];
 
 // Self-service sign-up. Unlike the old flow, this no longer lets the caller
 // spin up a brand-new workspace — workspaces are provisioned by admins in

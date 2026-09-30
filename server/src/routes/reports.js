@@ -1,11 +1,11 @@
 import { Router } from 'express';
 import { db, uid } from '../db.js';
-import { requireAuth, requireWorkspace } from '../middleware/auth.js';
+import { requireAuth, requireWorkspace, requireStaff } from '../middleware/auth.js';
 import { GROUP_BY_DIMENSIONS, METRICS, runCustomReport, runPivotReport, previousPeriod, runBacklogAging } from '../services/reportBuilder.js';
 import { getProvider, chatComplete } from '../services/aiClient.js';
 
 const router = Router();
-router.use(requireAuth, requireWorkspace);
+router.use(requireAuth, requireWorkspace, requireStaff());
 
 function filtersFromQuery(q) {
   const { type, priority, team, category, status, assignee_id, from, to } = q;
@@ -19,9 +19,9 @@ router.get('/tickets-summary', (req, res) => {
     FROM tickets WHERE workspace_id = ? GROUP BY month ORDER BY month
   `).all(req.workspaceId);
   const byAgent = db.prepare(`
-    SELECT u.name, COUNT(*) total,
+    SELECT t.assignee_id AS agent_id, u.name, COUNT(*) total,
       SUM(CASE WHEN t.status IN ('resolved','closed') THEN 1 ELSE 0 END) resolved,
-      SUM(CASE WHEN t.sla_due_at < datetime('now') AND t.status NOT IN ('resolved','closed') THEN 1 ELSE 0 END) breached
+      SUM(CASE WHEN datetime(t.sla_due_at) < datetime('now') AND t.status NOT IN ('resolved','closed') THEN 1 ELSE 0 END) breached
     FROM tickets t JOIN users u ON u.id = t.assignee_id WHERE t.workspace_id = ? GROUP BY t.assignee_id ORDER BY total DESC
   `).all(req.workspaceId);
   const avgResolutionHours = db.prepare(`

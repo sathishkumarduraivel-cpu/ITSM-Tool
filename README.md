@@ -56,7 +56,7 @@ to one vendor's model. This is a lightweight alternative you run yourself, where
   actions (assign, notify, tag, or invoke AI). Every workflow run is logged.
 - **Integrations**: Slack/Teams/generic webhook out of the box (email/Jira are stubbed
   to a console-log "simulated send" so the app runs with zero external creds — wire in
-  real SMTP/Jira credentials in `server/src/services/notify.js` when you're ready).
+  real SMTP/Jira credentials in `backend/src/services/notify.js` when you're ready).
 - **AI Settings**: add as many providers as you want, mark one default, test the
   connection with one click.
 
@@ -69,19 +69,19 @@ to one vendor's model. This is a lightweight alternative you run yourself, where
 
 ```bash
 # 1. Backend
-cd server
+cd backend
 npm install
-cp .env.example .env      # optional: change PORT / JWT_SECRET
+cp .env.example .env       # optional: change PORT / JWT_SECRET
 npm run seed               # creates demo users, tickets, assets, KB articles, workflows
-npm start                  # http://localhost:4000
+npm run dev                # http://localhost:4001  (npm start for no file watching)
 
 # 2. Frontend (in a second terminal)
-cd web
+cd frontend
 npm install
-npm run dev                 # http://localhost:5173 (proxies /api to the backend)
+npm run dev                # http://localhost:5175 (proxies /api to the backend)
 ```
 
-Open http://localhost:5173 and log in with one of the seeded accounts:
+Open http://localhost:5175 and log in with one of the seeded accounts:
 
 | Email | Password | Role |
 |---|---|---|
@@ -104,38 +104,83 @@ actions — including `AI: auto-categorize ticket` or `AI: post suggested resolu
 the automation itself calls your configured LLM. Two example workflows and one AI
 categorization workflow are pre-seeded.
 
+### Deploying to Azure
+
+One Azure App Service runs the whole thing: the backend serves the API and the built
+frontend from the same origin, so there is no CORS to configure and no second service to
+pay for.
+
+1. Create a **Linux App Service** on the **Node 22** runtime.
+2. **Configuration → General settings → Startup Command:**
+   ```
+   node backend/src/index.js
+   ```
+3. **Configuration → Application settings:**
+
+   | Setting | Value |
+   |---|---|
+   | `NODE_ENV` | `production` |
+   | `ITSM_DATA_DIR` | `/home/data` |
+   | `JWT_SECRET` | a long random string |
+   | `ENCRYPTION_KEY` | 32 random bytes, base64 |
+
+   ```bash
+   node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"   # JWT_SECRET
+   node -e "console.log(require('crypto').randomBytes(32).toString('base64'))" # ENCRYPTION_KEY
+   ```
+
+4. Download the app's **Publish Profile** and save it as the repository secret
+   `AZUREAPPSERVICE_PUBLISHPROFILE`. Set `AZURE_WEBAPP_NAME` in
+   [.github/workflows/azure-deploy.yml](.github/workflows/azure-deploy.yml) to the app's
+   name. Pushing to `main`/`master` then builds, tests and deploys.
+
+**`ITSM_DATA_DIR` is the setting that matters most.** The database is SQLite — a file on
+disk. On App Service only `/home` survives a restart, a scale event or a redeploy;
+anything written elsewhere lives in the container's ephemeral layer and goes with it.
+Pointing the data directory at `/home/data` is what makes your data durable.
+
 ### Production notes
 
-This is a working MVP, not a hardened production deployment. Before exposing it beyond
-your local network: put a real reverse proxy / TLS in front of it, set a strong
-`JWT_SECRET`, encrypt `api_key`/webhook secrets at rest (they're stored as plain text in
-SQLite columns here for simplicity), wire real SMTP and Jira clients into
-`server/src/services/notify.js`, and consider moving from SQLite to Postgres if you
-need multi-instance deployment.
+Still worth knowing before real users arrive:
+
+- **One instance only.** SQLite is a single file, so scaling out to multiple App Service
+  instances needs Postgres first. Keep the app at one instance until then.
+- **Back it up.** A super-admin can download a full database snapshot from
+  Admin Settings; `/home` is durable but it is not a backup.
+- **TLS is handled for you** by App Service. If you host it anywhere else, put a real
+  reverse proxy in front.
 
 ## Project layout
 
+Two folders, one for each half. Nothing else in the repo is needed to run or deploy it.
+
 ```
 itsm-ai/
-  server/            Express + node:sqlite API
+  backend/           Express + node:sqlite API, and the server that hosts the frontend
     src/
-      db.js           schema + typed helpers
-      seed.js          demo data
-      middleware/auth.js
-      services/
-        aiClient.js         multi-provider LLM client (the "any AI key" layer)
-        automationEngine.js  trigger/condition/action workflow runner
-        notify.js             Slack/Teams/webhook/email/Jira dispatch
-        notifications.js       in-app notification + template rendering
-        sla.js                 SLA policy matching + business-hours-aware due dates
-      routes/          auth, tickets, assets, kb, automations, ai, integrations,
-                        catalog, approvals, sla, procurement, notifications, reports
-  web/                React 18 + Vite + Tailwind + Recharts + lucide-react
+      index.js          app wiring, middleware, static hosting of ../../frontend/dist
+      db.js             schema + migrations + typed helpers
+      seed.js           demo data
+      middleware/       auth (roles, permissions, delegated roles), async route guard
+      services/         ~86 modules: the SLA engine, workflow engine, approval
+                        delegation, CMDB graph, AI client, catalog forms, and so on
+      routes/           ~56 route modules, one per module of the product
+    data/              the SQLite database (gitignored, created on first run)
+  frontend/          React 18 + Vite + Tailwind + Recharts + lucide-react
     src/
-      pages/           Dashboard, PortalHome, Tickets, TicketDetail, Assets,
-                        KnowledgeBase, Automations, Integrations, AISettings, Catalog,
-                        Approvals, SlaPolicies, Procurement, Reports, Login
-      components/       AppShell (role-aware sidebar/topbar), NotificationBell, Badge
-      context/          AuthContext (JWT session)
+      pages/            one per screen: Tickets, TicketDetail, Analytics, Catalog,
+                        ChangeManagement, Problems, MajorIncidents, Assets, CMDB,
+                        Approvals, AdminSettings, PortalHome, ...
+      components/       AppShell (role-aware sidebar), Modal, Select, and per-module
+                        component folders (analytics/, catalog/, admin/, problems/, ...)
+      context/          AuthContext (JWT session), I18nContext
+      i18n/locales/     7 languages
       lib/api.js        fetch wrapper
+  docs/              build status, how-it-works, go-live checklist (not needed to run)
+```
+
+### Tests
+
+```bash
+cd backend && npm test     # 1016 tests, colocated as src/**/*.test.js
 ```

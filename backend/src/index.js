@@ -1,0 +1,345 @@
+import 'dotenv/config';
+import express from 'express';
+import cors from 'cors';
+import morgan from 'morgan';
+import rateLimit from 'express-rate-limit';
+import jwt from 'jsonwebtoken';
+import { protectAsyncRoutes } from './middleware/asyncRoutes.js';
+import path from 'node:path';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { db } from './db.js';
+import { JWT_SECRET } from './middleware/auth.js';
+
+// A platform with no persistent disk (Render's free tier, among others) can
+// hand this process a brand-new, completely empty backend/data/itsm.db on
+// any boot -- not just a real redeploy, but also just waking back up from
+// the free tier's idle-timeout sleep. Without this, that means every login
+// fails with "invalid credentials" -- not because anything is broken, but
+// because the seeded demo account genuinely was never created on that disk.
+// seed.js is fully idempotent (every section is its own `if (count === 0)`
+// guard), so running it here is safe against an already-seeded database too
+// -- but it's still gated on the admin account specifically being missing,
+// so a normal restart of an instance that already has real data doesn't
+// reprint the whole seed summary to the log every time.
+if (!db.prepare('SELECT id FROM users WHERE email = ?').get('admin@itsm.ai')) {
+  console.log('No seed data found on this disk -- running first-boot seed...');
+  await import('./seed.js');
+}
+
+import authRoutes from './routes/auth.js';
+import workspaceRoutes from './routes/workspaces.js';
+import ticketRoutes from './routes/tickets.js';
+import assetRoutes from './routes/assets.js';
+import cmdbConfigRoutes from './routes/cmdbConfig.js';
+import cmdbRoutes from './routes/cmdb.js';
+import discoveryRoutes from './routes/discovery.js';
+import itamRoutes from './routes/itam.js';
+import kbRoutes from './routes/kb.js';
+import automationRoutes from './routes/automations.js';
+import aiRoutes from './routes/ai.js';
+import integrationRoutes from './routes/integrations.js';
+import catalogRoutes from './routes/catalog.js';
+import approvalRoutes from './routes/approvals.js';
+import slaRoutes from './routes/sla.js';
+import escalationRoutes from './routes/escalations.js';
+import procurementRoutes from './routes/procurement.js';
+import notificationRoutes from './routes/notifications.js';
+import reportRoutes from './routes/reports.js';
+import analyticsRoutes from './routes/analytics.js';
+import priorityMatrixRoutes from './routes/priorityMatrix.js';
+import problemRoutes from './routes/problems.js';
+import viewRoutes from './routes/views.js';
+import benchmarkRoutes from './routes/benchmarks.js';
+import businessRuleRoutes from './routes/businessRules.js';
+import customFieldRoutes from './routes/customFields.js';
+import lifecycleRoutes from './routes/lifecycles.js';
+import searchRoutes from './routes/search.js';
+import adminRoutes from './routes/admin.js';
+import dashboardRoutes from './routes/dashboard.js';
+import groupRoutes from './routes/groups.js';
+import hrCaseRoutes from './routes/hrCases.js';
+import externalConnectionRoutes from './routes/externalConnections.js';
+import externalSyncWebhookRoutes from './routes/externalSyncWebhooks.js';
+import ticketNumberingRoutes from './routes/ticketNumbering.js';
+import customRoleRoutes from './routes/customRoles.js';
+import auditLogRoutes from './routes/auditLog.js';
+import majorIncidentRoutes from './routes/majorIncidents.js';
+import selfServiceRoutes from './routes/selfService.js';
+import realtimeRoutes from './routes/realtime.js';
+import ssoRoutes from './routes/sso.js';
+import apiKeyRoutes from './routes/apiKeys.js';
+import publicApiRoutes from './routes/publicApi.js';
+import directoryRoutes from './routes/directory.js';
+import emailSettingsRoutes from './routes/emailSettings.js';
+import emailTemplateRoutes from './routes/emailTemplates.js';
+import cannedResponseRoutes from './routes/cannedResponses.js';
+import oncallRoutes from './routes/oncall.js';
+import assignmentRoutes from './routes/assignment.js';
+import alertRoutes from './routes/alerts.js';
+import alertWebhookRoutes from './routes/alertWebhooks.js';
+import ticketCategoryRoutes from './routes/ticketCategories.js';
+import ticketFieldRoutes from './routes/ticketFields.js';
+import changeRoutes from './routes/changes.js';
+import cabRoutes from './routes/cab.js';
+import changeConfigRoutes from './routes/changeConfig.js';
+import { startDirectorySyncScheduler } from './services/directorySyncScheduler.js';
+import { startInboundEmailScheduler } from './services/inboundEmailScheduler.js';
+import { startAlertScheduler } from './services/alertScheduler.js';
+import { logError } from './services/errorLog.js';
+
+const app = express();
+const PORT = process.env.PORT || 4000;
+
+// Render (like Heroku/Railway/any platform behind a reverse proxy) terminates
+// TLS in front of this process and forwards plain HTTP, setting
+// X-Forwarded-Proto/X-Forwarded-For -- without this, Express ignores those
+// headers entirely, so req.protocol always reads 'http' (breaking the
+// self-origin CORS check right below, and every req.protocol-based link this
+// app builds for emails -- see routes/tickets.js's ticketLink() and similar
+// helpers, which would silently generate http:// links behind a real https
+// deployment) and req.ip resolves to the proxy's own address instead of the
+// real client's (undermining the rate limiter below, which keys on IP).
+app.set('trust proxy', 1);
+
+const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+// A per-request delegate (not a static options object) so the origin check
+// can compare against THIS request's own host -- the frontend and API share
+// one origin in every deployment this app actually ships (see the static-
+// file serving block near the bottom of this file), so that self-origin
+// should always be allowed without anyone having to remember to also set
+// CORS_ORIGIN to match wherever this happens to be deployed. CORS_ORIGIN
+// stays for the one case self-origin can't cover: local dev, where the Vite
+// dev server (a different port) is a genuinely different origin from this
+// API.
+app.use((req, res, next) => {
+  // req.protocol honors X-Forwarded-Proto once 'trust proxy' is set above,
+  // but req.get('host') reads the raw Host header directly and does NOT --
+  // Express only applies X-Forwarded-Host to req.hostname (which drops the
+  // port), so it's read here by hand instead, preferring it over the raw
+  // Host header when a proxy set it.
+  const forwardedHost = req.headers['x-forwarded-host']?.split(',')[0].trim();
+  const selfOrigin = `${req.protocol}://${forwardedHost || req.get('host')}`;
+  cors({
+    origin(origin, callback) {
+      if (!origin || origin === selfOrigin || allowedOrigins.includes(origin)) return callback(null, true);
+      return callback(new Error('Not allowed by CORS'));
+    },
+    credentials: true,
+  })(req, res, next);
+});
+// Security headers -- hand-rolled rather than pulling in helmet, consistent
+// with this app's existing zero-unnecessary-deps philosophy (these are ~10
+// lines, not worth a dependency). Scoped precisely to what this app actually
+// loads (same-origin JS/CSS bundle, Google Fonts, no other third-party
+// resources anywhere in the product) rather than a generic permissive
+// default, since a CSP that's too loose defeats its own purpose.
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+  if (process.env.NODE_ENV === 'production') {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'self'",
+    "script-src 'self'",
+    // 'unsafe-inline' on style-src only (never script-src) -- React sets a
+    // lot of inline `style={{...}}` (progress bars, avatar colors, popover
+    // positioning), which CSP treats the same as a <style> tag. This has no
+    // effect on XSS protection, which comes from script-src staying strict.
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    "img-src 'self' data: blob:",
+    "connect-src 'self'",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+  ].join('; '));
+  next();
+});
+app.use(express.json({ limit: '2mb' }));
+// The real-time stream carries its auth token as a query param (EventSource
+// can't set headers) -- excluded here so that token is never written to the
+// access log the way a normal request URL would be. See middleware/auth.js.
+app.use(morgan('dev', { skip: (req) => req.path === '/api/realtime/stream' }));
+
+// A backstop against abuse of /api/* as a whole. The limits that actually
+// protect the expensive and attackable routes are the narrower ones next to
+// them (login, AI); this one only stops somebody hammering the API broadly.
+//
+// Budgeted PER ACCOUNT, not per IP. An office reaches the internet through
+// one NAT address, so an IP-keyed budget is shared by everybody in the
+// building: colleagues' traffic throttles you, and the busier the workspace
+// the worse it gets — the opposite of what a limit should do. The bearer
+// token says which account is asking, so each account gets its own
+// allowance and one person's activity cannot lock out their team. A token
+// that does not verify is deliberately NOT trusted for keying: it falls
+// back to the IP, so a forged token cannot mint itself a fresh budget.
+// Unauthenticated traffic (login, SSO callbacks) has nothing else to key
+// on and keeps the previous per-IP behaviour.
+//
+// The ceiling was measured rather than guessed: a single page view costs
+// roughly a dozen API calls, and the notification bell polls every 20s, so
+// the previous production value of 300/15min was about 25 page views —
+// under half an hour of ordinary work before a working agent started
+// getting "Request failed (429)". The comment here used to describe 300 as
+// the value that "was tripping during ordinary usage", but only the
+// non-production branch had been raised, leaving production on exactly the
+// number already identified as too low.
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 2000,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    const header = req.headers.authorization || '';
+    const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+    if (token) {
+      try {
+        const payload = jwt.verify(token, JWT_SECRET);
+        if (payload?.id) return `user:${payload.id}`;
+      } catch { /* unverifiable -- fall through to the address below */ }
+    }
+    return `ip:${req.ip}`;
+  },
+});
+app.use('/api', apiLimiter);
+
+app.get('/api/health', (req, res) => res.json({ ok: true, service: 'itsm-ai-server', time: new Date().toISOString() }));
+
+app.use('/api/auth', authRoutes);
+app.use('/api/workspaces', workspaceRoutes);
+app.use('/api/tickets', ticketRoutes);
+app.use('/api/assets', assetRoutes);
+app.use('/api/cmdb-config', cmdbConfigRoutes);
+app.use('/api/cmdb', cmdbRoutes);
+app.use('/api/discovery', discoveryRoutes);
+app.use('/api/itam', itamRoutes);
+app.use('/api/kb', kbRoutes);
+app.use('/api/automations', automationRoutes);
+app.use('/api/ai', aiRoutes);
+app.use('/api/integrations', integrationRoutes);
+app.use('/api/catalog', catalogRoutes);
+app.use('/api/approvals', approvalRoutes);
+app.use('/api/sla', slaRoutes);
+app.use('/api/escalations', escalationRoutes);
+app.use('/api/procurement', procurementRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/reports', reportRoutes);
+app.use('/api/analytics', analyticsRoutes);
+app.use('/api/priority-matrix', priorityMatrixRoutes);
+app.use('/api/problems', problemRoutes);
+app.use('/api/views', viewRoutes);
+app.use('/api/benchmarks', benchmarkRoutes);
+app.use('/api/business-rules', businessRuleRoutes);
+app.use('/api/custom-fields', customFieldRoutes);
+app.use('/api/lifecycles', lifecycleRoutes);
+app.use('/api/search', searchRoutes);
+app.use('/api/admin', adminRoutes);
+app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/groups', groupRoutes);
+app.use('/api/hr-cases', hrCaseRoutes);
+app.use('/api/external-connections', externalConnectionRoutes);
+app.use('/api/ticket-numbering', ticketNumberingRoutes);
+app.use('/api/custom-roles', customRoleRoutes);
+app.use('/api/audit-log', auditLogRoutes);
+app.use('/api/major-incidents', majorIncidentRoutes);
+app.use('/api/self-service', selfServiceRoutes);
+app.use('/api/realtime', realtimeRoutes);
+app.use('/api/auth/sso', ssoRoutes);
+app.use('/api/api-keys', apiKeyRoutes);
+app.use('/api/v1', publicApiRoutes);
+app.use('/api/webhooks/external-sync', externalSyncWebhookRoutes);
+app.use('/api/directory', directoryRoutes);
+app.use('/api/email-settings', emailSettingsRoutes);
+app.use('/api/email-templates', emailTemplateRoutes);
+app.use('/api/canned-responses', cannedResponseRoutes);
+app.use('/api/oncall', oncallRoutes);
+app.use('/api/assignment', assignmentRoutes);
+app.use('/api/alerts', alertRoutes);
+app.use('/api/ticket-categories', ticketCategoryRoutes);
+app.use('/api/ticket-fields', ticketFieldRoutes);
+app.use('/api/changes', changeRoutes);
+app.use('/api/cab', cabRoutes);
+app.use('/api/change-config', changeConfigRoutes);
+// Unauthenticated by necessity -- authenticated per-source by webhook
+// secret, like /api/webhooks/external-sync above.
+app.use('/api/webhooks/alerts', alertWebhookRoutes);
+
+// Every route is mounted by this point, so now make the async ones safe.
+// Express 4 drops a rejected promise on the floor: the error middleware never
+// runs and the client never gets a response at all. This forwards those
+// rejections to next() so they land on the error handler below like any
+// synchronous throw. See middleware/asyncRoutes.js for why it is done here
+// rather than by hand at every call site.
+const asyncGuard = protectAsyncRoutes(app);
+if (process.env.NODE_ENV !== 'test') {
+  console.log(`[async] ${asyncGuard.wrapped} async handlers guarded against unanswered requests`);
+}
+
+// Serves the built frontend (frontend/dist) from this same process -- one
+// deployable service instead of two, and no cross-origin auth to configure
+// (the SPA and the API share an origin). Only activates when that build
+// actually exists on disk, i.e. after `cd web && npm run build` has run --
+// local dev (Vite's own dev server + its /api proxy to this server) never
+// produces that folder, so this can't change anything about the existing
+// two-terminal dev workflow. Placed after every /api/* mount above so an
+// unmatched API path still falls through to a real 404, not index.html.
+const frontendDist = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'frontend', 'dist');
+if (fs.existsSync(frontendDist)) {
+  // `redirect: false` matters: Vite emits its bundles into dist/assets, and
+  // the app also has a page at /assets. Without this, express.static sees a
+  // directory of that name and 301s /assets -> /assets/ before the SPA route
+  // ever gets a look at it. Turning the directory redirect off lets the page
+  // request fall through to the catch-all below, while the real bundle URLs
+  // (/assets/index-*.js) are files and still serve directly.
+  app.use(express.static(frontendDist, { redirect: false }));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api')) return next();
+    res.sendFile(path.join(frontendDist, 'index.html'));
+  });
+}
+
+app.use((err, req, res, next) => {
+  console.error(err);
+  logError(err, req);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+// A truly unhandled error outside Express's own request/response cycle --
+// a rejected promise nothing awaited, a callback that threw -- would
+// otherwise just print to stderr and vanish the moment this process is
+// replaced (this app's Render deployment has no persistent disk or log
+// aggregator; see the auto-seed comment above for the same reality). Logged
+// with no `req` (there may not be one), and deliberately NOT followed by
+// process.exit(): Node's own guidance is that a real restart is safer after
+// an uncaughtException, but this app has no in-memory state whose
+// corruption would outlast the offending request (everything durable lives
+// in SQLite), so staying up and recording the error is the more useful
+// behavior for a single small instance without a process supervisor
+// configured to restart it quickly.
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err);
+  logError(err, null);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason);
+  logError(reason instanceof Error ? reason : new Error(String(reason)), null);
+});
+
+app.listen(PORT, () => {
+  console.log(`ITSM AI server listening on http://localhost:${PORT}`);
+});
+
+// This app's first real recurring background job (see
+// services/directorySyncScheduler.js's own header comment for why) --
+// started once here, unref'd, so it never keeps the process alive on its own.
+startDirectorySyncScheduler();
+startInboundEmailScheduler();
+startAlertScheduler();

@@ -1,0 +1,99 @@
+name: Deploy to Azure
+
+# Builds the frontend, installs production-only backend dependencies, and
+# deploys both to a single Azure App Service (Linux, Node 22).
+#
+# Why build here rather than on Azure: Azure's Oryx builder expects one
+# project per app, and this repo has two folders. Building in CI also means
+# the thing that gets deployed is the thing that was tested, and the App
+# Service never needs devDependencies (vite, tailwind) at all.
+#
+# One-time setup, then this runs on every push:
+#   1. Create a Linux App Service on the Node 22 runtime.
+#   2. Configuration -> General settings -> Startup Command:
+#          node backend/src/index.js
+#   3. Configuration -> Application settings:
+#          NODE_ENV        = production
+#          ITSM_DATA_DIR   = /home/data        <- see the note below
+#          JWT_SECRET      = <a long random string>
+#          ENCRYPTION_KEY  = <32 random bytes, base64>
+#      Generate the last two with:
+#          node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
+#          node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+#   4. Download the app's Publish Profile and save it as the repository
+#      secret AZUREAPPSERVICE_PUBLISHPROFILE.
+#   5. Set AZURE_WEBAPP_NAME below to the app's name.
+#
+# ITSM_DATA_DIR matters more than anything else here. The database is SQLite,
+# a file on disk. On App Service only /home survives a restart, a scale event
+# or a redeploy -- anything written elsewhere is in the container's ephemeral
+# layer and disappears with it. Pointing the data directory at /home/data is
+# what makes the data durable, and it is the thing the previous Render free
+# tier could not offer at all.
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+env:
+  AZURE_WEBAPP_NAME: itsm-ai
+  NODE_VERSION: '22'
+
+jobs:
+  build-and-deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # ---- frontend: build the static bundle -----------------------------
+      - name: Install frontend dependencies
+        working-directory: frontend
+        # --include=dev because vite and tailwind are devDependencies and are
+        # needed to produce the build. None of them ship to Azure.
+        run: npm ci --include=dev
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      # ---- backend: production dependencies only -------------------------
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci --omit=dev
+
+      - name: Run backend tests
+        working-directory: backend
+        # Deploying something that fails its own tests is not a deploy, it is
+        # an incident. devDependencies are not needed: the suite runs on
+        # node:test, which is part of Node itself.
+        run: npm test
+
+      # ---- assemble exactly what the App Service will run ----------------
+      # The layout has to stay two-deep, because the server resolves the
+      # built frontend at ../../frontend/dist relative to its own file.
+      - name: Assemble deployment package
+        run: |
+          mkdir -p deploy/backend deploy/frontend
+          cp -r backend/src backend/package.json backend/package-lock.json backend/node_modules deploy/backend/
+          cp -r frontend/dist deploy/frontend/
+          # The test-support harness and the colocated *.test.js files have no
+          # business in a production image.
+          find deploy/backend/src -name '*.test.js' -delete
+          echo "--- package contents ---"
+          du -sh deploy deploy/backend deploy/frontend
+          ls deploy/frontend/dist/index.html
+
+      - name: Deploy to Azure App Service
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE }}
+          package: deploy

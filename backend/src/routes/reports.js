@@ -90,7 +90,9 @@ router.post('/sona', async (req, res) => {
     ], { json: true, temperature: 0.1, max_tokens: 500 });
     const parsed = JSON.parse(text.trim().replace(/^```json/i, '').replace(/^```/, '').replace(/```$/, ''));
     const filters = parsed.filters || {};
-    const valid = (value, allowed) => allowed.includes(value) ? value : '';
+    // Case-insensitive, returning the canonical spelling: models capitalise
+    // ("Incident", "service desk") and an exact match silently dropped them.
+    const valid = (value, allowed) => allowed.find((a) => a.toLowerCase() === String(value ?? '').trim().toLowerCase()) || '';
     const report = {
       title: String(parsed.title || 'Sona report').slice(0, 100), summary: String(parsed.summary || 'Built from your request.').slice(0, 220),
       group_by: valid(parsed.group_by, dimensions) || 'status', chart_type: valid(parsed.chart_type, ['bar', 'line', 'pie', 'donut', 'table', 'scorecard']) || 'bar',

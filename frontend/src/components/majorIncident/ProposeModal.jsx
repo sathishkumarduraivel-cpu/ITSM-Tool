@@ -3,6 +3,7 @@ import { Siren, Loader2, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import Modal from '../Modal.jsx';
 import Select from '../Select.jsx';
+import SonaTextarea from '../SonaTextarea.jsx';
 
 const SEVERITIES = [
   { value: 'sev1', label: 'SEV1 — critical service unavailable' },
@@ -83,7 +84,7 @@ export default function ProposeModal({ ticketId, onClose, onProposed }) {
 
         <div>
           <label className="label">Why this is major<span className="text-red-500">*</span></label>
-          <textarea
+          <SonaTextarea purpose="Why this is a major incident"
             className="input min-h-[70px]" autoFocus value={reason}
             onChange={(e) => setReason(e.target.value)}
             placeholder="What is unavailable, who it affects, and what happens if it continues."

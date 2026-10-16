@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link2, Info } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import Select from '../Select.jsx';
+import SonaTextarea from '../SonaTextarea.jsx';
 
 // Renders one CI attribute from its server-declared schema.
 //
@@ -48,7 +49,7 @@ export default function AttributeField({ attr, value, onChange, error, disabled 
   let control;
   switch (attr.data_type) {
     case 'textarea':
-      control = <textarea {...common} rows={3} value={value ?? ''} onChange={(e) => set(e.target.value)} />;
+      control = <SonaTextarea purpose={attr.label} {...common} rows={3} value={value ?? ''} onChange={(e) => set(e.target.value)} />;
       break;
     case 'boolean':
       // A tri-state, not a checkbox: "nobody has said" is genuinely different

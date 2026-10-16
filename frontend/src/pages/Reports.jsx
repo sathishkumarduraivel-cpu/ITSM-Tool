@@ -47,6 +47,8 @@ const REPORT_GALLERY = [
   { key: 'by-type', name: 'Tickets by Type', icon: PieChartIcon, group_by: 'type', chart_type: 'donut', metrics: ['count'] },
 ];
 
+const EMPTY_FILTERS = { type: '', priority: '', team: '', category: '', status: '', assignee_id: '', from: '', to: '' };
+
 function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -113,6 +115,9 @@ function ReportBuilder({ galleryPick, onGalleryHandled }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [showFilters, setShowFilters] = useState(false);
+  const [sonaPrompt, setSonaPrompt] = useState('');
+  const [sonaBusy, setSonaBusy] = useState(false);
+  const [sonaResult, setSonaResult] = useState(null); // { title, summary } of the last Sona-built report
 
   const loadMeta = async () => {
     const [d, o, s] = await Promise.all([api.get('/reports/dimensions'), api.get('/reports/filter-options'), api.get('/reports/saved')]);
@@ -168,6 +173,36 @@ function ReportBuilder({ galleryPick, onGalleryHandled }) {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [galleryPick]);
+
+  // Sona turns a sentence into this builder's own settings (validated on the
+  // server against the same dimensions/metrics/filters), then runs it -- so
+  // what appears is an ordinary custom report the agent can keep adjusting.
+  const askSona = async () => {
+    if (!sonaPrompt.trim()) return;
+    setSonaBusy(true);
+    setError('');
+    try {
+      const { report } = await api.post('/reports/sona', { prompt: sonaPrompt.trim() });
+      const nextFilters = { ...EMPTY_FILTERS, ...report.filters };
+      setGroupBy(report.group_by);
+      setChartType(report.chart_type);
+      setActiveMetrics(report.metrics);
+      setFilters(nextFilters);
+      setCompare(report.compare);
+      setShowFilters(Object.values(nextFilters).some(Boolean));
+      setSonaResult(report);
+      setSaveName(report.title);
+      const params = new URLSearchParams({ group_by: report.group_by, ...(report.compare ? { compare: 1 } : {}) });
+      for (const [k, v] of Object.entries(nextFilters)) if (v) params.set(k, v);
+      setRunning(true);
+      setResult(await api.get(`/reports/custom?${params}`));
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSonaBusy(false);
+      setRunning(false);
+    }
+  };
 
   const exportCsv = async () => {
     const resp = await fetch(`/api/reports/custom/export.csv?${queryString()}`, {
@@ -256,6 +291,32 @@ function ReportBuilder({ galleryPick, onGalleryHandled }) {
           ))}
         </div>
       </div>
+
+      <form
+        onSubmit={(e) => { e.preventDefault(); askSona(); }}
+        className="rounded-xl border border-brand-200/70 bg-brand-50/50 p-3 dark:border-brand-500/20 dark:bg-brand-500/5"
+      >
+        <label htmlFor="sona-report-prompt" className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-brand-700 dark:text-brand-300">
+          <Bot size={13} /> Ask Sona to build this report
+        </label>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <input
+            id="sona-report-prompt" className="input flex-1" value={sonaPrompt} disabled={sonaBusy}
+            onChange={(e) => setSonaPrompt(e.target.value)}
+            placeholder="e.g. open critical incidents by team as a bar chart, compared to last period"
+          />
+          <button type="submit" disabled={sonaBusy || !sonaPrompt.trim()} className="btn-primary justify-center text-xs disabled:opacity-40">
+            {sonaBusy ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+            {sonaBusy ? 'Building…' : 'Build'}
+          </button>
+        </div>
+        {sonaResult && !sonaBusy && (
+          <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">
+            <strong className="font-semibold">{sonaResult.title}</strong> — {sonaResult.summary}{' '}
+            <span className="text-slate-400">Adjust anything below, or save it.</span>
+          </p>
+        )}
+      </form>
 
       <div className="flex flex-wrap items-center gap-2">
         <Select

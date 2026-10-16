@@ -3,6 +3,7 @@ import { AlertTriangle, Loader2, Send, UserPlus } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import Modal from '../Modal.jsx';
 import Select from '../Select.jsx';
+import SonaTextarea from '../SonaTextarea.jsx';
 
 const URGENCY_OPTIONS = [
   { value: 'low', label: "Low — I can work around it" },
@@ -65,7 +66,7 @@ export default function ReportIssueModal({ onClose, onCreated }) {
         </div>
         <div>
           <label className="label">More detail (optional)</label>
-          <textarea className="input" rows={4} placeholder="What were you doing when it happened? Any error messages?" value={details} onChange={(e) => setDetails(e.target.value)} />
+          <SonaTextarea purpose="Issue details" className="input" rows={4} placeholder="What were you doing when it happened? Any error messages?" value={details} onChange={(e) => setDetails(e.target.value)} />
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>

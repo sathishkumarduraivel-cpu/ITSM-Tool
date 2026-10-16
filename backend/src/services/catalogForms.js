@@ -48,10 +48,20 @@ export function parseSchema(raw) {
   if (!raw) return [];
   try {
     const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed) ? parsed.map(normalizeField) : [];
   } catch {
     return [];
   }
+}
+
+// Older seeds stored choice options as one comma-separated string
+// ("New hire,Replacement,Upgrade"). Everything downstream -- validation, the
+// request form, the item builder -- expects an array, and a string there threw
+// on .map() and blanked the request form. Normalizing on read heals existing
+// rows without a migration; the next save writes the array back.
+function normalizeField(f) {
+  if (!f || typeof f.options !== 'string') return f;
+  return { ...f, options: f.options.split(',').map((o) => o.trim()).filter(Boolean) };
 }
 
 /**

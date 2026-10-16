@@ -23,6 +23,7 @@ import Select from '../components/Select.jsx';
 import TicketTaskRow from '../components/tickets/TicketTaskRow.jsx';
 import AddTicketTaskForm from '../components/tickets/AddTicketTaskForm.jsx';
 import { usePageTitle } from '../hooks/usePageTitle.js';
+import SonaTextarea from '../components/SonaTextarea.jsx';
 
 const STATUSES = ['open', 'in_progress', 'on_hold', 'resolved', 'closed'];
 // Mirrors CHANGE_STATES in backend/src/services/changeWorkflow.js. Kept as a
@@ -118,7 +119,7 @@ function RequesterEditModal({ ticket, onClose, onSaved }) {
         </div>
         <div>
           <label className="label">Description</label>
-          <textarea className="input" rows={5} value={description} onChange={(e) => setDescription(e.target.value)} />
+          <SonaTextarea purpose="Ticket description" className="input" rows={5} value={description} onChange={(e) => setDescription(e.target.value)} />
         </div>
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
@@ -169,7 +170,7 @@ function CsatPrompt({ ticketId, existing, onSubmitted }) {
           </button>
         ))}
       </div>
-      <textarea className="input mb-2" rows={2} placeholder="Optional comment…" value={comment} onChange={(e) => setComment(e.target.value)} />
+      <SonaTextarea purpose="Satisfaction feedback" wrapperClassName="mb-2" className="input" rows={2} placeholder="Optional comment…" value={comment} onChange={(e) => setComment(e.target.value)} />
       <button onClick={submit} disabled={!rating || saving} className="btn-primary text-xs">
         {saving ? <Loader2 size={13} className="animate-spin" /> : null} Submit feedback
       </button>
@@ -273,7 +274,7 @@ function SaveCannedResponseModal({ defaultBody, defaultTeam, onClose, onSaved })
         </div>
         <div>
           <label className="label">Response text</label>
-          <textarea className="input" rows={5} required value={body} onChange={(e) => setBody(e.target.value)} />
+          <SonaTextarea purpose="Canned response text" className="input" rows={5} required value={body} onChange={(e) => setBody(e.target.value)} />
         </div>
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
@@ -1170,7 +1171,7 @@ export default function TicketDetail() {
               </div>
             )}
             <form onSubmit={postComment} className="space-y-2">
-              <textarea
+              <SonaTextarea purpose="Ticket reply or internal note"
                 ref={commentRef}
                 className="input"
                 rows={3}
@@ -1261,7 +1262,7 @@ export default function TicketDetail() {
                   Implementation plan
                   {changeTypeMeta?.requires_implementation_plan && <span className="text-red-500">*</span>}
                 </label>
-                <textarea
+                <SonaTextarea purpose="Implementation plan"
                   className="input" rows={4} disabled={!isAgent || isLocked('implementation_plan')} title={lockTitle('implementation_plan')}
                   value={val('implementation_plan') || ''}
                   onChange={(e) => setDraftField('implementation_plan', e.target.value)}
@@ -1275,7 +1276,7 @@ export default function TicketDetail() {
                     Backout plan
                     {changeTypeMeta?.requires_backout && <span className="text-red-500">*</span>}
                   </label>
-                  <textarea
+                  <SonaTextarea purpose="Backout plan"
                     className="input" rows={3} disabled={!isAgent || isLocked('rollback_plan')} title={lockTitle('rollback_plan')}
                     value={val('rollback_plan') || ''}
                     onChange={(e) => setDraftField('rollback_plan', e.target.value)}
@@ -1292,7 +1293,7 @@ export default function TicketDetail() {
                   Test plan
                   {changeTypeMeta?.requires_test_plan && <span className="text-red-500">*</span>}
                 </label>
-                <textarea
+                <SonaTextarea purpose="Test plan"
                   className="input" rows={2} disabled={!isAgent || isLocked('test_plan')} title={lockTitle('test_plan')}
                   value={val('test_plan') || ''}
                   onChange={(e) => setDraftField('test_plan', e.target.value)}
@@ -1659,7 +1660,7 @@ export default function TicketDetail() {
                       <input className="input" value={value || ''} onChange={(e) => setDraftCustomField(f.field_key, e.target.value)} />
                     )}
                     {f.field_type === 'textarea' && (
-                      <textarea className="input" rows={2} value={value || ''} onChange={(e) => setDraftCustomField(f.field_key, e.target.value)} />
+                      <SonaTextarea purpose={f.label} className="input" rows={2} value={value || ''} onChange={(e) => setDraftCustomField(f.field_key, e.target.value)} />
                     )}
                     {f.field_type === 'select' && (
                       <Select

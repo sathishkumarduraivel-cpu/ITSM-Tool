@@ -8,6 +8,7 @@ import { api } from '../../lib/api.js';
 import { fmtDateTime, fmtRelative } from '../../lib/dates.js';
 import Select from '../Select.jsx';
 import Modal from '../Modal.jsx';
+import SonaTextarea from '../SonaTextarea.jsx';
 
 const BAND_STYLES = {
   low: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300',
@@ -309,7 +310,7 @@ function PirPanel({ change, onChanged }) {
       </div>
       <div>
         <label className="label">What was learned <span className="text-red-500">*</span></label>
-        <textarea
+        <SonaTextarea purpose="Lessons learned"
           className="input min-h-[60px]" disabled={complete} value={draft.lessons_learned}
           onChange={(e) => setDraft((d) => ({ ...d, lessons_learned: e.target.value }))}
           placeholder="What would you do differently next time?"
@@ -317,7 +318,7 @@ function PirPanel({ change, onChanged }) {
       </div>
       <div>
         <label className="label">Follow-up actions</label>
-        <textarea
+        <SonaTextarea purpose="Follow-up actions"
           className="input min-h-[50px]" disabled={complete} value={draft.follow_up_actions}
           onChange={(e) => setDraft((d) => ({ ...d, follow_up_actions: e.target.value }))}
         />
@@ -853,7 +854,7 @@ export default function ChangeWorkflowPanel({ ticketId, isAgent, onTicketChanged
           <div className="space-y-3">
             <div>
               <label className="label">Reason <span className="text-red-500">*</span></label>
-              <textarea
+              <SonaTextarea purpose={reasonPrompt.label}
                 className="input min-h-[70px]" value={reason} onChange={(e) => setReason(e.target.value)}
                 placeholder={reasonPrompt.to === 'rolled_back' ? 'Why was the backout executed?' : 'Why is this being reopened?'}
               />

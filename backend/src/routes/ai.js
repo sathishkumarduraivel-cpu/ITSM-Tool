@@ -2,7 +2,7 @@ import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { db, uid } from '../db.js';
 import { requireAuth, requireWorkspace, requireRole, requireStaff } from '../middleware/auth.js';
-import { getProvider, testProvider, dashboardInsights, askAssistant, describeProblem, askAboutMyTickets } from '../services/aiClient.js';
+import { getProvider, testProvider, dashboardInsights, askAssistant, describeProblem, askAboutMyTickets, improveText } from '../services/aiClient.js';
 import { encrypt } from '../services/crypto.js';
 import { getOnlineUserIds } from '../services/realtime.js';
 
@@ -280,6 +280,28 @@ router.post('/describe-problem', aiLimiter, async (req, res) => {
     const provider = getProvider(req.workspaceId, req.body.provider_id);
     const description = await describeProblem(provider, text.trim());
     res.json({ description });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// "Improve with Sona" on any free-text field. Its own, roomier budget: it is
+// pressed far more often than the dashboard features, and sharing aiLimiter
+// would let a long writing session lock someone out of insights and the ask
+// box. It only rewrites the text it is sent and reads nothing from the DB.
+const writeLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false });
+const IMPROVE_MAX_CHARS = 8000;
+
+router.post('/improve-text', writeLimiter, async (req, res) => {
+  try {
+    const text = String(req.body.text || '').trim();
+    if (!text) return res.status(400).json({ error: 'Write something first, then Sona can polish it.' });
+    if (text.length > IMPROVE_MAX_CHARS) return res.status(400).json({ error: `Sona can polish up to ${IMPROVE_MAX_CHARS.toLocaleString()} characters at a time.` });
+    const purpose = String(req.body.purpose || '').trim().slice(0, 80);
+    const provider = getProvider(req.workspaceId, req.body.provider_id);
+    const improved = await improveText(provider, text, purpose);
+    if (!improved) return res.status(502).json({ error: 'Sona returned nothing. Try again.' });
+    res.json({ text: improved });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }

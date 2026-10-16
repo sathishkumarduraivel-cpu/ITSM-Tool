@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Info } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import Select from '../Select.jsx';
+import SonaTextarea from '../SonaTextarea.jsx';
 
 // One field on a catalog request form, driven entirely by the item's schema.
 //
@@ -48,7 +49,7 @@ export default function RequestField({ field, value, onChange, error, disabled =
   let control;
   switch (field.type) {
     case 'textarea':
-      control = <textarea className={cls} rows={3} disabled={disabled} value={value ?? ''} onChange={(e) => set(e.target.value)} />;
+      control = <SonaTextarea purpose={field.label} className={cls} rows={3} disabled={disabled} value={value ?? ''} onChange={(e) => set(e.target.value)} />;
       break;
     case 'number':
       control = (

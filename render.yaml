@@ -1,0 +1,74 @@
+# Render Blueprint for a single-service deployment: this Node process serves
+# both the API and the built React frontend from one origin (see the static
+# file + SPA fallback block near the bottom of backend/src/index.js), so
+# there's no second service and no cross-origin auth to configure.
+#
+# The folder names here are backend/ and frontend/. They were server/ and
+# web/ until commit c99bcde renamed them; if a Render service still has the
+# old `cd web` / `cd server` commands saved in its dashboard, the build fails
+# at the first step with "no such file or directory" -- and a failed build
+# leaves the PREVIOUS version live, which looks exactly like a deploy that
+# silently did nothing. Update the dashboard, or re-sync it from this file.
+#
+# Free tier caveats (see backend/data/, .gitignore'd): the SQLite database
+# has no persistent disk on Render's free plan, so it resets to the seeded
+# demo data on every deploy, restart, or scale-to-zero wake. Fine for
+# testing/demoing this app; not a place to keep real data. The service also
+# spins down after ~15 min idle and takes 30-60s to wake on the next request.
+# See the `disk` block below for how to fix that on a paid plan.
+#
+# Deploy: push this repo to GitHub, then in Render "New +" -> "Blueprint",
+# point it at the repo. JWT_SECRET and ENCRYPTION_KEY are marked
+# `sync: false` below -- Render will prompt for them during setup; generate
+# real values with the commands in backend/.env.example rather than typing
+# anything arbitrary (ENCRYPTION_KEY specifically must be a 32-byte base64
+# value).
+#
+# Azure is the other supported target, via
+# .github/workflows/azure-deploy.yml. Both can run at once -- nothing here
+# conflicts with it.
+services:
+  - type: web
+    name: itsm-ai
+    runtime: node
+    plan: free
+    # `--include=dev` on the frontend install is required, not cosmetic:
+    # vite, @vitejs/plugin-react, tailwindcss, postcss and autoprefixer all
+    # live in frontend/package.json's devDependencies (they're build-time
+    # only, no reason to ship them at runtime), but NODE_ENV=production is
+    # already set for this whole build step (see the envVars below) -- npm
+    # prunes devDependencies whenever that's set, so a plain `npm install`
+    # here leaves `vite` missing and `npm run build` fails with
+    # "vite: not found".
+    buildCommand: cd frontend && npm install --include=dev && npm run build && cd ../backend && npm install
+    startCommand: cd backend && npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        sync: false
+      - key: ENCRYPTION_KEY
+        sync: false
+      # Sona's AI provider. The seed creates the default OpenAI provider from
+      # this on every fresh database (which, on the free plan, is every boot),
+      # so AI keeps working across deploys without re-entering the key in AI
+      # Settings. Set it in the dashboard only -- the repo is public.
+      - key: OPENAI_API_KEY
+        sync: false
+      # Uncomment together with the `disk` block below. Without a disk the
+      # database lives in the container's ephemeral filesystem and is lost on
+      # every restart; pointing it at the mounted disk is what makes the data
+      # survive. The app reads this variable directly (backend/src/db.js), so
+      # nothing else needs changing.
+      # - key: ITSM_DATA_DIR
+      #   value: /var/data
+    # Persistent storage. Requires a paid instance type -- Render's free plan
+    # has no disks at all, which is the single reason the free deployment
+    # cannot hold real data. 1 GB is ample: the seeded database is ~2.5 MB.
+    # disk:
+    #   name: itsm-data
+    #   mountPath: /var/data
+    #   sizeGB: 1

@@ -8,6 +8,7 @@ import { fmtDateTime } from '../../lib/dates.js';
 import Modal from '../Modal.jsx';
 import Select from '../Select.jsx';
 import EmptyState from '../EmptyState.jsx';
+import SonaTextarea from '../SonaTextarea.jsx';
 
 const SUB_TABS = [
   { key: 'types', label: 'Change Types', icon: GitBranch },
@@ -238,7 +239,7 @@ function TemplatesPane({ config, onChanged, setError }) {
             {['implementation_plan', 'backout_plan', 'test_plan'].map((f) => (
               <div key={f}>
                 <label className="label">{f.replace(/_/g, ' ')}</label>
-                <textarea className="input min-h-[60px]" value={form[f] || ''} onChange={(e) => setForm({ ...form, [f]: e.target.value })} />
+                <SonaTextarea purpose={f.replace(/_/g, ' ')} className="input min-h-[60px]" value={form[f] || ''} onChange={(e) => setForm({ ...form, [f]: e.target.value })} />
               </div>
             ))}
             <div className="flex justify-end gap-2">

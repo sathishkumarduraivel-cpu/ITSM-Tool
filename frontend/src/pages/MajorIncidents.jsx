@@ -7,6 +7,7 @@ import EmptyState from '../components/EmptyState.jsx';
 import Modal from '../components/Modal.jsx';
 import Select from '../components/Select.jsx';
 import { SeverityBadge, MiStatusBadge } from '../components/Badge.jsx';
+import SonaTextarea from '../components/SonaTextarea.jsx';
 
 const STATUS_FILTERS = [
   { key: '', label: 'All' },
@@ -140,7 +141,7 @@ function ProposalQueue({ onPromoted }) {
                 {deciding.mode === 'promote' ? 'Note (optional)' : 'Why not'}
                 {deciding.mode === 'reject' && <span className="text-red-500">*</span>}
               </label>
-              <textarea className="input min-h-[60px]" autoFocus value={comment} onChange={(e) => setComment(e.target.value)} />
+              <SonaTextarea purpose="Major incident decision note" className="input min-h-[60px]" autoFocus value={comment} onChange={(e) => setComment(e.target.value)} />
             </div>
             <div className="flex justify-end gap-2">
               <button onClick={() => setDeciding(null)} className="btn-secondary">Cancel</button>

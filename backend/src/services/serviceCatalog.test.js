@@ -167,6 +167,15 @@ describe('catalog forms: submission validation', () => {
     assert.ok(r.errors.some((e) => /not one of the options/.test(e.message)));
   });
 
+  test('legacy comma-separated options are read as a list, not a crash', () => {
+    // The original seed stored options as one string; ordering such an item
+    // threw on .map() and blanked the request form.
+    const legacy = JSON.stringify([{ key: 'reason', label: 'Reason', type: 'select', options: 'New hire, Replacement,Upgrade', required: true }]);
+    assert.deepEqual(parseSchema(legacy)[0].options, ['New hire', 'Replacement', 'Upgrade']);
+    assert.equal(validateSubmission(ws, legacy, { reason: 'Replacement' }).ok, true);
+    assert.ok(validateSubmission(ws, legacy, { reason: 'Hire' }).errors.some((e) => /not one of the options/.test(e.message)));
+  });
+
   test('numbers are range-checked', () => {
     assert.ok(validateSubmission(ws, schema, { model: '13', qty: '9' }).errors.some((e) => /at most 3/.test(e.message)));
     assert.ok(validateSubmission(ws, schema, { model: '13', qty: 'lots' }).errors.some((e) => /must be a number/.test(e.message)));

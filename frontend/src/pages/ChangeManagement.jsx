@@ -13,6 +13,7 @@ import Modal from '../components/Modal.jsx';
 import Select from '../components/Select.jsx';
 import EmptyState from '../components/EmptyState.jsx';
 import { SkeletonRows } from '../components/Skeleton.jsx';
+import SonaTextarea from '../components/SonaTextarea.jsx';
 
 const VIEWS = [
   { key: 'pipeline', label: 'Pipeline', icon: LayoutList },
@@ -226,7 +227,7 @@ function DecisionModal({ item, onClose, onDecided }) {
         )}
         <div>
           <label className="label">Notes for the minutes</label>
-          <textarea className="input min-h-[60px]" value={notes} onChange={(e) => setNotes(e.target.value)} />
+          <SonaTextarea purpose="CAB meeting minutes" className="input min-h-[60px]" value={notes} onChange={(e) => setNotes(e.target.value)} />
         </div>
         {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
         <div className="flex justify-end gap-2">

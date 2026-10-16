@@ -7,6 +7,7 @@ import Modal from '../components/Modal.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import EmptyState from '../components/EmptyState.jsx';
 import Select from '../components/Select.jsx';
+import SonaTextarea from '../components/SonaTextarea.jsx';
 
 const EVENTS = ['ticket_created', 'ticket_assigned', 'sla_breach', 'approval_requested', 'change_approved', 'change_rejected', 'ticket_resolved'];
 
@@ -72,7 +73,7 @@ function NotificationTemplatesPanel() {
         />
         <Select value={form.channel} onChange={(v) => setForm({ ...form, channel: v })} options={['in_app', 'email', 'slack']} />
         <input className="input col-span-2" placeholder="Subject (optional)" value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} />
-        <textarea className="input col-span-2" rows={2} required placeholder="Message body, e.g. Ticket {{number}} was just created" value={form.body} onChange={(e) => setForm({ ...form, body: e.target.value })} />
+        <SonaTextarea purpose="Notification message body" wrapperClassName="col-span-2" className="input" rows={2} required placeholder="Message body, e.g. Ticket {{number}} was just created" value={form.body} onChange={(e) => setForm({ ...form, body: e.target.value })} />
         <button type="submit" disabled={saving} className="btn-primary col-span-2 justify-center text-xs">
           {saving ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />} Add template
         </button>

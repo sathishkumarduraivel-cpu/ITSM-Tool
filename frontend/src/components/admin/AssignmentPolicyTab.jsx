@@ -7,6 +7,7 @@ import { api } from '../../lib/api.js';
 import Modal from '../Modal.jsx';
 import EmptyState from '../EmptyState.jsx';
 import Select from '../Select.jsx';
+import SonaTextarea from '../SonaTextarea.jsx';
 
 const SUB_TABS = [
   { key: 'policies', label: 'Routing Policies', icon: Target },
@@ -553,7 +554,7 @@ function SimulatorPane() {
         </div>
         <div>
           <label className="label">Description</label>
-          <textarea className="input min-h-[70px]" value={f.description} onChange={(e) => set('description', e.target.value)}
+          <SonaTextarea purpose="Assignment policy description" className="input min-h-[70px]" value={f.description} onChange={(e) => set('description', e.target.value)}
             placeholder="Give Sona something to reason about — the wording is what skill matching keys off." />
         </div>
         <div className="flex flex-wrap items-center justify-between gap-3">

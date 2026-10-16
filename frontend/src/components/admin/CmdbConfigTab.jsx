@@ -8,6 +8,7 @@ import { fmtDateTime } from '../../lib/dates.js';
 import Modal from '../Modal.jsx';
 import Select from '../Select.jsx';
 import EmptyState from '../EmptyState.jsx';
+import SonaTextarea from '../SonaTextarea.jsx';
 
 const SUB_TABS = [
   { key: 'classes', label: 'CI Classes', icon: Boxes },
@@ -320,7 +321,7 @@ function ClassModal({ initial, classes, onClose, onSaved }) {
         </div>
         <div>
           <label className="label">Description</label>
-          <textarea className="input" rows={2} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+          <SonaTextarea purpose="CI class description" className="input" rows={2} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
         </div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div>

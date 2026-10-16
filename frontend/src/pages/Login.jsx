@@ -41,8 +41,8 @@ export default function Login() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
-  const [email, setEmail] = useState('admin@itsm.ai');
-  const [password, setPassword] = useState('Admin@123');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [ssoProviders, setSsoProviders] = useState([]);
@@ -219,11 +219,11 @@ export default function Login() {
 
                 <motion.div variants={field}>
                   <label className="label">{t('auth.email')}</label>
-                  <input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+                  <input className="input" type="email" autoComplete="username" autoFocus value={email} onChange={(e) => setEmail(e.target.value)} required />
                 </motion.div>
                 <motion.div variants={field}>
                   <label className="label">{t('auth.password')}</label>
-                  <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+                  <input className="input" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required />
                 </motion.div>
 
                 <motion.button

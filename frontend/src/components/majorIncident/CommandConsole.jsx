@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { api } from '../../lib/api.js';
 import Select from '../Select.jsx';
+import SonaTextarea from '../SonaTextarea.jsx';
 
 const ACTION_TONE = {
   open: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300',
@@ -205,7 +206,7 @@ export default function CommandConsole({ majorIncident, meta, agents = [], onCha
             <Select value={comms.channel} onChange={(v) => setComms({ ...comms, channel: v })}
               options={(meta?.channels || []).map((c) => ({ value: c, label: pretty(c) }))} />
           </div>
-          <textarea className="input min-h-[52px] text-xs" value={comms.message} onChange={(e) => setComms({ ...comms, message: e.target.value })} placeholder="What was said…" />
+          <SonaTextarea purpose="Major incident communication" className="input min-h-[52px] text-xs" value={comms.message} onChange={(e) => setComms({ ...comms, message: e.target.value })} placeholder="What was said…" />
           <button
             onClick={() => comms.message.trim() && run(() => api.post(`/major-incidents/${miId}/comms`, comms)).then(() => setComms({ ...comms, message: '' }))}
             disabled={!comms.message.trim() || busy}

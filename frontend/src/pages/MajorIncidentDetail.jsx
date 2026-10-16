@@ -7,6 +7,7 @@ import { SeverityBadge, MiStatusBadge } from '../components/Badge.jsx';
 import { useRealtimeEvent } from '../context/RealtimeContext.jsx';
 import Select from '../components/Select.jsx';
 import { usePageTitle } from '../hooks/usePageTitle.js';
+import SonaTextarea from '../components/SonaTextarea.jsx';
 
 export default function MajorIncidentDetail() {
   const { id } = useParams();
@@ -182,8 +183,9 @@ export default function MajorIncidentDetail() {
       <div className="card p-4">
         <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3">Timeline</h3>
         <form onSubmit={postUpdate} className="flex items-start gap-2 mb-3">
-          <textarea
-            className="input flex-1 text-sm"
+          <SonaTextarea purpose="Major incident status update"
+            wrapperClassName="flex-1"
+            className="input text-sm"
             rows={2}
             placeholder="Post a status update — this also appears as a comment on the anchor ticket…"
             value={message}
@@ -248,7 +250,7 @@ export default function MajorIncidentDetail() {
             options={[{ value: 'not_started', label: 'Not started' }, { value: 'in_progress', label: 'In progress' }, { value: 'completed', label: 'Completed' }]}
           />
         </div>
-        <textarea
+        <SonaTextarea purpose="Post-incident review"
           className="input text-sm"
           rows={6}
           placeholder="Root cause, timeline, contributing factors, follow-up actions…"

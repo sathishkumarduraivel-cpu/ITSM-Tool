@@ -6,6 +6,7 @@ import { SeverityBadge, MiStatusBadge } from './Badge.jsx';
 import Modal from './Modal.jsx';
 import Select from './Select.jsx';
 import ProposeModal from './majorIncident/ProposeModal.jsx';
+import SonaTextarea from './SonaTextarea.jsx';
 
 function DeclareModal({ ticketId, onClose, onDeclared }) {
   const [severity, setSeverity] = useState('sev2');
@@ -55,7 +56,7 @@ function DeclareModal({ ticketId, onClose, onDeclared }) {
         </div>
         <div>
           <label className="label">Impact (optional)</label>
-          <textarea className="input" rows={2} value={impactDescription} onChange={(e) => setImpactDescription(e.target.value)} />
+          <SonaTextarea purpose="Business impact" className="input" rows={2} value={impactDescription} onChange={(e) => setImpactDescription(e.target.value)} />
         </div>
         <div>
           <label className="label">Post an update every</label>

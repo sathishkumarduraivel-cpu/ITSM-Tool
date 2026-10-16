@@ -6,6 +6,7 @@ import {
 import { api } from '../../lib/api.js';
 import Modal from '../Modal.jsx';
 import Select from '../Select.jsx';
+import SonaTextarea from '../SonaTextarea.jsx';
 
 const ACTION_TONE = {
   open: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300',
@@ -13,6 +14,27 @@ const ACTION_TONE = {
   done: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300',
   cancelled: 'bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-500',
 };
+
+// Controlled, unlike the defaultValue field it replaced, so Sona's writing
+// assistant can see what is typed. Still saves on blur, and also when a Sona
+// rewrite is accepted, since that click never blurs the textarea.
+function ProblemTextField({ label, placeholder, rows, initial, onSave }) {
+  const [text, setText] = useState(initial);
+  useEffect(() => { setText(initial); }, [initial]);
+  const commit = (v) => { if (v !== initial) onSave(v); };
+  return (
+    <div>
+      <label className="label">{label}</label>
+      <SonaTextarea
+        purpose={label} className="input" style={{ minHeight: rows * 22 }}
+        value={text} placeholder={placeholder}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={(e) => commit(e.target.value)}
+        onSonaApply={commit}
+      />
+    </div>
+  );
+}
 
 function Section({ icon: Icon, title, hint, children, actions }) {
   return (
@@ -122,15 +144,10 @@ export default function ProblemWorkspace({ problemId, meta, onClose, onChanged }
   }
 
   const field = (key, label, placeholder, rows = 3) => (
-    <div>
-      <label className="label">{label}</label>
-      <textarea
-        className="input" style={{ minHeight: rows * 22 }}
-        defaultValue={problem[key] || ''}
-        placeholder={placeholder}
-        onBlur={(e) => { if (e.target.value !== (problem[key] || '')) save({ [key]: e.target.value }); }}
-      />
-    </div>
+    <ProblemTextField
+      label={label} placeholder={placeholder} rows={rows}
+      initial={problem[key] || ''} onSave={(v) => save({ [key]: v })}
+    />
   );
 
   return (

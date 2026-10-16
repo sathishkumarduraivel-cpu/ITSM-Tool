@@ -333,6 +333,70 @@ export async function describeProblem(provider, text) {
   ], { max_tokens: 300 });
 }
 
+// The writing assistant behind every "Improve with Sona" button: tightens
+// whatever someone typed into a free-text field -- a ticket description, a
+// comment, a backout plan -- without changing what it says. `purpose` is the
+// field's own label, so a rollback plan stays a list of steps and a customer
+// reply stays a reply. Returns the rewrite only; the person decides whether
+// it replaces their text.
+export async function improveText(provider, text, purpose = '') {
+  const prompt = `Rewrite the text below so it reads clearly and professionally.${purpose ? ` It is the "${purpose}" field in an IT service management platform.` : ''}
+
+Rules:
+- Keep the meaning, every fact, name, number, ticket reference and error message exactly. Never add details that are not there.
+- Fix grammar, spelling and punctuation; make sentences clear and concise.
+- Keep the same language the text is written in.
+- Keep the structure: line breaks, numbered or bulleted steps, and Markdown stay as they are.
+- Keep template placeholders such as {{ticket.number}} or {{name}} exactly as written.
+- Keep roughly the same length; do not turn a short note into an essay.
+- Reply with the rewritten text only -- no preamble, no quotes, no commentary.
+
+Text:
+${text}`;
+  const out = await chatComplete(provider, [
+    { role: 'system', content: 'You are Sona, the writing assistant in an ITSM platform. You polish what people write without changing what it says.' },
+    { role: 'user', content: prompt },
+  ], { max_tokens: Math.min(3000, Math.ceil(text.length / 2) + 200), temperature: 0.2 });
+  return out.trim().replace(/^"([\s\S]*)"$/, '$1');
+}
+
+// Turns a plain-English reporting question into a whole analytics board: a
+// name, a period and a handful of cards. The output is only a proposal --
+// every card goes through validateCardConfig in the route before anything is
+// stored, so a model that invents a metric produces a dropped card, never a
+// query the report engine does not know.
+export async function draftReportBoard(provider, request, context) {
+  const { cardTypes, dimensions, metrics, datePresets, teams = [], categories = [] } = context;
+  const prompt = `Design an ITSM analytics report for this request: "${request}"
+
+Output ONLY strict JSON with exactly this shape:
+{"name": string, "description": string, "date_preset": string, "cards": [{"title": string, "card_type": string, "span": number, "config": object}]}
+
+date_preset is one of: ${datePresets.join(', ')} (never "custom").
+span is the card width on a 12-column grid: 3, 4, 6, 8 or 12.
+Card types and their config:
+- scorecard: {"metric": M, "compare": true}  -- one headline number
+- trend: {"metric": M, "time_dim": "day"|"week"|"month", "series_dim": D or omitted, "style": "line"|"area"}
+- bar: {"group_by": D, "metrics": [M, ...up to 4], "orientation": "vertical"|"horizontal", "limit": 3-50}
+- donut: {"group_by": D, "metric": M, "limit": 3-12}
+- table: {"group_by": D, "metrics": [M, ...up to 4], "sort_by": M, "sort_dir": "desc"|"asc", "limit": 3-50}
+- pivot: {"row_dim": D, "col_dim": D}  -- two different dimensions
+To narrow a card, put "filters": {"type"?, "priority"?, "status"?, "team"?, "category"?} INSIDE its config. Each filter takes a single value. Apply the request's scope (a team, a ticket type, a priority) to every card it concerns.
+
+Allowed card_type: ${cardTypes.join(', ')}.
+Allowed D (dimensions): ${dimensions.join(', ')}.
+Allowed M (metrics): ${metrics.map((m) => `${m.key} (${m.label})`).join(', ')}.
+Filter values -- type: incident, request, problem, change; priority: low, medium, high, critical; status: open, in_progress, on_hold, pending_approval, resolved, closed; team: ${teams.join(', ') || 'none'}; category: ${categories.join(', ') || 'none'}.
+
+Build 3-8 cards that genuinely answer the request: usually a few scorecards for the headline numbers, then the charts that explain them. Use only the values listed above.`;
+  const text = await chatComplete(provider, [
+    { role: 'system', content: 'You are Sona, configuring analytics reports for an ITSM platform. Always answer with valid JSON only, matching the requested shape exactly.' },
+    { role: 'user', content: prompt },
+  ], { json: true, max_tokens: 1500, temperature: 0.2 });
+  const cleaned = text.trim().replace(/^```json/i, '').replace(/^```/, '').replace(/```$/, '');
+  return JSON.parse(cleaned);
+}
+
 // Self-Service AI Chatbot: given the user's message, the conversation so far,
 // and a keyword-prefiltered shortlist of candidate KB articles (prefiltering
 // happens in the route, not here, so a large KB never gets dumped whole into

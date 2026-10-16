@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import {
   Plus, RefreshCw, Pencil, Trash2, Copy, ArrowLeft, ArrowRight, Loader2, Sparkles,
   LayoutDashboard, Lock, Users2, Clock, CalendarDays, Check, X, Settings2, ChevronLeft,
-  BarChart3, AlertTriangle, Star,
+  BarChart3, AlertTriangle, Star, Bot,
 } from 'lucide-react';
 import { api } from '../lib/api.js';
 import PageHeader from '../components/PageHeader.jsx';
@@ -14,6 +14,7 @@ import CardRenderer from '../components/analytics/CardRenderer.jsx';
 import CardEditor from '../components/analytics/CardEditor.jsx';
 import { CARD_ICONS, SPAN_CLASS, SPANS } from '../components/analytics/cardMeta.js';
 import ReportsExplorer from './Reports.jsx';
+import SonaTextarea from '../components/SonaTextarea.jsx';
 
 const relative = (iso) => {
   if (!iso) return '';
@@ -28,10 +29,21 @@ const relative = (iso) => {
 
 // ---- the library: every report in the workspace ---------------------------
 
-function NewReportModal({ meta, onClose, onCreated }) {
+// Prompts that show what Sona can answer -- one click fills the box, so the
+// first use does not start from a blank field.
+const SONA_EXAMPLES = [
+  'SLA breaches by team for the last 30 days',
+  'How is the Service Desk handling critical incidents this quarter?',
+  'Agent workload and resolution times this month',
+  'Customer satisfaction trend and which categories score lowest',
+];
+
+function NewReportModal({ meta, onClose, onCreated, startWithSona = false }) {
   const [name, setName] = useState('');
   const [template, setTemplate] = useState(meta.templates?.[0]?.key || '');
   const [blank, setBlank] = useState(false);
+  const [mode, setMode] = useState(startWithSona ? 'sona' : 'manual');
+  const [prompt, setPrompt] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -45,14 +57,83 @@ function NewReportModal({ meta, onClose, onCreated }) {
     } catch (e) { setError(e.message); setBusy(false); }
   };
 
+  // Sona builds and saves the board in one call; it opens straight away and
+  // every card on it can be edited like any other.
+  const askSona = async () => {
+    if (!prompt.trim()) return;
+    setBusy(true); setError('');
+    try {
+      const out = await api.post('/analytics/boards/sona', { prompt: prompt.trim() });
+      onCreated(out.board);
+    } catch (e) { setError(e.message); setBusy(false); }
+  };
+
+  const tabs = (
+    <div className="flex items-center gap-1 rounded-xl bg-slate-100 p-1 dark:bg-slate-800">
+      {[['sona', 'Ask Sona', Bot], ['manual', 'Template or blank', LayoutDashboard]].map(([key, label, Icon]) => (
+        <button
+          key={key} type="button" onClick={() => { setMode(key); setError(''); }}
+          className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+            mode === key ? 'bg-white text-brand-700 shadow-sm dark:bg-slate-700 dark:text-brand-300' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'
+          }`}
+        >
+          <Icon size={13} /> {label}
+        </button>
+      ))}
+    </div>
+  );
+
+  const errorBox = error && (
+    <div className="flex items-start gap-2 rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-300">
+      <AlertTriangle size={14} className="mt-0.5 shrink-0" /> {error}
+    </div>
+  );
+
+  if (mode === 'sona') {
+    return (
+      <Modal title="New report" onClose={onClose} maxWidth="max-w-2xl">
+        <div className="space-y-4">
+          {tabs}
+          {errorBox}
+          <div>
+            <label className="label">What should the report show?</label>
+            <textarea
+              className="input min-h-[96px]" autoFocus value={prompt} disabled={busy}
+              onChange={(e) => setPrompt(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) askSona(); }}
+              placeholder="Describe it in plain English — what to measure, for which team or ticket type, over what period."
+            />
+            <p className="mt-1 text-[11px] text-slate-400">
+              Sona picks the cards, metrics and period and saves the report. Every card stays editable afterwards.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {SONA_EXAMPLES.map((ex) => (
+              <button
+                key={ex} type="button" disabled={busy} onClick={() => setPrompt(ex)}
+                className="rounded-full border border-slate-200 px-2.5 py-1 text-[11px] text-slate-600 transition-colors hover:border-brand-300 hover:text-brand-700 dark:border-white/10 dark:text-slate-300 dark:hover:text-brand-300"
+              >
+                {ex}
+              </button>
+            ))}
+          </div>
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+            <button type="button" onClick={askSona} disabled={busy || !prompt.trim()} className="btn-primary disabled:opacity-40">
+              {busy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+              {busy ? 'Sona is building…' : 'Build with Sona'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+    );
+  }
+
   return (
     <Modal title="New report" onClose={onClose} maxWidth="max-w-2xl">
       <div className="space-y-4">
-        {error && (
-          <div className="flex items-start gap-2 rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-300">
-            <AlertTriangle size={14} className="mt-0.5 shrink-0" /> {error}
-          </div>
-        )}
+        {tabs}
+        {errorBox}
         <div>
           <label className="label">Name</label>
           <input className="input" autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Monthly service review" />
@@ -145,9 +226,14 @@ function Library({ meta, onOpen }) {
         title="Analytics"
         description="Every report in this workspace. Open one, or build a new one out of cards."
         actions={(
-          <button onClick={() => setCreating(true)} className="btn-primary">
-            <Plus size={15} /> New report
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={() => setCreating('sona')} className="btn-secondary">
+              <Bot size={15} /> Ask Sona
+            </button>
+            <button onClick={() => setCreating('manual')} className="btn-primary">
+              <Plus size={15} /> New report
+            </button>
+          </div>
         )}
       />
 
@@ -166,7 +252,12 @@ function Library({ meta, onOpen }) {
           icon={BarChart3}
           title="No reports yet"
           description="A report is a board of cards — a number, a trend, a breakdown, a table. Start from a ready-made one and change what you like."
-          action={<button onClick={() => setCreating(true)} className="btn-primary"><Plus size={15} /> New report</button>}
+          action={(
+            <div className="flex flex-wrap justify-center gap-2">
+              <button onClick={() => setCreating('sona')} className="btn-secondary"><Bot size={15} /> Ask Sona</button>
+              <button onClick={() => setCreating('manual')} className="btn-primary"><Plus size={15} /> New report</button>
+            </div>
+          )}
         />
       ) : folders.map(([folder, list]) => (
         <div key={folder}>
@@ -225,7 +316,12 @@ function Library({ meta, onOpen }) {
         </div>
       ))}
 
-      {creating && <NewReportModal meta={meta} onClose={() => setCreating(false)} onCreated={(b) => { setCreating(false); onOpen(b.id); }} />}
+      {creating && (
+        <NewReportModal
+          meta={meta} startWithSona={creating === 'sona'}
+          onClose={() => setCreating(false)} onCreated={(b) => { setCreating(false); onOpen(b.id); }}
+        />
+      )}
     </div>
   );
 }
@@ -267,7 +363,7 @@ function BoardSettings({ board, onClose, onSaved, onDeleted }) {
         </div>
         <div>
           <label className="label">Description</label>
-          <textarea className="input min-h-[60px]" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What question does this report answer?" />
+          <SonaTextarea purpose="Report description" className="input min-h-[60px]" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What question does this report answer?" />
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>

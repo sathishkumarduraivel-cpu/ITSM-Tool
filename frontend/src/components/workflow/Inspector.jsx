@@ -1,6 +1,7 @@
 import { X, Trash2, Plus } from 'lucide-react';
 import { EVENTS, FIELDS, FIELD_LABELS, OPS, FIELD_ENUMS, ACTION_TYPES, TIER_STYLE, APPROVER_ROLES } from '../../lib/workflowConstants.js';
 import Select from '../Select.jsx';
+import SonaTextarea from '../SonaTextarea.jsx';
 
 const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
 
@@ -139,12 +140,12 @@ function ActionInspector({ data, onChange, agents, integrations, groups, riskTie
         </div>
       )}
       {data.type === 'add_comment' && (
-        <textarea className="input" rows={3} placeholder="Comment body" value={data.body || ''} onChange={(e) => set({ body: e.target.value })} />
+        <SonaTextarea purpose="Comment posted by the automation" className="input" rows={3} placeholder="Comment body" value={data.body || ''} onChange={(e) => set({ body: e.target.value })} />
       )}
       {data.type === 'create_task' && (
         <div className="space-y-2">
           <input className="input" placeholder="Task title" value={data.title || ''} onChange={(e) => set({ title: e.target.value })} />
-          <textarea className="input" rows={2} placeholder="Description (optional)" value={data.description || ''} onChange={(e) => set({ description: e.target.value })} />
+          <SonaTextarea purpose="Task description" className="input" rows={2} placeholder="Description (optional)" value={data.description || ''} onChange={(e) => set({ description: e.target.value })} />
           <div className="flex gap-1.5">
             <Select className="flex-1" placeholder="Unassigned" value={data.assignee_id || ''} onChange={(v) => set({ assignee_id: v })} options={[{ value: '', label: 'Unassigned' }, ...agents.map((a) => ({ value: a.id, label: a.name }))]} />
             <Select className="w-28 shrink-0" value={data.priority || 'medium'} onChange={(v) => set({ priority: v })} options={['low', 'medium', 'high']} />
@@ -232,7 +233,7 @@ function ApprovalInspector({ data, onChange, agents }) {
       </div>
       <div>
         <label className="label">Message to the approver (optional)</label>
-        <textarea className="input" rows={2} placeholder="Any context they'll need to decide" value={data.message || ''} onChange={(e) => set({ message: e.target.value })} />
+        <SonaTextarea purpose="Message to the approver" className="input" rows={2} placeholder="Any context they'll need to decide" value={data.message || ''} onChange={(e) => set({ message: e.target.value })} />
       </div>
 
       <div>

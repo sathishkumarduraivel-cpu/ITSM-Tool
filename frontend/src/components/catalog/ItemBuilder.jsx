@@ -7,6 +7,7 @@ import { api } from '../../lib/api.js';
 import Modal from '../Modal.jsx';
 import Select from '../Select.jsx';
 import RequestField, { visibleFields } from './RequestField.jsx';
+import SonaTextarea from '../SonaTextarea.jsx';
 
 const TABS = [
   { key: 'details', label: 'Details', icon: Settings2 },
@@ -108,7 +109,7 @@ function DetailsTab({ item, meta, categories, onSaved, setError }) {
       </div>
       <div>
         <label className="label">Description</label>
-        <textarea className="input" rows={3} value={form.description} onChange={(e) => set('description', e.target.value)} />
+        <SonaTextarea purpose="Catalog item description" className="input" rows={3} value={form.description} onChange={(e) => set('description', e.target.value)} />
       </div>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">

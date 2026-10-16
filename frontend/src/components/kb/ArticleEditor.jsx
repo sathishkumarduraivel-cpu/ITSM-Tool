@@ -4,6 +4,7 @@ import { api } from '../../lib/api.js';
 import Modal from '../Modal.jsx';
 import Select from '../Select.jsx';
 import { Markdown } from './markdown.jsx';
+import SonaTextarea from '../SonaTextarea.jsx';
 
 // Write an article.
 //
@@ -126,7 +127,7 @@ export default function ArticleEditor({ initial, meta, categories, onClose, onSa
             </div>
           </div>
           {tab === 'write' ? (
-            <textarea
+            <SonaTextarea purpose="Knowledge base article body (Markdown)"
               className={`input font-mono text-xs ${fieldErrors.body ? 'border-red-400' : ''}`}
               rows={16} required value={form.body} onChange={(e) => set('body', e.target.value)}
               placeholder={'## Symptom\n\nWhat the user sees.\n\n## Resolution\n\n1. First step\n2. Second step'}

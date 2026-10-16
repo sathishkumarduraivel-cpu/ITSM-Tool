@@ -139,6 +139,28 @@ disk. On App Service only `/home` survives a restart, a scale event or a redeplo
 anything written elsewhere lives in the container's ephemeral layer and goes with it.
 Pointing the data directory at `/home/data` is what makes your data durable.
 
+### Deploying to Render
+
+[render.yaml](render.yaml) is a Blueprint for the same single-service shape: Render →
+**New + → Blueprint**, point it at this repo, and it will prompt for `JWT_SECRET` and
+`ENCRYPTION_KEY`.
+
+If you already have a Render service from before the `server/` → `backend/` and
+`web/` → `frontend/` rename, its saved build command still says `cd web` and the build
+now fails at the first step. **A failed Render build leaves the previous version live**,
+which looks exactly like a deploy that silently did nothing. Either re-sync the service
+from this Blueprint, or set the commands by hand:
+
+```
+Build:  cd frontend && npm install --include=dev && npm run build && cd ../backend && npm install
+Start:  cd backend && npm start
+```
+
+On the **free plan there is no persistent disk**, so the database resets to seeded demo
+data on every deploy, restart and idle wake, and the service sleeps after ~15 minutes.
+`render.yaml` has a commented-out `disk` block and `ITSM_DATA_DIR` for when you move to
+a paid instance — that pair is what makes the data survive.
+
 ### Production notes
 
 Still worth knowing before real users arrive:

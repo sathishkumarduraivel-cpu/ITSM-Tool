@@ -4,6 +4,7 @@ import { api } from '../lib/api.js';
 import Modal from './Modal.jsx';
 import Select from './Select.jsx';
 import { useBusinessRules } from '../hooks/useBusinessRules.js';
+import SonaTextarea from './SonaTextarea.jsx';
 
 const PRIORITIES = ['low', 'medium', 'high', 'critical'];
 
@@ -346,7 +347,7 @@ export default function NewTicketModal({ onClose, onCreated, availableTypes }) {
           </div>
           <div>
             <label className="label">Description</label>
-            <textarea
+            <SonaTextarea purpose="Ticket description"
               className="input"
               rows={4}
               placeholder="What's happening? Include anything that'll help whoever picks this up."
@@ -560,7 +561,7 @@ export default function NewTicketModal({ onClose, onCreated, availableTypes }) {
                       <input className="input" required={required} value={value || ''} onChange={(e) => setCustom(f.field_key, e.target.value)} />
                     )}
                     {f.field_type === 'textarea' && (
-                      <textarea className="input" rows={3} required={required} value={value || ''} onChange={(e) => setCustom(f.field_key, e.target.value)} />
+                      <SonaTextarea purpose={f.label} className="input" rows={3} required={required} value={value || ''} onChange={(e) => setCustom(f.field_key, e.target.value)} />
                     )}
                     {f.field_type === 'select' && (
                       <Select
@@ -643,7 +644,7 @@ export default function NewTicketModal({ onClose, onCreated, availableTypes }) {
               <label className="label">
                 Implementation plan{selectedChangeType?.requires_implementation_plan && <Required />}
               </label>
-              <textarea
+              <SonaTextarea purpose="Implementation plan"
                 className="input" rows={4}
                 value={form.implementation_plan}
                 onChange={(e) => setForm({ ...form, implementation_plan: e.target.value })}
@@ -656,7 +657,7 @@ export default function NewTicketModal({ onClose, onCreated, availableTypes }) {
                 <label className="label">
                   Backout plan{(selectedChangeType?.requires_backout ?? fieldRules.isRequired('rollback_plan')) && <Required />}
                 </label>
-                <textarea
+                <SonaTextarea purpose="Backout plan"
                   className="input" rows={3}
                   value={form.rollback_plan}
                   onChange={(e) => setForm({ ...form, rollback_plan: e.target.value })}
@@ -671,7 +672,7 @@ export default function NewTicketModal({ onClose, onCreated, availableTypes }) {
 
             <div>
               <label className="label">Test plan{selectedChangeType?.requires_test_plan && <Required />}</label>
-              <textarea
+              <SonaTextarea purpose="Test plan"
                 className="input" rows={2}
                 value={form.test_plan}
                 onChange={(e) => setForm({ ...form, test_plan: e.target.value })}

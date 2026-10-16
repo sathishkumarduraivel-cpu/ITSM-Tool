@@ -2,16 +2,20 @@ import bcrypt from 'bcryptjs';
 import { db, uid, DEFAULT_WORKSPACE_ID } from './db.js';
 import { nextTicketNumber } from './services/ticketNumbering.js';
 import { materializeTasks } from './services/hrCaseEngine.js';
+import { encrypt } from './services/crypto.js';
 
 const WS = DEFAULT_WORKSPACE_ID;
 
-function upsertUser(name, email, password, role, team) {
+// `password` is plaintext, or a bcrypt hash when `hashed` is set -- the hashed
+// form is for real accounts whose password must never appear in this public
+// repo.
+function upsertUser(name, email, password, role, team, { hashed = false } = {}) {
   let user = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
   if (!user) {
     const id = uid('usr');
     const colors = ['#6366f1', '#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
     db.prepare('INSERT INTO users (id, name, email, password_hash, role, team, avatar_color, last_workspace_id) VALUES (?,?,?,?,?,?,?,?)').run(
-      id, name, email, bcrypt.hashSync(password, 10), role, team || null, colors[Math.floor(Math.random() * colors.length)], WS
+      id, name, email, hashed ? password : bcrypt.hashSync(password, 10), role, team || null, colors[Math.floor(Math.random() * colors.length)], WS
     );
     user = { id };
   }
@@ -29,6 +33,33 @@ const req1 = upsertUser('Sam Requester', 'sam@company.com', 'User@123', 'request
 const req2 = upsertUser('Jamie Requester', 'jamie@company.com', 'User@123', 'requester', null);
 
 console.log('Seeded users:', { adminId, agent1, agent2, req1, req2 });
+
+// ---- Tester accounts (full workspace admin) ----
+// Seeded rather than created by hand because the free Render deployment has
+// no persistent disk: anything added through the UI there is gone on the next
+// deploy or restart. Only bcrypt hashes live here; the passwords themselves
+// were handed to the testers directly.
+const TESTERS = [
+  ['Roshan', 'roshan@itsm.ai', '$2a$12$oudRKNdEVyRXQyPu801SluiPrUB6bRSkjrfm0R.1lvqA5oLLj6/Nq'],
+  ['Sam Arun', 'samarun@itsm.ai', '$2a$12$N4I/FszqZhiU4PffPVjgk.iZe3lyrpzT0d/fg0cdJiNLdu22pOQt2'],
+  ['Deneshwary', 'deneshwary@itsm.ai', '$2a$12$agPfBbdJH8/2hRFufoKb/ulY03bWJja.TFtUtTp5a7EUfpev7H1l2'],
+  ['Shankar', 'shankar@itsm.ai', '$2a$12$3xPmBR/Fbd2oQ.K08MybNuzKFrTI.H62R0z3lEZikGoBwTvxDpnYm'],
+];
+for (const [name, email, hash] of TESTERS) upsertUser(name, email, hash, 'admin', null, { hashed: true });
+console.log(`Seeded ${TESTERS.length} tester admin accounts.`);
+
+// ---- Default AI provider (Sona) from the environment ----
+// The API key comes only from OPENAI_API_KEY -- never from this file, since
+// the repo is public and a committed key is scraped and revoked within
+// minutes. Skipped when the variable is unset or a provider already exists.
+// gpt-4.1-mini is the default because aiClient's OpenAI path sends
+// max_tokens/temperature, which the GPT-5.x models reject.
+if (process.env.OPENAI_API_KEY && !db.prepare('SELECT id FROM ai_providers WHERE workspace_id = ?').get(WS)) {
+  db.prepare(
+    'INSERT INTO ai_providers (id, workspace_id, name, provider_type, base_url, api_key, model, is_default, extra_headers) VALUES (?,?,?,?,?,?,?,?,?)'
+  ).run(uid('ai'), WS, 'OpenAI', 'openai', 'https://api.openai.com/v1', encrypt(process.env.OPENAI_API_KEY), process.env.OPENAI_MODEL || 'gpt-4.1-mini', 1, '{}');
+  console.log('Seeded default AI provider from OPENAI_API_KEY.');
+}
 
 // ---- Groups (replace the old free-text "team" concept) ----
 const groupCount = db.prepare('SELECT COUNT(*) c FROM groups WHERE workspace_id = ?').get(WS).c;
@@ -246,7 +277,7 @@ if (catCount === 0) {
   const items = [
     {
       category_id: hwCat, name: 'New Laptop', description: 'Standard-issue laptop for a new hire or replacement.',
-      form_schema: [{ key: 'reason', label: 'Reason', type: 'select', options: 'New hire,Replacement,Upgrade', required: true }, { key: 'notes', label: 'Additional notes', type: 'textarea', required: false }],
+      form_schema: [{ key: 'reason', label: 'Reason', type: 'select', options: ['New hire', 'Replacement', 'Upgrade'], required: true }, { key: 'notes', label: 'Additional notes', type: 'textarea', required: false }],
       approval_required: 1, approver_role: 'admin', default_priority: 'medium',
     },
     {
@@ -256,7 +287,7 @@ if (catCount === 0) {
     },
     {
       category_id: accCat, name: 'VPN Access', description: 'Request remote VPN access for working off-site.',
-      form_schema: [{ key: 'duration', label: 'Access duration', type: 'select', options: '30 days,90 days,Permanent', required: true }],
+      form_schema: [{ key: 'duration', label: 'Access duration', type: 'select', options: ['30 days', '90 days', 'Permanent'], required: true }],
       approval_required: 1, approver_role: 'admin', default_priority: 'medium',
     },
     {

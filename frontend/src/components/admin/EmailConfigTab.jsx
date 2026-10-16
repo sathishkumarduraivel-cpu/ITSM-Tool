@@ -9,6 +9,7 @@ import { api } from '../../lib/api.js';
 import Modal from '../Modal.jsx';
 import EmptyState from '../EmptyState.jsx';
 import Select from '../Select.jsx';
+import SonaTextarea from '../SonaTextarea.jsx';
 
 const SUB_TABS = [
   { key: 'smtp', label: 'SMTP Settings', icon: Mail },
@@ -591,7 +592,7 @@ function CannedResponseModal({ initial, teams, onClose, onSaved }) {
         </div>
         <div>
           <label className="label">Response text</label>
-          <textarea className="input" rows={6} required placeholder="Hi {{name}}, ..." value={body} onChange={(e) => setBody(e.target.value)} />
+          <SonaTextarea purpose="Canned response text" className="input" rows={6} required placeholder="Hi {{name}}, ..." value={body} onChange={(e) => setBody(e.target.value)} />
         </div>
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>

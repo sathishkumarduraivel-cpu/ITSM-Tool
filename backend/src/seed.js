@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { db, uid, DEFAULT_WORKSPACE_ID } from './db.js';
 import { nextTicketNumber } from './services/ticketNumbering.js';
@@ -6,16 +7,19 @@ import { encrypt } from './services/crypto.js';
 
 const WS = DEFAULT_WORKSPACE_ID;
 
-// `password` is plaintext, or a bcrypt hash when `hashed` is set -- the hashed
-// form is for real accounts whose password must never appear in this public
-// repo.
+// `password` is a bcrypt hash when `hashed` is set -- for real accounts whose
+// password must never appear in this public repo -- or null for a sample
+// user. Sample users own the demo tickets, groups and approvals but must not
+// be a way in: each gets a random password that is never stored or printed,
+// so nobody can sign in as them. Nothing in the repo is a working login.
 function upsertUser(name, email, password, role, team, { hashed = false } = {}) {
   let user = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
   if (!user) {
     const id = uid('usr');
     const colors = ['#6366f1', '#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
+    const hash = hashed ? password : bcrypt.hashSync(password ?? crypto.randomBytes(32).toString('base64'), 10);
     db.prepare('INSERT INTO users (id, name, email, password_hash, role, team, avatar_color, last_workspace_id) VALUES (?,?,?,?,?,?,?,?)').run(
-      id, name, email, hashed ? password : bcrypt.hashSync(password, 10), role, team || null, colors[Math.floor(Math.random() * colors.length)], WS
+      id, name, email, hash, role, team || null, colors[Math.floor(Math.random() * colors.length)], WS
     );
     user = { id };
   }
@@ -26,11 +30,11 @@ function upsertUser(name, email, password, role, team, { hashed = false } = {}) 
   return user.id;
 }
 
-const adminId = upsertUser('Alex Admin', 'admin@itsm.ai', 'Admin@123', 'admin', 'Platform');
-const agent1 = upsertUser('Priya Sharma', 'priya@itsm.ai', 'Agent@123', 'agent', 'Service Desk');
-const agent2 = upsertUser('Diego Ruiz', 'diego@itsm.ai', 'Agent@123', 'agent', 'Network');
-const req1 = upsertUser('Sam Requester', 'sam@company.com', 'User@123', 'requester', null);
-const req2 = upsertUser('Jamie Requester', 'jamie@company.com', 'User@123', 'requester', null);
+const adminId = upsertUser('Alex Admin', 'admin@itsm.ai', null, 'admin', 'Platform');
+const agent1 = upsertUser('Priya Sharma', 'priya@itsm.ai', null, 'agent', 'Service Desk');
+const agent2 = upsertUser('Diego Ruiz', 'diego@itsm.ai', null, 'agent', 'Network');
+const req1 = upsertUser('Sam Requester', 'sam@company.com', null, 'requester', null);
+const req2 = upsertUser('Jamie Requester', 'jamie@company.com', null, 'requester', null);
 
 console.log('Seeded users:', { adminId, agent1, agent2, req1, req2 });
 
@@ -399,17 +403,17 @@ const personaUsers = [
   { name: 'Quinn Impersonator', email: 'quinn.impersonator@itsm.ai', role: roleId.impersonator, team: 'Service Desk' },
 ];
 for (const p of personaUsers) {
-  const userId = upsertUser(p.name, p.email, 'Persona@123', 'agent', p.team);
+  const userId = upsertUser(p.name, p.email, null, 'agent', p.team);
   db.prepare('UPDATE workspace_members SET custom_role_id = ? WHERE workspace_id = ? AND user_id = ?').run(p.role, WS, userId);
 }
-console.log(`Seeded ${personaUsers.length} persona sample users (password: Persona@123).`);
+console.log(`Seeded ${personaUsers.length} persona sample users (sign-in disabled).`);
 
 // One sample approver persona -- no custom role needed (approvals.js already
 // scopes /decide to whoever is actually assigned via approver_id/
 // approver_role, for any base role), demonstrated by making this user the
 // CAB group's manager below so a "group_manager"-type catalog item has a
 // real approver to resolve to.
-const morganApprover = upsertUser('Morgan Approver', 'morgan.approver@itsm.ai', 'Persona@123', 'agent', 'Network');
+const morganApprover = upsertUser('Morgan Approver', 'morgan.approver@itsm.ai', null, 'agent', 'Network');
 
 // CAB group: demonstrates a group granting rights by membership
 // (default_custom_role_id — every member gets Change Manager's bundle just
@@ -428,11 +432,4 @@ if (!cabGroup) {
   console.log('Seeded Change Advisory Board group (grants Change Manager to its members; manager = Morgan Approver).');
 }
 
-console.log('\nSeed complete. Login with:');
-console.log('  admin@itsm.ai / Admin@123 (admin)');
-console.log('  priya@itsm.ai / Agent@123 (agent)');
-console.log('  sam@company.com / User@123 (requester)');
-console.log('  ITIL personas (all password Persona@123): morgan.itil@itsm.ai, riley.itiladmin@itsm.ai,');
-console.log('    casey.incidentmgr@itsm.ai, drew.problemmgr@itsm.ai, taylor.changemgr@itsm.ai,');
-console.log('    jordan.knowledge@itsm.ai, avery.catalogadmin@itsm.ai, quinn.impersonator@itsm.ai,');
-console.log('    morgan.approver@itsm.ai (CAB group manager, gets Change Manager via group membership)');
+console.log('\nSeed complete. Sample users cannot sign in; use a tester admin account (or register one).');

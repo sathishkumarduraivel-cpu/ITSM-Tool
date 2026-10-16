@@ -72,7 +72,7 @@ to one vendor's model. This is a lightweight alternative you run yourself, where
 cd backend
 npm install
 cp .env.example .env       # optional: change PORT / JWT_SECRET
-npm run seed               # creates demo users, tickets, assets, KB articles, workflows
+npm run seed               # creates sample data: tickets, assets, KB articles, workflows
 npm run dev                # http://localhost:4001  (npm start for no file watching)
 
 # 2. Frontend (in a second terminal)
@@ -81,13 +81,12 @@ npm install
 npm run dev                # http://localhost:5175 (proxies /api to the backend)
 ```
 
-Open http://localhost:5175 and log in with one of the seeded accounts:
-
-| Email | Password | Role |
-|---|---|---|
-| admin@itsm.ai | Admin@123 | Admin |
-| priya@itsm.ai | Agent@123 | Agent |
-| sam@company.com | User@123 | Requester |
+Open http://localhost:5175 and sign in with your own account. No working
+credentials ship with this repo: the sample users the seed creates (who own the demo
+tickets, groups and approvals) have sign-in disabled. Admin accounts for testers are
+seeded from bcrypt hashes in `backend/src/seed.js`; their passwords are shared
+privately, never committed. To add an admin, append a `[name, email, bcryptHash]`
+row to `TESTERS` there, or create one under **Admin Settings → Users**.
 
 ### Connecting an AI provider
 

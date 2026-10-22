@@ -8,9 +8,9 @@ import { protectAsyncRoutes } from './middleware/asyncRoutes.js';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { db } from './db.js';
+import { db, DB_FILE_PATH } from './db.js';
 import { JWT_SECRET } from './middleware/auth.js';
-import { checkNeonConnection } from './services/neonPostgres.js';
+import { checkNeonConnection, flushNeonSqliteSnapshot } from './services/neonPostgres.js';
 
 // A platform with no persistent disk (Render's free tier, among others) can
 // hand this process a brand-new, completely empty backend/data/itsm.db on
@@ -343,6 +343,14 @@ process.on('unhandledRejection', (reason) => {
 
 app.listen(PORT, () => {
   console.log(`ITSM AI server listening on http://localhost:${PORT}`);
+});
+
+// Render sends SIGTERM before it stops an idle service. Commit any mutation
+// still inside the short snapshot debounce window before exiting.
+process.once('SIGTERM', () => {
+  flushNeonSqliteSnapshot(DB_FILE_PATH)
+    .catch((error) => console.error('[neon] final SQLite snapshot failed:', error.message))
+    .finally(() => process.exit(0));
 });
 
 // This app's first real recurring background job (see

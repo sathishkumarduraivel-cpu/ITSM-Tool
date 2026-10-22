@@ -10,12 +10,9 @@
 # leaves the PREVIOUS version live, which looks exactly like a deploy that
 # silently did nothing. Update the dashboard, or re-sync it from this file.
 #
-# Free tier caveats (see backend/data/, .gitignore'd): the SQLite database
-# has no persistent disk on Render's free plan, so it resets to the seeded
-# demo data on every deploy, restart, or scale-to-zero wake. Fine for
-# testing/demoing this app; not a place to keep real data. The service also
-# spins down after ~15 min idle and takes 30-60s to wake on the next request.
-# See the `disk` block below for how to fix that on a paid plan.
+# Free services spin down after idle time. This service restores its SQLite
+# database from Neon Postgres during startup and saves changes back to Neon,
+# so the data survives a scale-to-zero wake without a paid Render disk.
 #
 # Deploy: push this repo to GitHub, then in Render "New +" -> "Blueprint",
 # point it at the repo. JWT_SECRET and ENCRYPTION_KEY are marked
@@ -31,9 +28,7 @@ services:
   - type: web
     name: itsm-ai
     runtime: node
-    # Persistent disks require a paid web-service plan. Starter is the
-    # smallest plan that preserves the SQLite database across restarts.
-    plan: starter
+    plan: free
     # `--include=dev` on the frontend install is required, not cosmetic:
     # vite, @vitejs/plugin-react, tailwindcss, postcss and autoprefixer all
     # live in frontend/package.json's devDependencies (they're build-time
@@ -60,19 +55,11 @@ services:
       # Settings. Set it in the dashboard only -- the repo is public.
       - key: OPENAI_API_KEY
         sync: false
-      # Store SQLite under the persistent disk's mount path. Only this path
-      # survives deploys, restarts, and idle wake-ups.
-      - key: ITSM_DATA_DIR
-        value: /var/data
       # Neon connection details are entered in Render's environment settings;
       # they must never be committed to this public repository.
       - key: DATABASE_URL
         sync: false
       - key: DATABASE_URL_UNPOOLED
         sync: false
-    # 1 GB is ample for the current application database. Render snapshots
-    # this disk and restores it after the service wakes from idling.
-    disk:
-      name: itsm-data
-      mountPath: /var/data
-      sizeGB: 1
+      - key: NEON_SQLITE_SNAPSHOT
+        value: "true"

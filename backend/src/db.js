@@ -7,6 +7,10 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { encrypt, isEncrypted } from './services/crypto.js';
 import { legacyToGraph } from './services/workflowGraph.js';
+import {
+  restoreNeonSqliteSnapshot,
+  scheduleNeonSqliteSnapshot,
+} from './services/neonPostgres.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Overridable so the automated test suite (test/setup.mjs) can point every
@@ -23,6 +27,11 @@ if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 export const DATA_DIR = dataDir;
 export const DB_FILE_PATH = path.join(dataDir, 'itsm.db');
 
+// Restore the durable copy before SQLite opens the file. If Neon is enabled
+// but unavailable, startup fails rather than replacing real data with a new
+// empty database.
+await restoreNeonSqliteSnapshot(DB_FILE_PATH);
+
 const rawDb = new DatabaseSync(DB_FILE_PATH);
 // Rollback-journal mode (SQLite's default) rather than WAL: WAL relies on
 // shared-memory-mapped files which some mounted/network/sandboxed filesystems
@@ -33,11 +42,19 @@ rawDb.exec('PRAGMA foreign_keys = ON');
 // Thin wrapper so route/service code can keep using the familiar
 // better-sqlite3-style `db.prepare(sql).run/get/all(...)` call pattern.
 export const db = {
-  exec: (sql) => rawDb.exec(sql),
+  exec: (sql) => {
+    const result = rawDb.exec(sql);
+    scheduleNeonSqliteSnapshot(DB_FILE_PATH);
+    return result;
+  },
   prepare: (sql) => {
     const stmt = rawDb.prepare(sql);
     return {
-      run: (...params) => stmt.run(...params),
+      run: (...params) => {
+        const result = stmt.run(...params);
+        scheduleNeonSqliteSnapshot(DB_FILE_PATH);
+        return result;
+      },
       get: (...params) => stmt.get(...params),
       all: (...params) => stmt.all(...params),
     };
@@ -3240,6 +3257,9 @@ if (!legacyMigratedFlag) {
 
 // seed ticket_counters from existing ticket numbers so numbering continues rather than resetting
 const TYPE_PREFIX = { incident: 'INC', request: 'REQ', problem: 'PRB', change: 'CHG' };
+// The writes above created or upgraded the schema. Queue a durable copy even
+// when this process has not yet served an application request.
+scheduleNeonSqliteSnapshot(DB_FILE_PATH);
 for (const type of Object.keys(TYPE_PREFIX)) {
   const existing = db.prepare('SELECT seq FROM ticket_counters WHERE workspace_id = ? AND type = ?').get(DEFAULT_WORKSPACE_ID, type);
   if (!existing) {

@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { db } from './db.js';
 import { JWT_SECRET } from './middleware/auth.js';
+import { checkNeonConnection } from './services/neonPostgres.js';
 
 // A platform with no persistent disk (Render's free tier, among others) can
 // hand this process a brand-new, completely empty backend/data/itsm.db on
@@ -211,7 +212,14 @@ const apiLimiter = rateLimit({
 });
 app.use('/api', apiLimiter);
 
-app.get('/api/health', (req, res) => res.json({ ok: true, service: 'itsm-ai-server', time: new Date().toISOString() }));
+app.get('/api/health', async (req, res, next) => {
+  try {
+    const neon = await checkNeonConnection();
+    res.json({ ok: true, service: 'itsm-ai-server', time: new Date().toISOString(), neon });
+  } catch (error) {
+    next(error);
+  }
+});
 
 app.use('/api/auth', authRoutes);
 app.use('/api/workspaces', workspaceRoutes);

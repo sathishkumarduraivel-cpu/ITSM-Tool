@@ -3,3 +3,5 @@ dist/
 backend/data/
 .env
 *.log
+.neon
+.env.local

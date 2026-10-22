@@ -31,7 +31,9 @@ services:
   - type: web
     name: itsm-ai
     runtime: node
-    plan: free
+    # Persistent disks require a paid web-service plan. Starter is the
+    # smallest plan that preserves the SQLite database across restarts.
+    plan: starter
     # `--include=dev` on the frontend install is required, not cosmetic:
     # vite, @vitejs/plugin-react, tailwindcss, postcss and autoprefixer all
     # live in frontend/package.json's devDependencies (they're build-time
@@ -58,17 +60,19 @@ services:
       # Settings. Set it in the dashboard only -- the repo is public.
       - key: OPENAI_API_KEY
         sync: false
-      # Uncomment together with the `disk` block below. Without a disk the
-      # database lives in the container's ephemeral filesystem and is lost on
-      # every restart; pointing it at the mounted disk is what makes the data
-      # survive. The app reads this variable directly (backend/src/db.js), so
-      # nothing else needs changing.
-      # - key: ITSM_DATA_DIR
-      #   value: /var/data
-    # Persistent storage. Requires a paid instance type -- Render's free plan
-    # has no disks at all, which is the single reason the free deployment
-    # cannot hold real data. 1 GB is ample: the seeded database is ~2.5 MB.
-    # disk:
-    #   name: itsm-data
-    #   mountPath: /var/data
-    #   sizeGB: 1
+      # Store SQLite under the persistent disk's mount path. Only this path
+      # survives deploys, restarts, and idle wake-ups.
+      - key: ITSM_DATA_DIR
+        value: /var/data
+      # Neon connection details are entered in Render's environment settings;
+      # they must never be committed to this public repository.
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_URL_UNPOOLED
+        sync: false
+    # 1 GB is ample for the current application database. Render snapshots
+    # this disk and restores it after the service wakes from idling.
+    disk:
+      name: itsm-data
+      mountPath: /var/data
+      sizeGB: 1
